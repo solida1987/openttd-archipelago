@@ -1,5 +1,20 @@
 # Changelog — OpenTTD Archipelago
 
+## [1.0.0-beta2] — 2026-03-05
+
+### Fixed
+- **WSS support** — client now connects to the official archipelago.gg WebHost using encrypted WebSocket (wss://)
+  - TLS implemented via Windows Schannel — no external dependencies required
+  - `wss://` is now always prepended automatically; users only type the host and port
+- **Build fix** — zlib dependency is now optional (`#ifdef WITH_ZLIB`); build succeeds without it and falls back to uncompressed WebSocket frames
+- **GUI** — `wss://` displayed as a fixed label next to the server field so it cannot be accidentally deleted
+
+### Changed
+- Server field default placeholder changed from `archipelago.gg:38281` to `archipelago.gg:38281` (scheme handled automatically)
+- Reconnect button also uses WSS automatically
+
+---
+
 ## [1.0.0-beta1] — 2026-03-05
 
 First public beta release.

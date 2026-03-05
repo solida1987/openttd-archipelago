@@ -440,6 +440,7 @@ std::string _ap_last_host;
 uint16_t    _ap_last_port     = 38281;
 std::string _ap_last_slot;
 std::string _ap_last_pass;
+bool        _ap_last_ssl = false;
 
 /* -------------------------------------------------------------------------
  * Engine name <-> EngineID map

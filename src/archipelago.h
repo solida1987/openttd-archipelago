@@ -150,7 +150,8 @@ public:
 
 	void Connect(const std::string &host, uint16_t port,
 	             const std::string &slot, const std::string &password,
-	             const std::string &game = "OpenTTD");
+	             const std::string &game = "OpenTTD",
+	             bool use_ssl = false);
 	void Disconnect();
 
 	/** Send a location check by numeric ID. */
@@ -196,6 +197,8 @@ private:
 
 	std::string host, slot_name, password, game_name;
 	uint16_t    port = 0;
+	bool        ws_deflate{ false };   ///< true if server accepted permessage-deflate
+	bool        use_ssl{ false };      ///< true → TLS/WSS via Schannel (Windows)
 
 	mutable std::mutex slot_mutex;
 	APSlotData         slot_data;

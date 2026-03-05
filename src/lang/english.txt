@@ -2262,6 +2262,7 @@ STR_INTRO_TOOLTIP_ARCHIPELAGO                                   :{BLACK}Connect 
 # Archipelago connect window
 STR_ARCHIPELAGO_CAPTION                                         :Archipelago - Connect
 STR_ARCHIPELAGO_LABEL_SERVER                                    :{BLACK}Server:
+STR_ARCHIPELAGO_LABEL_WSS                                       :{SILVER}wss://
 STR_ARCHIPELAGO_LABEL_SLOT                                      :{BLACK}Slot name:
 STR_ARCHIPELAGO_LABEL_PASS                                      :{BLACK}Password:
 STR_ARCHIPELAGO_BTN_CONNECT                                     :{BLACK}Connect

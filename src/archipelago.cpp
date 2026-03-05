@@ -37,10 +37,241 @@ using json = nlohmann::json;
 #include <random>
 #include <algorithm>
 #include <cstring>
+#ifdef WITH_ZLIB
+#  include <zlib.h>
+#endif
+
+/* =========================================================================
+ * Windows Schannel TLS wrapper
+ * Used when use_ssl=true so the WebSocket layer operates over wss://.
+ * Requires Secur32.lib (already linked by MSVC on Windows).
+ * ========================================================================= */
+#ifdef _WIN32
+#include <schannel.h>
+#define SECURITY_WIN32
+#include <security.h>
+#include <sspi.h>
+#pragma comment(lib, "Secur32.lib")
+
+struct ApTlsCtx {
+	CredHandle hCred{};
+	CtxtHandle hCtx{};
+	bool       ctx_valid{ false };
+	SecPkgContext_StreamSizes sizes{};
+
+	/* Leftover encrypted bytes not yet decrypted (SECBUFFER_EXTRA), and
+	   decrypted bytes not yet consumed by the caller. */
+	std::vector<char> enc_extra;
+	std::vector<char> dec_buf;
+
+	~ApTlsCtx()
+	{
+		if (ctx_valid) {
+			DeleteSecurityContext(&hCtx);
+			FreeCredentialsHandle(&hCred);
+		}
+	}
+
+	/** Perform TLS client handshake over an already-connected socket. */
+	bool Handshake(sock_t s, const std::string &hostname)
+	{
+		/* ── Acquire credentials ── */
+		SCHANNEL_CRED cred{};
+		cred.dwVersion = SCHANNEL_CRED_VERSION;
+		cred.grbitEnabledProtocols = SP_PROT_TLS1_2_CLIENT | SP_PROT_TLS1_3_CLIENT;
+		cred.dwFlags = SCH_CRED_AUTO_CRED_VALIDATION | SCH_CRED_NO_DEFAULT_CREDS;
+
+		SECURITY_STATUS ss = AcquireCredentialsHandleA(
+		    nullptr, const_cast<SEC_CHAR *>(UNISP_NAME_A),
+		    SECPKG_CRED_OUTBOUND, nullptr, &cred,
+		    nullptr, nullptr, &hCred, nullptr);
+		if (ss != SEC_E_OK) return false;
+
+		ULONG req = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT |
+		            ISC_REQ_CONFIDENTIALITY | ISC_REQ_ALLOCATE_MEMORY |
+		            ISC_REQ_STREAM;
+
+		/* ── Handshake loop ── */
+		std::vector<char> ibuf; /* accumulates server data */
+		bool first = true;
+		ULONG attrs = 0;
+
+		while (true) {
+			SecBuffer in_bufs[2] = {};
+			SecBuffer out_buf    = {};
+			SecBufferDesc in_desc  { SECBUFFER_VERSION, 2, in_bufs };
+			SecBufferDesc out_desc { SECBUFFER_VERSION, 1, &out_buf };
+
+			if (first) {
+				in_bufs[0].BufferType = SECBUFFER_EMPTY;
+				in_bufs[1].BufferType = SECBUFFER_EMPTY;
+			} else {
+				in_bufs[0].BufferType = SECBUFFER_TOKEN;
+				in_bufs[0].pvBuffer   = ibuf.data();
+				in_bufs[0].cbBuffer   = (ULONG)ibuf.size();
+				in_bufs[1].BufferType = SECBUFFER_EMPTY;
+			}
+			out_buf.BufferType = SECBUFFER_TOKEN;
+
+			ss = InitializeSecurityContextA(
+			    &hCred,
+			    first ? nullptr : &hCtx,
+			    const_cast<SEC_CHAR *>(hostname.c_str()),
+			    req, 0, 0,
+			    first ? nullptr : &in_desc,
+			    0, first ? &hCtx : nullptr,
+			    &out_desc, &attrs, nullptr);
+			first = false;
+
+			/* Send any output token to the server */
+			if (out_buf.pvBuffer && out_buf.cbBuffer > 0) {
+				const char *p = (const char *)out_buf.pvBuffer;
+				int len = (int)out_buf.cbBuffer;
+				while (len > 0) {
+					int r = ::send(s, p, len, 0);
+					if (r <= 0) { FreeContextBuffer(out_buf.pvBuffer); goto fail; }
+					p += r; len -= r;
+				}
+				FreeContextBuffer(out_buf.pvBuffer);
+			}
+
+			if (ss == SEC_E_OK) {
+				/* Handshake complete — stash any EXTRA bytes */
+				if (in_bufs[1].BufferType == SECBUFFER_EXTRA && in_bufs[1].cbBuffer > 0) {
+					size_t off = ibuf.size() - in_bufs[1].cbBuffer;
+					enc_extra.assign(ibuf.begin() + off, ibuf.end());
+				}
+				break;
+			}
+			if (ss != SEC_I_CONTINUE_NEEDED && ss != SEC_E_INCOMPLETE_MESSAGE) goto fail;
+
+			/* Handle SECBUFFER_EXTRA — server sent more than one record */
+			if (in_bufs[1].BufferType == SECBUFFER_EXTRA && in_bufs[1].cbBuffer > 0) {
+				size_t off = ibuf.size() - in_bufs[1].cbBuffer;
+				ibuf.erase(ibuf.begin(), ibuf.begin() + (ptrdiff_t)off);
+			} else if (ss != SEC_E_INCOMPLETE_MESSAGE) {
+				ibuf.clear();
+			}
+
+			/* Read more server data */
+			char tmp[16384];
+			int r = ::recv(s, tmp, sizeof(tmp), 0);
+			if (r <= 0) goto fail;
+			ibuf.insert(ibuf.end(), tmp, tmp + r);
+		}
+
+		ctx_valid = true;
+		QueryContextAttributesA(&hCtx, SECPKG_ATTR_STREAM_SIZES, &sizes);
+		return true;
+	fail:
+		FreeCredentialsHandle(&hCred);
+		return false;
+	}
+
+	/** Encrypt and send `len` plain bytes. */
+	bool Write(sock_t s, const char *buf, int len)
+	{
+		while (len > 0) {
+			int chunk = std::min(len, (int)sizes.cbMaximumMessage);
+			std::vector<char> msg(sizes.cbHeader + chunk + sizes.cbTrailer);
+			memcpy(msg.data() + sizes.cbHeader, buf, chunk);
+
+			SecBuffer bufs[4] = {};
+			bufs[0].BufferType = SECBUFFER_STREAM_HEADER;
+			bufs[0].pvBuffer   = msg.data();
+			bufs[0].cbBuffer   = sizes.cbHeader;
+			bufs[1].BufferType = SECBUFFER_DATA;
+			bufs[1].pvBuffer   = msg.data() + sizes.cbHeader;
+			bufs[1].cbBuffer   = chunk;
+			bufs[2].BufferType = SECBUFFER_STREAM_TRAILER;
+			bufs[2].pvBuffer   = msg.data() + sizes.cbHeader + chunk;
+			bufs[2].cbBuffer   = sizes.cbTrailer;
+			bufs[3].BufferType = SECBUFFER_EMPTY;
+
+			SecBufferDesc desc { SECBUFFER_VERSION, 4, bufs };
+			SECURITY_STATUS ss = EncryptMessage(&hCtx, 0, &desc, 0);
+			if (ss != SEC_E_OK) return false;
+
+			int total = (int)(bufs[0].cbBuffer + bufs[1].cbBuffer + bufs[2].cbBuffer);
+			const char *p = msg.data();
+			while (total > 0) {
+				int r = ::send(s, p, total, 0);
+				if (r <= 0) return false;
+				p += r; total -= r;
+			}
+			buf += chunk; len -= chunk;
+		}
+		return true;
+	}
+
+	/** Receive exactly `len` decrypted bytes (blocking, with timeout pass-through). */
+	bool Read(sock_t s, char *buf, int len)
+	{
+		while (len > 0) {
+			/* Drain already-decrypted buffer first */
+			if (!dec_buf.empty()) {
+				int take = std::min(len, (int)dec_buf.size());
+				memcpy(buf, dec_buf.data(), take);
+				dec_buf.erase(dec_buf.begin(), dec_buf.begin() + take);
+				buf += take; len -= take;
+				continue;
+			}
+
+			/* Accumulate encrypted data (seed with enc_extra from handshake) */
+			std::vector<char> rbuf = enc_extra;
+			enc_extra.clear();
+
+			while (true) {
+				if (!rbuf.empty()) {
+					SecBuffer bufs[4] = {};
+					bufs[0].BufferType = SECBUFFER_DATA;
+					bufs[0].pvBuffer   = rbuf.data();
+					bufs[0].cbBuffer   = (ULONG)rbuf.size();
+					bufs[1].BufferType = SECBUFFER_EMPTY;
+					bufs[2].BufferType = SECBUFFER_EMPTY;
+					bufs[3].BufferType = SECBUFFER_EMPTY;
+
+					SecBufferDesc desc { SECBUFFER_VERSION, 4, bufs };
+					SECURITY_STATUS ss = DecryptMessage(&hCtx, &desc, 0, nullptr);
+
+					if (ss == SEC_E_OK) {
+						/* Extract decrypted data */
+						for (int i = 0; i < 4; i++) {
+							if (bufs[i].BufferType == SECBUFFER_DATA && bufs[i].cbBuffer > 0) {
+								const char *d = (const char *)bufs[i].pvBuffer;
+								dec_buf.insert(dec_buf.end(), d, d + bufs[i].cbBuffer);
+							}
+						}
+						/* Stash EXTRA for next call */
+						for (int i = 0; i < 4; i++) {
+							if (bufs[i].BufferType == SECBUFFER_EXTRA && bufs[i].cbBuffer > 0) {
+								const char *d = (const char *)bufs[i].pvBuffer;
+								enc_extra.assign(d, d + bufs[i].cbBuffer);
+							}
+						}
+						break; /* have decrypted data; back to outer loop */
+					}
+					if (ss == SEC_I_RENEGOTIATE) break; /* treat as success for now */
+					if (ss != SEC_E_INCOMPLETE_MESSAGE) return false;
+					/* SEC_E_INCOMPLETE_MESSAGE → fall through to recv more */
+				}
+
+				/* Need more encrypted bytes from the wire */
+				char tmp[16384];
+				int r = ::recv(s, tmp, sizeof(tmp), 0);
+				if (r <= 0) return false;
+				rbuf.insert(rbuf.end(), tmp, tmp + r);
+			}
+		}
+		return true;
+	}
+};
+#endif /* _WIN32 */
 
 #include "console_func.h"
 #include "core/string_consumer.hpp"
 #include "safeguards.h"
+
 /* -------------------------------------------------------------------------
  * AP Console logging helper — visible in OpenTTD game console (~)
  * ---------------------------------------------------------------------- */
@@ -81,7 +312,7 @@ ArchipelagoClient::~ArchipelagoClient()
 
 void ArchipelagoClient::Connect(const std::string &h, uint16_t p,
                                 const std::string &slot, const std::string &pw,
-                                const std::string &game)
+                                const std::string &game, bool ssl)
 {
 	Disconnect();
 
@@ -90,6 +321,7 @@ void ArchipelagoClient::Connect(const std::string &h, uint16_t p,
 	slot_name = slot;
 	password  = pw;
 	game_name = game;
+	use_ssl   = ssl;
 
 	has_slot_data.store(false);
 
@@ -380,15 +612,28 @@ static std::string Base64Encode(const uint8_t *data, size_t len)
  * Socket helpers
  * ---------------------------------------------------------------------- */
 
-static bool SendAll(sock_t s, const char *buf, int len)
+/* Forward-declare for use inside ApTlsCtx::Write */
+static bool RawSendAll(sock_t s, const char *buf, int len)
 {
 	while (len > 0) {
-		int sent = send(s, buf, len, 0);
+		int sent = ::send(s, buf, len, 0);
 		if (sent <= 0) return false;
 		buf += sent;
 		len -= sent;
 	}
 	return true;
+}
+
+#ifdef _WIN32
+static thread_local ApTlsCtx *tls_ctx_tl = nullptr; ///< set by WorkerThread
+#endif
+
+static bool SendAll(sock_t s, const char *buf, int len)
+{
+#ifdef _WIN32
+	if (tls_ctx_tl) return tls_ctx_tl->Write(s, buf, len);
+#endif
+	return RawSendAll(s, buf, len);
 }
 
 static bool sock_timed_out()
@@ -403,8 +648,11 @@ static bool sock_timed_out()
 
 static bool RecvAll(sock_t s, char *buf, int len)
 {
+#ifdef _WIN32
+	if (tls_ctx_tl) return tls_ctx_tl->Read(s, buf, len);
+#endif
 	while (len > 0) {
-		int r = recv(s, buf, len, 0);
+		int r = ::recv(s, buf, len, 0);
 		if (r <= 0) return false;
 		buf += r;
 		len -= r;
@@ -414,14 +662,13 @@ static bool RecvAll(sock_t s, char *buf, int len)
 
 /* -------------------------------------------------------------------------
  * WebSocket handshake
- * NOTE: We do NOT include Sec-WebSocket-Extensions.
- * If we request permessage-deflate, the AP server will send compressed frames
- * which our simple frame parser cannot decode, causing silent JSON parse
- * failures and immediate disconnects. By omitting the header entirely,
- * the server falls back to uncompressed frames.
+ * Requests permessage-deflate compression. If the server accepts it,
+ * ws_deflate is set to true and RecvWsFrame will decompress RSV1 frames.
  * ---------------------------------------------------------------------- */
 bool ArchipelagoClient::DoWebSocketHandshake(int sockfd, const std::string &h, uint16_t p)
 {
+	ws_deflate = false;
+
 	auto _seed = std::chrono::steady_clock::now().time_since_epoch().count();
 	std::mt19937 rng((uint32_t)(_seed ^ (_seed >> 32)));
 	uint8_t key_bytes[16];
@@ -435,6 +682,9 @@ bool ArchipelagoClient::DoWebSocketHandshake(int sockfd, const std::string &h, u
 	    << "Connection: Upgrade\r\n"
 	    << "Sec-WebSocket-Key: " << ws_key << "\r\n"
 	    << "Sec-WebSocket-Version: 13\r\n"
+#ifdef WITH_ZLIB
+	    << "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_no_context_takeover\r\n"
+#endif
 	    << "\r\n";
 
 	std::string req_str = req.str();
@@ -450,7 +700,22 @@ bool ArchipelagoClient::DoWebSocketHandshake(int sockfd, const std::string &h, u
 		    response.substr(response.size() - 4) == "\r\n\r\n") break;
 	}
 
-	return response.find("101") != std::string::npos;
+	if (response.find("101") == std::string::npos) return false;
+
+	/* Check if server accepted permessage-deflate */
+#ifdef WITH_ZLIB
+	std::string lower = response;
+	for (auto &ch : lower) ch = (char)tolower((unsigned char)ch);
+	if (lower.find("permessage-deflate") != std::string::npos) {
+		ws_deflate = true;
+		AP_OK("WebSocket connected — permessage-deflate compression enabled");
+	} else {
+		AP_OK("WebSocket connected (no compression)");
+	}
+#else
+	AP_OK("WebSocket connected (compression disabled — build without zlib)");
+#endif
+	return true;
 }
 
 bool ArchipelagoClient::SendWsText(int sockfd, const std::string &text)
@@ -588,7 +853,45 @@ bool ArchipelagoClient::RecvWsFrame(int sockfd, std::string &out_text, bool &out
 	}
 	if (masked) for (size_t i = 0; i < plen; i++) payload[i] ^= mask[i % 4];
 
+	bool rsv1 = (header[0] & 0x40) != 0;
+#ifdef WITH_ZLIB
+	if (rsv1 && ws_deflate) {
+		/* permessage-deflate: append RFC 7692 sync tail then inflate */
+		payload.push_back(0x00);
+		payload.push_back(0x00);
+		payload.push_back((char)0xFF);
+		payload.push_back((char)0xFF);
+
+		z_stream zs{};
+		inflateInit2(&zs, -15); /* raw deflate, no zlib header */
+		zs.next_in  = (Bytef*)payload.data();
+		zs.avail_in = (uInt)payload.size();
+
+		std::string decompressed;
+		char zbuf[32768];
+		int zret;
+		do {
+			zs.next_out  = (Bytef*)zbuf;
+			zs.avail_out = sizeof(zbuf);
+			zret = inflate(&zs, Z_SYNC_FLUSH);
+			if (zret != Z_OK && zret != Z_STREAM_END && zret != Z_BUF_ERROR) {
+				inflateEnd(&zs);
+				AP_ERR(fmt::format("zlib inflate error: {}", zret));
+				out_closed = true;
+				return false;
+			}
+			decompressed.append(zbuf, sizeof(zbuf) - zs.avail_out);
+		} while (zs.avail_out == 0);
+		inflateEnd(&zs);
+
+		out_text = std::move(decompressed);
+	} else {
+		out_text.assign(payload.data(), plen);
+	}
+#else
+	(void)rsv1;
 	out_text.assign(payload.data(), plen);
+#endif
 	return true;
 }
 
@@ -873,6 +1176,25 @@ void ArchipelagoClient::WorkerThread()
 	freeaddrinfo(res);
 	AP_OK("TCP connected! Starting WebSocket handshake...");
 
+#ifdef _WIN32
+	ApTlsCtx *tls = nullptr;
+	if (use_ssl) {
+		tls = new ApTlsCtx();
+		AP_LOG("Starting TLS handshake (Schannel)...");
+		if (!tls->Handshake(s, host)) {
+			delete tls;
+			sock_close(s);
+			last_error = "TLS handshake failed";
+			AP_ERR("TLS handshake failed — certificate or network error");
+			state.store(APState::AP_ERROR);
+			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
+			return;
+		}
+		tls_ctx_tl = tls; /* thread-local pointer used by SendAll/RecvAll */
+		AP_OK("TLS handshake OK.");
+	}
+#endif
+
 	state.store(APState::CONNECTED);
 	if (!DoWebSocketHandshake((int)s, host, port)) {
 		sock_close(s);
@@ -924,6 +1246,9 @@ void ArchipelagoClient::WorkerThread()
 	}
 
 	sock_close(s);
+#ifdef _WIN32
+	if (tls_ctx_tl) { delete tls_ctx_tl; tls_ctx_tl = nullptr; }
+#endif
 	AP_WARN("Worker thread exiting — connection lost");
 	if (state.load() != APState::AP_ERROR) state.store(APState::DISCONNECTED);
 	PushEvent({ InboundEvent::DISCONNECTED, "Disconnected", {}, {} });

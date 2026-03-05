@@ -23,6 +23,7 @@ extern std::string _ap_last_host;
 extern uint16_t    _ap_last_port;
 extern std::string _ap_last_slot;
 extern std::string _ap_last_pass;
+extern bool        _ap_last_ssl;
 
 extern std::atomic<bool> _ap_status_dirty;
 

@@ -26,6 +26,7 @@
 
 enum APWidgets : WidgetID {
 	WAPGUI_LABEL_SERVER,
+	WAPGUI_LABEL_WSS,
 	WAPGUI_EDIT_SERVER,
 	WAPGUI_LABEL_SLOT,
 	WAPGUI_EDIT_SLOT,
@@ -45,7 +46,8 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_widgets = {
 		NWidget(NWID_VERTICAL), SetPIP(4, 4, 4), SetPadding(6),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
 				NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_LABEL_SERVER), SetStringTip(STR_ARCHIPELAGO_LABEL_SERVER), SetMinimalSize(80, 14),
-				NWidget(WWT_EDITBOX, COLOUR_GREY, WAPGUI_EDIT_SERVER), SetStringTip(STR_EMPTY), SetMinimalSize(200, 14), SetFill(1, 0),
+				NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_LABEL_WSS), SetStringTip(STR_ARCHIPELAGO_LABEL_WSS), SetMinimalSize(36, 14),
+				NWidget(WWT_EDITBOX, COLOUR_GREY, WAPGUI_EDIT_SERVER), SetStringTip(STR_EMPTY), SetMinimalSize(160, 14), SetFill(1, 0),
 			EndContainer(),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
 				NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_LABEL_SLOT), SetStringTip(STR_ARCHIPELAGO_LABEL_SLOT), SetMinimalSize(80, 14),
@@ -155,17 +157,23 @@ struct ArchipelagoConnectWindow : public Window {
 		switch (widget) {
 			case WAPGUI_BTN_CONNECT: {
 				if (_ap_client == nullptr) break;
-				std::string host = server_str;
+				/* wss:// is always used — the prefix is shown as a fixed label */
+				std::string raw = server_str;
+				/* Strip any prefix the user may have typed anyway */
+				if (raw.rfind("wss://", 0) == 0) raw = raw.substr(6);
+				else if (raw.rfind("ws://", 0) == 0) raw = raw.substr(5);
+				std::string host = raw;
 				uint16_t port = 38281;
-				auto colon = server_str.rfind(':');
+				auto colon = raw.rfind(':');
 				if (colon != std::string::npos) {
-					host = server_str.substr(0, colon);
-					int p = ParseInteger<int>(server_str.substr(colon + 1)).value_or(0);
+					host = raw.substr(0, colon);
+					int p = ParseInteger<int>(raw.substr(colon + 1)).value_or(0);
 					if (p > 0 && p < 65536) port = (uint16_t)p;
 				}
 				_ap_last_host = host; _ap_last_port = port;
 				_ap_last_slot = slot_str; _ap_last_pass = pass_str;
-				_ap_client->Connect(host, port, slot_str, pass_str);
+				_ap_last_ssl = true;
+				_ap_client->Connect(host, port, slot_str, pass_str, "OpenTTD", true);
 				this->SetDirty();
 				break;
 			}
@@ -302,7 +310,7 @@ struct ArchipelagoStatusWindow : public Window {
 		switch (widget) {
 			case WAPST_BTN_RECONNECT:
 				if (_ap_client && !_ap_last_host.empty())
-					_ap_client->Connect(_ap_last_host, _ap_last_port, _ap_last_slot, _ap_last_pass);
+					_ap_client->Connect(_ap_last_host, _ap_last_port, _ap_last_slot, _ap_last_pass, "OpenTTD", true);
 				break;
 			case WAPST_BTN_MISSIONS:
 				ShowArchipelagoMissionsWindow();
