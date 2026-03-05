@@ -1,0 +1,171 @@
+name: Release (Linux)
+
+on:
+  workflow_call:
+    inputs:
+      survey_key:
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  linux:
+    name: Linux (Generic)
+
+    runs-on: ubuntu-latest
+    container:
+      # manylinux_2_28 is based on AlmaLinux 8, and already has a lot of things
+      # installed and preconfigured. It makes it easier to build OpenTTD.
+      # This distro is based on glibc 2.28, released in 2018.
+      image: quay.io/pypa/manylinux_2_28_x86_64
+
+    steps:
+    - name: Download source
+      uses: actions/download-artifact@v6
+      with:
+        name: internal-source
+
+    - name: Unpack source
+      run: |
+        tar -xf source.tar.gz --strip-components=1
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Enable Rust cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: Install dependencies
+      run: |
+        echo "::group::Install system dependencies"
+        # perl-IPC-Cmd, wget, and zip are needed to run vcpkg.
+        # autoconf-archive is needed to build ICU.
+        yum install -y \
+          autoconf-archive \
+          perl-IPC-Cmd \
+          wget \
+          zip \
+          # EOF
+
+        # aclocal looks first in /usr/local/share/aclocal, and if that doesn't
+        # exist only looks in /usr/share/aclocal. We have files in both that
+        # are important. So copy the latter to the first, and we are good to
+        # go.
+        cp /usr/share/aclocal/* /usr/local/share/aclocal/
+        echo "::endgroup::"
+
+        # The yum variant of fluidsynth depends on all possible audio drivers,
+        # like jack, ALSA, pulseaudio, etc. This is not really useful for us,
+        # as we route the output of fluidsynth back via our sound driver, and
+        # as such do not use these audio driver outputs at all.
+        # The vcpkg variant of fluidsynth depends on ALSA. Similar issue here.
+        # So instead, we compile fluidsynth ourselves, with as few
+        # dependencies as possible. We do it before anything else is installed,
+        # to make sure it doesn't pick up on any of the drivers.
+        echo "::group::Install fluidsynth"
+        wget https://github.com/FluidSynth/fluidsynth/archive/v2.4.4.tar.gz
+        tar xf v2.4.4.tar.gz
+        (
+          cd fluidsynth-2.4.4
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=/usr
+          cmake --build . -j $(nproc)
+          cmake --install .
+        )
+
+        echo "::group::Install audio drivers"
+        # These audio libs are to make sure the SDL version of vcpkg adds
+        # sound-support; these libraries are not added to the resulting
+        # binary, but the headers are used to enable them in SDL.
+        yum install -y \
+          alsa-lib-devel \
+          pulseaudio-libs-devel \
+          # EOF
+        echo "::endgroup::"
+
+        echo "::group::Install video drivers"
+        # These video libs are to make sure the SDL version of vcpkg adds
+        # video-support; these libraries are not added to the resulting
+        # binary, but the headers are used to enable them in SDL.
+        yum install -y \
+          libX11-devel \
+          libXcursor-devel \
+          libXext-devel \
+          libXfixes-devel \
+          libXi-devel \
+          libxkbcommon-devel \
+          libXrandr-devel \
+          libXScrnSaver-devel \
+          mesa-libEGL-devel \
+          mesa-libGL-devel \
+          mesa-libGLES-devel \
+          wayland-devel \
+          wayland-protocols-devel \
+          # EOF
+        echo "::endgroup::"
+
+        echo "::group::Install breakpad dependencies"
+        cargo install --locked dump_syms
+        echo "::endgroup::"
+
+    - name: Setup vcpkg
+      id: vcpkg
+      uses: OpenTTD/actions/setup-vcpkg@v6
+      with:
+        vcpkg-location: /vcpkg
+        mono-install-command: 'yum install -y mono-complete'
+
+    - name: Install GCC problem matcher
+      uses: ammaraskar/gcc-problem-matcher@master
+
+    - name: Build
+      run: |
+        mkdir -p build
+        cd build
+
+        echo "::group::CMake"
+        cmake ${GITHUB_WORKSPACE} \
+          -DCMAKE_TOOLCHAIN_FILE=${{ steps.vcpkg.outputs.vcpkg-cmake }} \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DOPTION_SURVEY_KEY=${{ inputs.survey_key }} \
+          -DOPTION_PACKAGE_DEPENDENCIES=ON \
+          # EOF
+        echo "::endgroup::"
+
+        echo "::group::Build"
+        echo "Running on $(nproc) cores"
+        cmake --build . -j $(nproc) --target openttd
+        echo "::endgroup::"
+
+    - name: Create breakpad symbols
+      run: |
+        cd build
+        dump_syms ./openttd --inlines --store symbols
+
+    - name: Create bundles
+      run: |
+        cd ${GITHUB_WORKSPACE}/build
+        echo "::group::Run CPack"
+        cpack
+        echo "::endgroup::"
+
+        echo "::group::Cleanup"
+        # Remove the sha256 files CPack generates; we will do this ourself at
+        # the end of this workflow.
+        rm -f bundles/*.sha256
+        echo "::endgroup::"
+
+    - name: Store bundles
+      uses: actions/upload-artifact@v5
+      with:
+        name: openttd-linux-generic
+        path: build/bundles
+        retention-days: 5
+
+    - name: Store symbols
+      uses: actions/upload-artifact@v5
+      with:
+        name: symbols-linux-generic
+        path: build/symbols
+        retention-days: 5

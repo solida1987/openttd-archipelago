@@ -1,0 +1,50 @@
+# Build output
+build/
+dist/
+CMakeCache.txt
+CMakeFiles/
+*.vcxproj.user
+*.sdf
+*.suo
+*.ncb
+*.opensdf
+x64/
+Debug/
+Release/
+
+# vcpkg
+vcpkg_installed/
+vcpkg/
+
+# Compiled objects
+*.o
+*.obj
+*.pyc
+__pycache__/
+
+# Binaries
+openttd.exe
+*.dll
+*.pdb
+
+# OpenTTD data dirs (don't commit downloaded base sets)
+baseset/opengfx*/
+baseset/opensfx*/
+baseset/nosound*/
+
+# Packaging temps
+dist/*.zip
+dist/*_tmp/
+
+# IDE
+.vs/
+.vscode/
+*.user
+.idea/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini

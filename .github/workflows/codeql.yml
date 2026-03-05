@@ -1,0 +1,114 @@
+name: CodeQL
+
+on:
+  push:
+    branches:
+    - master
+  pull_request:
+    # The branches below must be a subset of the branches above
+    branches:
+    - master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+      packages: read
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Setup vcpkg
+      id: vcpkg
+      uses: OpenTTD/actions/setup-vcpkg@v6
+
+    - name: Install dependencies
+      run: |
+        echo "::group::Update apt"
+        sudo apt-get update
+        echo "::endgroup::"
+
+        echo "::group::Install dependencies"
+        sudo apt-get install -y --no-install-recommends \
+          liballegro4-dev \
+          libcurl4-openssl-dev \
+          libfontconfig-dev \
+          libharfbuzz-dev \
+          libicu-dev \
+          liblzma-dev \
+          liblzo2-dev \
+          libopus-dev \
+          libopusfile-dev \
+          libsdl2-dev \
+          zlib1g-dev \
+          # EOF
+
+        echo "::group::Install vcpkg dependencies"
+
+        # Disable vcpkg integration, as we mostly use system libraries.
+        mv vcpkg.json vcpkg-disabled.json
+
+        # We only use breakpad from vcpkg, as its CMake files
+        # are a bit special. So the Ubuntu's variant doesn't work.
+        ${{ steps.vcpkg.outputs.vcpkg }} install breakpad
+
+        echo "::endgroup::"
+      env:
+        DEBIAN_FRONTEND: noninteractive
+
+    - name: Prepare build
+      run: |
+        mkdir build
+        cd build
+
+        echo "::group::CMake"
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+        echo "::endgroup::"
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v4
+      with:
+        languages: cpp
+        config-file: ./.github/codeql/codeql-config.yml
+        trap-caching: false
+
+    - name: Build
+      run: |
+        cd build
+
+        echo "::group::Build"
+        echo "Running on $(nproc) cores"
+        cmake --build . -j $(nproc)
+        echo "::endgroup::"
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v4
+      with:
+        category: /language:cpp
+        upload: False
+        output: sarif-results
+
+    - name: Filter out table & generated code
+      uses: advanced-security/filter-sarif@v1
+      with:
+        patterns: |
+          +**/*.*
+          -**/table/*.*
+          -**/generated/**/*.*
+          -**/tests/*.*
+        input: sarif-results/cpp.sarif
+        output: sarif-results/cpp.sarif
+
+    - name: Upload results
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: sarif-results/cpp.sarif

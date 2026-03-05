@@ -1,0 +1,22 @@
+name: Unused strings
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  unused-strings:
+    name: Unused strings
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Check for unused strings
+      run: |
+        set -ex
+        python3 .github/unused-strings.py

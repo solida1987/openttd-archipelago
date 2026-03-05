@@ -1,0 +1,81 @@
+name: CI (MacOS)
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        required: true
+        type: string
+      full_arch:
+        required: true
+        type: string
+      extra-cmake-parameters:
+        required: false
+        type: string
+        default: ""
+
+env:
+  CTEST_OUTPUT_ON_FAILURE: 1
+
+jobs:
+  macos:
+    name: CI
+
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: 10.13
+
+    steps:
+    - name: Setup Xcode version
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: latest-stable
+
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Setup vcpkg
+      id: vcpkg
+      uses: OpenTTD/actions/setup-vcpkg@v6
+
+    - name: Install OpenGFX
+      run: |
+        mkdir -p ~/Documents/OpenTTD/baseset
+        cd ~/Documents/OpenTTD/baseset
+
+        echo "::group::Download OpenGFX"
+        curl -L https://cdn.openttd.org/opengfx-releases/0.6.0/opengfx-0.6.0-all.zip -o opengfx-all.zip
+        echo "::endgroup::"
+
+        echo "::group::Unpack OpenGFX"
+        unzip opengfx-all.zip
+        echo "::endgroup::"
+
+        rm -f opengfx-all.zip
+
+    - name: Install GCC problem matcher
+      uses: ammaraskar/gcc-problem-matcher@master
+
+    - name: Build
+      run: |
+        mkdir build
+        cd build
+
+        echo "::group::CMake"
+        cmake .. \
+          -DCMAKE_OSX_ARCHITECTURES=${{ inputs.full_arch }} \
+          -DVCPKG_TARGET_TRIPLET=${{ inputs.arch }}-osx \
+          -DCMAKE_TOOLCHAIN_FILE=${{ steps.vcpkg.outputs.vcpkg-cmake }} \
+          ${{ inputs.extra-cmake-parameters }} \
+          # EOF
+        echo "::endgroup::"
+
+        echo "::group::Build"
+        echo "Running on $(sysctl -n hw.logicalcpu) cores"
+        cmake --build . -j $(sysctl -n hw.logicalcpu)
+        echo "::endgroup::"
+
+    - name: Test
+      run: |
+        cd build
+        ctest -j $(sysctl -n hw.logicalcpu) --timeout 120

@@ -1,0 +1,207 @@
+name: Release (Windows)
+
+on:
+  workflow_call:
+    inputs:
+      survey_key:
+        required: false
+        type: string
+        default: ""
+      is_tag:
+        required: true
+        type: string
+
+jobs:
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: x86
+          host: x86
+        - arch: x64
+          host: x64
+        - arch: arm64
+          host: x64_arm64
+
+    name: Windows (${{ matrix.arch }})
+
+    runs-on: windows-latest
+
+    steps:
+    - name: Download source
+      uses: actions/download-artifact@v6
+      with:
+        name: internal-source
+
+    - name: Unpack source
+      shell: bash
+      run: |
+        tar -xf source.tar.gz --strip-components=1
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Enable Rust cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: Setup vcpkg
+      id: vcpkg
+      uses: OpenTTD/actions/setup-vcpkg@v6
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        echo "::group::Install choco dependencies"
+        choco install pandoc nsis
+        echo "::endgroup::"
+
+        echo "::group::Install breakpad dependencies"
+        cargo install --locked dump_syms
+        echo "::endgroup::"
+
+    - name: Install MSVC problem matcher
+      uses: ammaraskar/msvc-problem-matcher@master
+
+    - name: Configure developer command prompt for tools
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    - name: Build tools
+      shell: bash
+      run: |
+        mkdir build-host
+        cd build-host
+
+        echo "::group::CMake"
+        cmake ${GITHUB_WORKSPACE} \
+          -GNinja \
+          -DOPTION_TOOLS_ONLY=ON \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          # EOF
+        echo "::endgroup::"
+
+        echo "::group::Build"
+        cmake --build . --target tools
+        echo "::endgroup::"
+
+    - name: Configure developer command prompt for ${{ matrix.arch }}
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ matrix.host }}
+
+    - name: Build (with installer)
+      if: inputs.is_tag == 'true'
+      shell: bash
+      run: |
+        mkdir build
+        cd build
+
+        echo "::group::CMake"
+        cmake ${GITHUB_WORKSPACE} \
+          -GNinja \
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.arch }}-windows-static \
+          -DCMAKE_TOOLCHAIN_FILE="${{ steps.vcpkg.outputs.vcpkg-cmake }}" \
+          -DOPTION_USE_NSIS=ON \
+          -DHOST_BINARY_DIR=${GITHUB_WORKSPACE}/build-host \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DOPTION_SURVEY_KEY=${{ inputs.survey_key }} \
+          # EOF
+        echo "::endgroup::"
+
+        echo "::group::Build"
+        cmake --build . --target openttd
+        echo "::endgroup::"
+      env:
+        AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        AZURE_CODESIGN_ACCOUNT_NAME: ${{ secrets.AZURE_CODESIGN_ACCOUNT_NAME }}
+        AZURE_CODESIGN_ENDPOINT: ${{ secrets.AZURE_CODESIGN_ENDPOINT }}
+        AZURE_CODESIGN_PROFILE_NAME: ${{ secrets.AZURE_CODESIGN_PROFILE_NAME }}
+
+    - name: Build (without installer)
+      if: inputs.is_tag != 'true'
+      shell: bash
+      run: |
+        mkdir build
+        cd build
+
+        echo "::group::CMake"
+        cmake ${GITHUB_WORKSPACE} \
+          -GNinja \
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.arch }}-windows-static \
+          -DCMAKE_TOOLCHAIN_FILE="${{ steps.vcpkg.outputs.vcpkg-cmake }}" \
+          -DHOST_BINARY_DIR=${GITHUB_WORKSPACE}/build-host \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DOPTION_SURVEY_KEY=${{ inputs.survey_key }} \
+          # EOF
+        echo "::endgroup::"
+
+        echo "::group::Build"
+        cmake --build . --target openttd
+        echo "::endgroup::"
+      env:
+        AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        AZURE_CODESIGN_ACCOUNT_NAME: ${{ secrets.AZURE_CODESIGN_ACCOUNT_NAME }}
+        AZURE_CODESIGN_ENDPOINT: ${{ secrets.AZURE_CODESIGN_ENDPOINT }}
+        AZURE_CODESIGN_PROFILE_NAME: ${{ secrets.AZURE_CODESIGN_PROFILE_NAME }}
+
+    - name: Create breakpad symbols
+      shell: bash
+      run: |
+        cd build
+        dump_syms openttd.pdb --inlines --store symbols
+
+    - name: Create bundles
+      shell: bash
+      run: |
+        cd ${GITHUB_WORKSPACE}/build
+        echo "::group::Run CPack"
+        cpack
+        echo "::endgroup::"
+
+        echo "::group::Move PDB and exe to symbols"
+        PDB_FOLDER=$(find symbols -mindepth 2 -type d)
+        cp openttd.pdb ${PDB_FOLDER}/
+
+        EXE_FOLDER=symbols/openttd.exe/$(grep "INFO CODE_ID" symbols/*/*/openttd.sym | cut -d\  -f3)
+        mkdir -p ${EXE_FOLDER}
+        cp openttd.exe ${EXE_FOLDER}/
+        echo "::endgroup::"
+
+        echo "::group::Cleanup"
+        # Remove the sha256 files CPack generates; we will do this ourself at
+        # the end of this workflow.
+        rm -f bundles/*.sha256
+        echo "::endgroup::"
+
+    - name: Sign installer
+      if: inputs.is_tag == 'true'
+      shell: bash
+      run: |
+        ${GITHUB_WORKSPACE}/os/windows/sign.bat "${GITHUB_WORKSPACE}/build/bundles"
+      env:
+        AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        AZURE_CODESIGN_ACCOUNT_NAME: ${{ secrets.AZURE_CODESIGN_ACCOUNT_NAME }}
+        AZURE_CODESIGN_ENDPOINT: ${{ secrets.AZURE_CODESIGN_ENDPOINT }}
+        AZURE_CODESIGN_PROFILE_NAME: ${{ secrets.AZURE_CODESIGN_PROFILE_NAME }}
+
+    - name: Store bundles
+      uses: actions/upload-artifact@v5
+      with:
+        name: openttd-windows-${{ matrix.arch }}
+        path: build/bundles
+        retention-days: 5
+
+    - name: Store symbols
+      uses: actions/upload-artifact@v5
+      with:
+        name: symbols-windows-${{ matrix.arch }}
+        path: build/symbols
+        retention-days: 5
