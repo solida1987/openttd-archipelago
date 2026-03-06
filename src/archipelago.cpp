@@ -1132,6 +1132,23 @@ void ArchipelagoClient::InitWinsock()
 	WSADATA wd;
 	WSAStartup(MAKEWORD(2, 2), &wd);
 }
+
+/** Detect Wine by checking for its registry key.
+ *  Wine's Schannel implementation is incomplete — AcquireCredentialsHandleA
+ *  with UNISP_NAME_A (the SChannel SSL/TLS provider) either hangs or returns
+ *  an error, making the WSS probe in WorkerThread crash the connection.
+ *  When running under Wine we skip the WSS probe entirely and go straight
+ *  to plain WS. */
+static bool IsRunningUnderWine()
+{
+	HKEY hk;
+	if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "Software\\Wine",
+	                  0, KEY_READ, &hk) == ERROR_SUCCESS) {
+		RegCloseKey(hk);
+		return true;
+	}
+	return false;
+}
 #endif
 
 void ArchipelagoClient::WorkerThread()
@@ -1179,27 +1196,36 @@ void ArchipelagoClient::WorkerThread()
 /* ── Auto-detect WSS vs WS ──────────────────────────────────────────────
  * Strategy: try WSS (TLS) first. If TLS or WS handshake fails, reconnect
  * and retry as plain WS. This means users never need to type wss:// or ws://.
+ * Exception: Wine does not implement Schannel properly, so we skip the WSS
+ * probe entirely when running under Wine and go straight to plain WS.
  * ──────────────────────────────────────────────────────────────────────── */
 #ifdef _WIN32
 	ApTlsCtx *tls = nullptr;
 	bool ws_ok = false;
+	bool under_wine = IsRunningUnderWine();
 
-	/* Attempt 1: WSS */
-	AP_LOG("Trying WSS (TLS)...");
-	tls = new ApTlsCtx();
-	if (tls->Handshake(s, host)) {
-		tls_ctx_tl = tls;
-		AP_OK("TLS handshake OK — trying WebSocket upgrade...");
-		if (DoWebSocketHandshake((int)s, host, port)) {
-			ws_ok = true;
-			AP_OK("WSS connection established.");
+	if (under_wine) {
+		AP_WARN("Running under Wine — skipping WSS probe, using plain WS directly.");
+	}
+
+	/* Attempt 1: WSS — skipped on Wine */
+	if (!under_wine) {
+		AP_LOG("Trying WSS (TLS)...");
+		tls = new ApTlsCtx();
+		if (tls->Handshake(s, host)) {
+			tls_ctx_tl = tls;
+			AP_OK("TLS handshake OK — trying WebSocket upgrade...");
+			if (DoWebSocketHandshake((int)s, host, port)) {
+				ws_ok = true;
+				AP_OK("WSS connection established.");
+			} else {
+				AP_WARN("WSS WebSocket handshake failed — falling back to plain WS.");
+				delete tls; tls = nullptr; tls_ctx_tl = nullptr;
+			}
 		} else {
-			AP_WARN("WSS WebSocket handshake failed — falling back to plain WS.");
-			delete tls; tls = nullptr; tls_ctx_tl = nullptr;
+			AP_WARN("TLS handshake failed — falling back to plain WS.");
+			delete tls; tls = nullptr;
 		}
-	} else {
-		AP_WARN("TLS handshake failed — falling back to plain WS.");
-		delete tls; tls = nullptr;
 	}
 
 	if (!ws_ok) {

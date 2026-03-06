@@ -307,7 +307,17 @@ class OpenTTDWorld(World):
         else:
             chosen_type = type_names[start_type]
 
+        # Filter starting pool: Toyland-only vehicles only exist on Toyland maps.
+        # Choo-Choo trains do not appear on Temperate/Arctic/Tropical landscapes.
+        is_toyland = (self.options.landscape.value == 3)
+        TOYLAND_ONLY_STARTERS = {
+            "Ploddyphut Choo-Choo", "Powernaut Choo-Choo", "MightyMover Choo-Choo",
+        }
         starting_pool = STARTING_VEHICLES[chosen_type]
+        if not is_toyland:
+            starting_pool = [v for v in starting_pool if v not in TOYLAND_ONLY_STARTERS]
+        if not starting_pool:  # safety fallback, should never trigger
+            starting_pool = STARTING_VEHICLES[chosen_type]
         starting_vehicle = self.random.choice(starting_pool)
         self._slot_data["starting_vehicle"] = starting_vehicle
         self._slot_data["starting_vehicle_type"] = chosen_type

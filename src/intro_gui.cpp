@@ -283,8 +283,12 @@ struct SelectGameWindow : public Window {
 
 	void OnInit() override
 	{
-		bool missing_sprites = _missing_extra_graphics > 0 && !IsReleasedVersion();
-		this->GetWidget<NWidgetStacked>(WID_SGI_BASESET_SELECTION)->SetDisplayedPlane(missing_sprites ? 0 : SZSP_NONE);
+		/* Archipelago build: base graphics are bundled with the client.
+		 * The vanilla check ( _missing_extra_graphics > 0 && !IsReleasedVersion() )
+		 * fires on custom builds even when the bundled baseset is complete, producing
+		 * a misleading "missing N sprites" warning on the main menu.
+		 * We unconditionally hide the widget so the warning never appears. */
+		this->GetWidget<NWidgetStacked>(WID_SGI_BASESET_SELECTION)->SetDisplayedPlane(SZSP_NONE);
 
 		bool missing_lang = _current_language->missing >= _settings_client.gui.missing_strings_threshold && !IsReleasedVersion();
 		this->GetWidget<NWidgetStacked>(WID_SGI_TRANSLATION_SELECTION)->SetDisplayedPlane(missing_lang ? 0 : SZSP_NONE);

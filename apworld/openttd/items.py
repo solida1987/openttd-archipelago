@@ -332,10 +332,50 @@ VANILLA_AIRCRAFT = ALL_AIRCRAFT
 VANILLA_SHIPS = ALL_SHIPS
 
 STARTING_VEHICLES = {
-    "train":        ["Wills 2-8-0 (Steam)", "Kirby Paul Tank (Steam)",
-                     "Ploddyphut Choo-Choo", "Powernaut Choo-Choo",
-                     "MJS 250 (Diesel)", "MightyMover Choo-Choo"],
-    "road_vehicle": ["MPS Regal Bus", "Balogh Goods Truck", "Balogh Coal Truck"],
-    "aircraft":     ["Sampson U52", "Coleman Count"],
-    "ship":         ["MPS Passenger Ferry", "FFP Passenger Ferry"],
+    # Trains: steam and early diesel only.
+    # These can haul passengers and mail which are always available regardless
+    # of map industries. Toyland Choo-Choos are filtered out at world-gen time
+    # when the landscape is not Toyland (see __init__.py).
+    "train": [
+        "Wills 2-8-0 (Steam)",
+        "Kirby Paul Tank (Steam)",
+        "MJS 250 (Diesel)",
+        "Ploddyphut Diesel",
+        "Powernaut Diesel",
+        # Toyland — only selectable when landscape == Toyland
+        "Ploddyphut Choo-Choo",
+        "Powernaut Choo-Choo",
+        "MightyMover Choo-Choo",
+    ],
+    # Road vehicles: buses and mail trucks ONLY.
+    # Cargo trucks (goods, coal, grain, oil, etc.) require specific industries
+    # to be present near a depot — not guaranteed at game start and will leave
+    # the player with a vehicle they cannot use to earn money.
+    "road_vehicle": [
+        "MPS Regal Bus",
+        "Hereford Leopard Bus",
+        "Foster Bus",
+        "MPS Mail Truck",
+        "Perry Mail Truck",
+    ],
+    # Aircraft: first five small/cheap planes only.
+    # Later planes are large jets requiring large airports the player cannot
+    # afford at game start. The first five are all small props that work
+    # on a basic airport from day one.
+    "aircraft": [
+        "Sampson U52",
+        "Coleman Count",
+        "FFP Dart",
+        "Yate Haugan",
+        "Bakewell Cotswald LB-3",
+    ],
+    # Ships: passenger ferries only.
+    # Oil tankers and cargo ships require specific industries adjacent to water,
+    # which is not guaranteed. Passenger ferries can always operate between
+    # any two coastal or river towns.
+    "ship": [
+        "MPS Passenger Ferry",
+        "FFP Passenger Ferry",
+        "Chugger-Chug Passenger Ferry",
+    ],
 }

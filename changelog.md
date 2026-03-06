@@ -1,5 +1,33 @@
 # Changelog — OpenTTD Archipelago
 
+## [1.0.0-beta4] — 2026-03-06
+
+### Fixed
+- **Wine incompatibility** — Beta 3's WSS/WS auto-detection used Windows Schannel
+  (`Secur32.dll`) which Wine does not implement correctly, preventing connection.
+  Wine is now detected at runtime via `HKLM\Software\Wine`; the WSS probe is skipped
+  entirely and the client connects via plain WS directly (matching Beta 2 behaviour).
+- **"Missing 140 sprites" warning on main menu** — false positive caused by the build
+  not being tagged as a vanilla released version. The warning widget is now
+  unconditionally hidden; the bundled baseset is complete.
+- **Starting vehicle locked on non-Toyland maps** — Toyland-only trains
+  (`Ploddyphut Choo-Choo`, `Powernaut Choo-Choo`, `MightyMover Choo-Choo`) could be
+  selected as starting vehicle on Temperate/Arctic/Tropical maps where they do not
+  exist, leaving the player with nothing unlocked.
+- **Unviable starting road vehicles** — cargo trucks (goods, coal, etc.) could be
+  selected as starting vehicle despite requiring specific industries near a depot.
+  Players could find themselves unable to earn any money at game start.
+
+### Changed
+- **Starting vehicle pools tightened** — each transport type now only draws from
+  vehicles that are always viable from day one regardless of map industries:
+  - **Trains:** steam + early diesel only (passengers/mail always available)
+  - **Road vehicles:** buses and mail trucks only (no cargo trucks)
+  - **Aircraft:** first 5 small props only (work on basic airport)
+  - **Ships:** passenger ferries only (no cargo ships or oil tankers)
+
+---
+
 ## [1.0.0-beta3] — 2026-03-06
 
 ### Fixed
