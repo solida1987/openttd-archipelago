@@ -44,3 +44,27 @@ Fix: build with vcpkg toolchain so PNG and zlib are included.
 **Beta 4 fix:** The baseset warning widget is now unconditionally hidden in the
 Archipelago build. The bundled baseset is complete; the warning was a false positive
 caused by the build not being tagged as a vanilla "released version".
+### Toyland content on non-Toyland maps (fixed in Beta 5)
+Mission generator could produce Toyland cargo missions (Candyfloss, Cola etc.)
+and the item pool could contain Toyland-only vehicles even when the map was
+Temperate, Arctic or Tropical. Both are now filtered by landscape at world
+generation time.
+**Severity:** Medium — missions were impossible; received vehicles did nothing.
+
+### "Service X towns" impossible on small maps (fixed in Beta 5)
+Mission generator did not know how many towns a given map size would produce,
+leading to "Service 60 different towns" on a 64×64 map. Amounts are now capped
+to a realistic estimate based on `map_x`/`map_y`.
+**Severity:** Medium — some missions could not be completed.
+
+### Bank Loan Forced trap — 500M hardcoded (fixed in Beta 5)
+The Bank Loan Forced trap set `current_loan` to £500,000,000 regardless of
+the session's `max_loan` setting. On default settings this made the trap
+nearly unrecoverable. Now scales to `max_loan`.
+**Severity:** High — trap was disproportionately punishing.
+
+### Shop allowing re-purchase of already-bought slots (fixed in Beta 5)
+After buying a shop slot, it remained visible and selectable (though clicking
+buy would silently fail after deducting money). Bought slots are now removed
+from the shop list immediately.
+**Severity:** Medium — confusing UX, potential money loss.

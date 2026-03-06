@@ -67,6 +67,7 @@ struct APSlotData {
 	int                     shop_refresh_days    = 90;
 	std::string             starting_vehicle;
 	std::string             starting_vehicle_type;
+	std::vector<std::string> starting_vehicles;   ///< all starters (>1 for one_of_each)
 	APWinCondition          win_condition        = APWinCondition::COMPANY_VALUE;
 	int64_t                 win_condition_value  = 50000000;
 	bool                    enable_traps         = true;

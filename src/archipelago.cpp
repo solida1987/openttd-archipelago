@@ -472,6 +472,16 @@ static APSlotData ParseSlotData(const json &msg)
 	sd.shop_refresh_days    = d.value("shop_refresh_days", 90);
 	sd.starting_vehicle     = d.value("starting_vehicle", "");
 	sd.starting_vehicle_type = d.value("starting_vehicle_type", "");
+	/* starting_vehicles list — present for one_of_each mode.
+	 * Falls back to a single-element list from starting_vehicle. */
+	if (d.contains("starting_vehicles") && d["starting_vehicles"].is_array()) {
+		for (const auto &v : d["starting_vehicles"]) {
+			if (v.is_string()) sd.starting_vehicles.push_back(v.get<std::string>());
+		}
+	}
+	if (sd.starting_vehicles.empty() && !sd.starting_vehicle.empty()) {
+		sd.starting_vehicles.push_back(sd.starting_vehicle);
+	}
 	sd.enable_traps         = d.value("enable_traps", true);
 	sd.start_year           = d.value("start_year", 1950);
 

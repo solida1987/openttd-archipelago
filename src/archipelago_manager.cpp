@@ -138,6 +138,7 @@ static uint64_t _ap_cumul_cargo[NUM_CARGO]      = {};  ///< Cargo delivered in c
 static Money    _ap_cumul_profit                = 0;   ///< Profit earned in completed periods
 static bool     _ap_stats_initialized          = false;
 static bool     _ap_shop_purchased             = false; ///< True if player bought from shop this session
+static std::set<std::string> _ap_sent_shop_locations; ///< Shop locations already sent to AP server
 
 /** Snapshot of last-seen old_economy[0] values (for change detection) */
 static uint32_t _ap_snap_cargo[NUM_CARGO]       = {};
@@ -150,6 +151,7 @@ static void AP_InitSessionStats()
 	_ap_snap_profit       = 0;
 	_ap_stats_initialized = false;
 	_ap_shop_purchased    = false;
+	_ap_sent_shop_locations.clear();
 	if (!_ap_cargo_map_built) BuildCargoMap();
 }
 
@@ -742,13 +744,27 @@ static void AP_OnItemReceived(const APItem &item)
 		c->money = c->money / 2;
 		AP_ShowNews("[AP] TRAP: Recession! Money halved.");
 	} else if (item.item_name == "Maintenance Surge") {
-		Money max_l = (Money)500000000LL;
-		Money new_l = c->current_loan + (Money)500000LL;
-		c->current_loan = (new_l < max_l) ? new_l : max_l;
-		AP_ShowNews("[AP] TRAP: Maintenance Surge!");
+		/* Add a moderate fixed loan increment, capped at max_loan from slot_data
+		 * so it stays proportional to the session's economy settings. */
+		Money loan_cap = (Money)std::max((int64_t)_ap_pending_sd.max_loan,
+		                                 (int64_t)300000LL);
+		Money new_l = c->current_loan + (Money)(loan_cap / 4); /* +25% of max_loan */
+		c->current_loan = std::min(new_l, loan_cap);
+		AP_ShowNews("[AP] TRAP: Maintenance Surge! Emergency costs added to your loan.");
 	} else if (item.item_name == "Bank Loan Forced") {
-		c->current_loan = (Money)500000000LL;
-		AP_ShowNews("[AP] TRAP: Bank Loan Forced!");
+		/* Scale loan to the session's configured max_loan rather than a
+		 * hardcoded 500 M that would be impossible to repay early-game. */
+		Money forced_loan = (Money)_ap_pending_sd.max_loan;
+		if (forced_loan <= 0) forced_loan = (Money)300000LL; /* sane fallback */
+		c->current_loan = std::min(c->current_loan + forced_loan,
+		                           forced_loan * 2); /* cap at 2× max_loan */
+		{
+			int64_t fl = (int64_t)forced_loan;
+			std::string loan_str = (fl >= 1000000)
+			    ? fmt::format("\xC2\xA3{:.1f}M", fl / 1000000.0)
+			    : fmt::format("\xC2\xA3{}k",     fl / 1000);
+			AP_ShowNews("[AP] TRAP: Bank Loan Forced! +" + loan_str);
+		}
 	} else if (item.item_name == "Signal Failure") {
 		for (Vehicle *v : Vehicle::Iterate()) {
 			if (v->owner == cid && v->IsPrimaryVehicle() && v->type == VEH_TRAIN) {
@@ -1181,6 +1197,10 @@ void AP_ShowConsole(const std::string &msg)
 void AP_SendCheckByName(const std::string &location_name)
 {
 	if (_ap_client == nullptr) return;
+	/* Track shop purchases so RebuildShopList can filter already-bought slots */
+	if (location_name.rfind("Shop_Purchase_", 0) == 0) {
+		_ap_sent_shop_locations.insert(location_name);
+	}
 	_ap_client->SendCheckByName(location_name);
 }
 
@@ -1214,6 +1234,11 @@ bool AP_CanAffordShopItem(const std::string &location_name)
 	const Company *c = Company::GetIfValid(cid);
 	if (c == nullptr) return false;
 	return (int64_t)c->money >= AP_GetShopPrice(location_name);
+}
+
+bool AP_IsShopLocationSent(const std::string &location_name)
+{
+	return _ap_sent_shop_locations.count(location_name) > 0;
 }
 
 void AP_DeductShopPrice(const std::string &location_name)
@@ -1517,16 +1542,16 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_AIR);
 			AP_OK(fmt::format("AP session started: {} engines locked, all railtypes/roadtypes unlocked.", locked_count));
 
-			/* Unlock the starting vehicle.
-			 * AP_UnlockEngineByName now also sets EngineFlag::Available so the
-			 * engine is immediately visible in the build-vehicle window. */
-			if (!_ap_pending_sd.starting_vehicle.empty()) {
-				if (AP_UnlockEngineByName(_ap_pending_sd.starting_vehicle)) {
-					AP_OK("Starting vehicle unlocked: " + _ap_pending_sd.starting_vehicle);
-					AP_ShowNews("[AP] Starting vehicle: " + _ap_pending_sd.starting_vehicle);
+			/* Unlock all starting vehicles.
+			 * For one_of_each mode this is one per transport type.
+			 * For normal modes it is a single vehicle. */
+			for (const std::string &sv : _ap_pending_sd.starting_vehicles) {
+				if (sv.empty()) continue;
+				if (AP_UnlockEngineByName(sv)) {
+					AP_OK("Starting vehicle unlocked: " + sv);
+					AP_ShowNews("[AP] Starting vehicle: " + sv);
 				} else {
-					AP_WARN("Starting vehicle '" + _ap_pending_sd.starting_vehicle +
-					        "' not found in engine map!");
+					AP_WARN("Starting vehicle '" + sv + "' not found in engine map!");
 				}
 			}
 

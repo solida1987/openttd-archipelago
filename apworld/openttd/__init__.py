@@ -20,7 +20,7 @@ from .items import (
 )
 from .locations import (
     get_location_table, DIFFICULTY_DISTRIBUTION,
-    MISSION_TEMPLATES, CARGO_TYPES
+    MISSION_TEMPLATES, CARGO_TYPES, CARGO_BY_LANDSCAPE
 )
 from .options import OpenTTDOptions, OPTION_GROUPS
 from .rules import set_rules
@@ -134,13 +134,26 @@ class OpenTTDWorld(World):
         Rules enforced:
         1. No exact duplicate (type + amount) within a difficulty level.
         2. For numeric missions of the same type: each successive amount must
-           be at least 5× the previous one. This prevents "have 3 vehicles /
-           have 4 vehicles / have 5 vehicles" chains.
+           be at least 5x the previous one.
         3. "Buy a vehicle from the shop" appears at most once per difficulty.
+        4. Cargo types are filtered to only those that exist on the chosen landscape.
+        5. "Service X towns" amounts are capped to a realistic maximum based
+           on map size so the mission cannot be impossible to complete.
         """
         rng = self.random
         mission_count, _shop_slots = self._compute_pool_size()
         missions = []
+
+        # Climate-appropriate cargo list
+        landscape = self.options.landscape.value
+        cargo_list = CARGO_BY_LANDSCAPE.get(landscape, CARGO_TYPES)
+
+        # Estimate max serviceable towns from map dimensions.
+        # A 256×256 map typically generates ~50-80 towns on default settings.
+        # Formula: 2^(bits_x + bits_y - 8) * 10, capped at 120.
+        bits_x = self.options.map_size_x.map_bits
+        bits_y = self.options.map_size_y.map_bits
+        max_towns = min(120, max(4, (1 << (bits_x + bits_y - 8)) * 10))
 
         # Minimum multiplier between two missions of the same type
         MIN_SPACING_FACTOR = 5
@@ -200,7 +213,14 @@ class OpenTTDWorld(World):
                     if type_key in used and amount in used[type_key]:
                         continue
 
-                cargo = rng.choice(CARGO_TYPES) if "{cargo}" in template else ""
+                # Cap "Service X towns" missions to realistic map maximum
+                if "towns" in unit and amount > max_towns:
+                    amount = max(2, int(max_towns * rng.uniform(0.4, 0.9)))
+                    amount = self._round_to_nice(amount)
+                    if type_key in used and amount in used[type_key]:
+                        continue
+
+                cargo = rng.choice(cargo_list) if "{cargo}" in template else ""
                 description = (
                     template.format(amount=f"{amount:,}", cargo=cargo)
                     if cargo else
@@ -299,35 +319,51 @@ class OpenTTDWorld(World):
 
         enabled_traps = self._get_enabled_traps()
 
-        # ── Determine starting vehicle ────────────────────────────────────
+        # ── Determine starting vehicle(s) ────────────────────────────────
         start_type = self.options.starting_vehicle_type.value
         type_names = {1: "train", 2: "road_vehicle", 3: "aircraft", 4: "ship"}
-        if start_type == 0:
-            chosen_type = self.random.choice(list(type_names.values()))
-        else:
-            chosen_type = type_names[start_type]
 
-        # Filter starting pool: Toyland-only vehicles only exist on Toyland maps.
-        # Choo-Choo trains do not appear on Temperate/Arctic/Tropical landscapes.
         is_toyland = (self.options.landscape.value == 3)
         TOYLAND_ONLY_STARTERS = {
             "Ploddyphut Choo-Choo", "Powernaut Choo-Choo", "MightyMover Choo-Choo",
         }
-        starting_pool = STARTING_VEHICLES[chosen_type]
-        if not is_toyland:
-            starting_pool = [v for v in starting_pool if v not in TOYLAND_ONLY_STARTERS]
-        if not starting_pool:  # safety fallback, should never trigger
-            starting_pool = STARTING_VEHICLES[chosen_type]
-        starting_vehicle = self.random.choice(starting_pool)
+
+        def _pick_starter(vtype: str) -> str:
+            pool = STARTING_VEHICLES[vtype]
+            if not is_toyland:
+                pool = [v for v in pool if v not in TOYLAND_ONLY_STARTERS]
+            return self.random.choice(pool or STARTING_VEHICLES[vtype])
+
+        if start_type == 5:
+            # one_of_each: one safe starter per transport type
+            starting_vehicles = [_pick_starter(t) for t in type_names.values()]
+            starting_vehicle = starting_vehicles[0]   # primary (for slot_data compat)
+            chosen_type = "one_of_each"
+            for sv in starting_vehicles:
+                self.multiworld.push_precollected(self.create_item(sv))
+        else:
+            if start_type == 0:
+                chosen_type = self.random.choice(list(type_names.values()))
+            else:
+                chosen_type = type_names[start_type]
+            starting_vehicle = _pick_starter(chosen_type)
+            starting_vehicles = [starting_vehicle]
+            self.multiworld.push_precollected(self.create_item(starting_vehicle))
+
         self._slot_data["starting_vehicle"] = starting_vehicle
         self._slot_data["starting_vehicle_type"] = chosen_type
-        self.multiworld.push_precollected(self.create_item(starting_vehicle))
+        # Extra starters for one_of_each (C++ client reads this list if present)
+        self._slot_data["starting_vehicles"] = starting_vehicles
 
         # ── Reserve slots for traps and utility ──────────────────────────
         # Traps: up to 15% of total pool (minimum 0)
         # Utility: up to 20% of total pool (minimum 10)
         if enabled_traps:
-            trap_target = max(len(enabled_traps), int(total_locations * 0.15))
+            # TrapIntensity (0-100) scales the trap share of the pool.
+            # intensity=100 → 25% traps; intensity=0 → ~2% (minimum 1 of each)
+            intensity = self.options.trap_intensity.value / 100.0
+            trap_fraction = 0.02 + intensity * 0.23   # 2% → 25%
+            trap_target = max(len(enabled_traps), int(total_locations * trap_fraction))
             trap_pool = (enabled_traps * 20)[:trap_target]
         else:
             trap_pool = []
@@ -338,8 +374,36 @@ class OpenTTDWorld(World):
         reserved = len(trap_pool) + len(utility_pool)
 
         # ── Vehicles fill remaining slots ─────────────────────────────────
+        # On non-Toyland maps, Toyland-only vehicles are excluded from the pool
+        # entirely — they cannot be unlocked on maps where they don't exist and
+        # would appear as received items that do nothing.
+        TOYLAND_ONLY_VEHICLES = {
+            "Ploddyphut Choo-Choo", "Powernaut Choo-Choo", "MightyMover Choo-Choo",
+            "Ploddyphut MkI Bus", "Ploddyphut MkII Bus", "Ploddyphut MkIII Bus",
+            "MightyMover Mail Truck", "Wizzowow Mail Truck",
+            "MightyMover Candyfloss Truck", "Powernaught Candyfloss Truck", "Wizzowow Candyfloss Truck",
+            "MightyMover Toffee Truck", "Powernaught Toffee Truck", "Wizzowow Toffee Truck",
+            "MightyMover Cola Truck", "Powernaught Cola Truck", "Wizzowow Cola Truck",
+            "MightyMover Plastic Truck", "Powernaught Plastic Truck", "Wizzowow Plastic Truck",
+            "MightyMover Fizzy Drink Truck", "Powernaught Fizzy Drink Truck", "Wizzowow Fizzy Drink Truck",
+            "MightyMover Sugar Truck", "Powernaught Sugar Truck", "Wizzowow Sugar Truck",
+            "MightyMover Sweet Truck", "Powernaught Sweet Truck", "Wizzowow Sweet Truck",
+            "MightyMover Battery Truck", "Powernaught Battery Truck", "Wizzowow Battery Truck",
+            "MightyMover Bubble Truck", "Powernaught Bubble Truck", "Wizzowow Bubble Truck",
+            "MightyMover Toy Van", "Powernaught Toy Van", "Wizzowow Toy Van",
+            "Ploddyphut 100", "Ploddyphut 500", "Flashbang X1", "Flashbang Wizzer",
+            "Guru Galaxy", "Juggerplane M1",
+            "Candyfloss Hopper", "Toffee Hopper", "Cola Tanker", "Plastic Truck",
+            "Fizzy Drink Truck", "Sugar Truck", "Sweet Van", "Bubble Van", "Toy Van", "Battery Truck",
+        }
         vehicle_slots = total_locations - reserved
-        all_vehicles_shuffled = [v for v in ALL_VEHICLES if v != starting_vehicle]
+        eligible_vehicles = ALL_VEHICLES if is_toyland else [
+            v for v in ALL_VEHICLES if v not in TOYLAND_ONLY_VEHICLES
+        ]
+        # Exclude ALL starting vehicles from the randomised pool (for one_of_each
+        # this is 4 vehicles, for other modes just 1).
+        starting_set = set(starting_vehicles)
+        all_vehicles_shuffled = [v for v in eligible_vehicles if v not in starting_set]
         # Shuffle so trimming removes random vehicles rather than always the last ones
         self.random.shuffle(all_vehicles_shuffled)
         vehicle_pool = all_vehicles_shuffled[:vehicle_slots]

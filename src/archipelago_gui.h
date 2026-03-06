@@ -43,6 +43,7 @@ int      AP_GetShopPageOffset();   ///< Current page offset for shop slot rotati
 std::string AP_GetShopLocationLabel(const std::string &location_name);
 int64_t  AP_GetShopPrice(const std::string &location_name);
 bool     AP_CanAffordShopItem(const std::string &location_name);
+bool     AP_IsShopLocationSent(const std::string &location_name);
 void     AP_DeductShopPrice(const std::string &location_name);
 bool     AP_ShouldStartWorld();
 void     AP_ConsumeWorldStart();   /* applies settings, clears flag */

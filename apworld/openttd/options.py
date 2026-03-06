@@ -18,13 +18,16 @@ class MissionCount(Range):
 
 
 class StartingVehicleType(Choice):
-    """Which vehicle type you start with."""
+    """Which vehicle type you start with.
+    'one_of_each' gives you one safe starting vehicle from every transport type
+    so you can try all four from the beginning regardless of what gets randomized."""
     display_name = "Starting Vehicle Type"
     option_random        = 0
     option_train         = 1
     option_road_vehicle  = 2
     option_aircraft      = 3
     option_ship          = 4
+    option_one_of_each   = 5
     default = 0
 
 
@@ -125,6 +128,17 @@ class EnableTraps(Toggle):
     default = 1
 
 
+class TrapIntensity(Range):
+    """How large a share of the item pool consists of trap items (0–100%).
+    At 0 traps are enabled but very rare. At 100 roughly 25% of all items
+    are traps. Default 30 gives a light sprinkling without overwhelming the
+    player. Only has effect when Enable Traps is on."""
+    display_name = "Trap Intensity (%)"
+    range_start = 0
+    range_end   = 100
+    default     = 30
+
+
 class TrapBreakdownWave(Toggle):
     """Enable 'Breakdown Wave' trap — all vehicles break down simultaneously."""
     display_name = "Trap: Breakdown Wave"
@@ -134,7 +148,7 @@ class TrapBreakdownWave(Toggle):
 class TrapRecession(Toggle):
     """Enable 'Recession' trap — company money is halved."""
     display_name = "Trap: Recession"
-    default = 1
+    default = 0
 
 
 class TrapMaintenanceSurge(Toggle):
@@ -158,7 +172,7 @@ class TrapFuelShortage(Toggle):
 class TrapBankLoan(Toggle):
     """Enable 'Bank Loan' trap — player is forced to take maximum loan."""
     display_name = "Trap: Bank Loan"
-    default = 1
+    default = 0
 
 
 class TrapIndustryClosure(Toggle):
@@ -505,6 +519,7 @@ OPTION_GROUPS = [
     ]),
     OptionGroup("Traps", [
         EnableTraps,
+        TrapIntensity,
         TrapBreakdownWave,
         TrapRecession,
         TrapMaintenanceSurge,
@@ -567,6 +582,12 @@ OPTION_GROUPS = [
 # ═══════════════════════════════════════════════════════════════
 
 @dataclass
+class OpenTTDDeathLink(DeathLink):
+    """When you die, everyone dies. When anyone else dies, you die.
+    Death is triggered by vehicle crashes. Off by default."""
+    default = 0
+
+
 class OpenTTDOptions(PerGameCommonOptions):
     # Randomizer
     mission_count:                   MissionCount
@@ -583,6 +604,7 @@ class OpenTTDOptions(PerGameCommonOptions):
     shop_price_tier:                 ShopPriceTier
     # Traps
     enable_traps:                    EnableTraps
+    trap_intensity:                  TrapIntensity
     trap_breakdown_wave:             TrapBreakdownWave
     trap_recession:                  TrapRecession
     trap_maintenance_surge:          TrapMaintenanceSurge
@@ -632,4 +654,4 @@ class OpenTTDOptions(PerGameCommonOptions):
     plane_crashes:                   PlaneCrashes
     vehicle_breakdowns:              VehicleBreakdowns
     # Death Link
-    death_link:                      DeathLink
+    death_link:                      OpenTTDDeathLink

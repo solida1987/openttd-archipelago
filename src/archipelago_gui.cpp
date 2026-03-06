@@ -579,11 +579,18 @@ struct ArchipelagoShopWindow : public Window {
 		for (int n = 0; n < slots; n++) {
 			int idx = (page_offset + n) % total + 1; /* 1-based location index */
 			std::string loc   = fmt::format("Shop_Purchase_{:04d}", idx);
+			/* Skip slots already sent to the AP server this session */
+			if (AP_IsShopLocationSent(loc)) continue;
 			std::string label = AP_GetShopLocationLabel(loc);
 			if (label.empty()) label = fmt::format("Slot #{} (loading...)", idx);
 			int64_t price = AP_GetShopPrice(loc);
 			shop_items.push_back({loc, label, price});
 		}
+		/* Sort ascending by price so cheapest items are always at the top.
+		 * This makes the shop readable early-game when money is tight. */
+		std::sort(shop_items.begin(), shop_items.end(),
+		    [](const ShopEntry &a, const ShopEntry &b) { return a.price < b.price; });
+
 		if (this->scrollbar) this->scrollbar->SetCount((int)shop_items.size());
 		this->SetDirty();
 	}

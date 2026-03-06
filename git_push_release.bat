@@ -50,7 +50,7 @@ git rm -r --cached dist\ > nul 2>&1
 echo       OK.
 :: ── Commit ───────────────────────────────────────────────────
 echo [3/5] Committer...
-git commit -m "beta4: Wine fix, hide sprites warning, safe starting vehicles"
+git commit -m "beta5: Toyland filter, town cap, bank loan scaling, shop guard, trap intensity, shop sort, deathlink default off, one_of_each start"
 if errorlevel 1 (
     echo       Intet nyt at committe - fortsætter til push.
 )
@@ -66,11 +66,11 @@ if errorlevel 1 (
 echo       OK.
 :: ── Tag og push release ──────────────────────────────────────
 echo [5/5] Opretter release-tag...
-set TAG=v%OTTD_VERSION%-beta4
+set TAG=v%OTTD_VERSION%-beta5
 :: Slet eksisterende tag lokalt og remote hvis det findes
 git tag -d %TAG% > nul 2>&1
 git push origin :refs/tags/%TAG% > nul 2>&1
-git tag -a %TAG% -m "OpenTTD %OTTD_VERSION% Archipelago beta4 - Wine fix, sprites warning, safe starting vehicles"
+git tag -a %TAG% -m "OpenTTD %OTTD_VERSION% Archipelago beta5 - Toyland filter, town cap, bank loan, shop guard+sort, trap slider, deathlink off, one_of_each"
 git push origin %TAG%
 if errorlevel 1 (
     echo [FEJL] Tag-push fejlede!

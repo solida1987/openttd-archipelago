@@ -3,19 +3,33 @@ from BaseClasses import LocationProgressType
 
 OPENTTD_LOC_BASE_ID = 6_100_000
 
-CARGO_TYPES = [
-    # Temperate
-    "Passengers", "Coal", "Mail", "Oil",
-    "Livestock", "Goods", "Grain", "Wood",
-    "Iron Ore", "Steel", "Valuables",
-    # Arctic
-    "Paper", "Food",
-    # Tropical
-    "Rubber", "Fruit", "Copper Ore", "Water",
-    # Toyland
-    "Sweets", "Cola", "Candyfloss", "Bubbles",
-    "Plastic", "Fizzy Drinks", "Toffee",
-]
+# Cargo types split by climate so mission generator can pick
+# only cargos that actually exist on the chosen map landscape.
+CARGO_BY_LANDSCAPE = {
+    0: [  # Temperate
+        "Passengers", "Mail", "Coal", "Oil",
+        "Livestock", "Goods", "Grain", "Wood",
+        "Iron Ore", "Steel", "Valuables",
+    ],
+    1: [  # Arctic
+        "Passengers", "Mail", "Coal", "Oil",
+        "Livestock", "Goods", "Wheat", "Wood",
+        "Paper", "Food", "Gold",
+    ],
+    2: [  # Tropical
+        "Passengers", "Mail", "Oil",
+        "Goods", "Maize", "Wood",
+        "Rubber", "Fruit", "Copper Ore", "Water", "Food", "Diamonds",
+    ],
+    3: [  # Toyland
+        "Passengers", "Mail",
+        "Sweets", "Cola", "Candyfloss", "Bubbles",
+        "Plastic", "Fizzy Drinks", "Toffee",
+    ],
+}
+
+# Backwards compat — used for class-level access before landscape is known
+CARGO_TYPES = CARGO_BY_LANDSCAPE[0]
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  MISSION TEMPLATES
@@ -61,7 +75,7 @@ MISSION_TEMPLATES = {
         ("Earn £{amount} in one month",                 800_000,  4_000_000,"£/month"),
         ("Have {amount} trains running simultaneously", 25,       60,       "trains"),
         ("Maintain 90%+ station rating for {amount} months", 8,   20,       "months"),
-        ("Transport {amount} valuables",                15_000,   80_000,   "units"),
+        ("Transport {amount} units of {cargo}",         15_000,   80_000,   "units"),  # replaces hardcoded valuables — cargo filtered by landscape
     ],
     "extreme": [
         ("Transport {amount} units of {cargo}",         3_000_000, 15_000_000,"units"),
@@ -72,7 +86,7 @@ MISSION_TEMPLATES = {
         ("Earn £{amount} in a single month",            8_000_000, 30_000_000,"£/month"),
         ("Have {amount} trains running simultaneously", 100,      200,      "trains"),
         ("Have {amount} aircraft running simultaneously", 30,     80,       "aircraft"),
-        ("Deliver {amount} tons of steel in total",     800_000,  3_000_000,"tons"),
+        ("Transport {amount} units of {cargo}",         800_000,  3_000_000,"units"),  # replaces hardcoded steel — cargo filtered by landscape
         ("Have {amount} road vehicles running simultaneously", 80, 200,     "road vehicles"),
     ],
 }

@@ -1,5 +1,48 @@
 # Changelog — OpenTTD Archipelago
 
+## [1.0.0-beta5] — 2026-03-06
+
+### Fixed
+- **Toyland missions on non-Toyland maps** — mission generator now uses a
+  climate-filtered cargo list. Temperate/Arctic/Tropical maps will never
+  generate missions referencing Candyfloss, Cola, Toffee or other
+  Toyland-exclusive cargos.
+- **Toyland vehicles in item pool on non-Toyland maps** — Toyland-only
+  vehicles (Choo-Choos, Ploddyphut buses, all Toyland trucks/aircraft) are
+  now excluded from the randomised item pool when the map is not Toyland.
+  Previously these would appear as received items that silently did nothing.
+- **"Service X towns" impossible on small maps** — mission amounts for
+  town-service missions are now capped based on map dimensions so the
+  generated count cannot exceed a realistic number of towns on the map.
+- **Bank Loan Forced trap — 500M hardcoded amount** — the forced loan is now
+  scaled to the session's configured `max_loan` value rather than a fixed
+  £500,000,000 that was impossible to repay in early game.
+- **Shop refusing purchases / price display wrong** — shop slots that have
+  already been purchased this session are now tracked and filtered out of the
+  shop list immediately after purchase, preventing the UI from showing bought
+  slots as still available.
+
+### Added
+- **"Start with one of each" option** — new `Starting Vehicle Type` choice
+  `one_of_each` gives the player one safe starting vehicle from every transport
+  type at game start (bus, train, small plane, passenger ferry), so all four
+  types are immediately available regardless of what gets randomised into the pool.
+
+### Changed
+- **Trap intensity slider** — new `Trap Intensity (%)` YAML option (0–100,
+  default 30) controls what share of the item pool consists of traps.
+  Replaces the implicit 15% hardcoded rate. Higher = more traps.
+- **DeathLink default changed to off** — DeathLink was on by default, which
+  surprised players who hadn't explicitly opted in to shared deaths. Now off by
+  default; enable in your YAML if you want it.
+- **Shop sorted by price ascending** — cheapest items now always appear at the
+  top of the shop list, making it readable early-game when money is limited.
+- **Default trap settings toned down** — `Trap: Bank Loan` and
+  `Trap: Recession` both default to **off**. These two traps are the most
+  punishing and are now opt-in rather than opt-out.
+
+---
+
 ## [1.0.0-beta4] — 2026-03-06
 
 ### Fixed
