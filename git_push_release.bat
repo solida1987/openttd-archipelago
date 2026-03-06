@@ -2,8 +2,7 @@
 setlocal EnableDelayedExpansion
 :: ============================================================
 ::  OpenTTD Archipelago — GitHub Push + Release Script
-::  Committer alle ændringer, pusher til GitHub og tagger
-::  en ny release.
+::  Beta 6
 :: ============================================================
 set PROJECT_DIR=C:\Users\marco\OneDrive\Desktop\openttd-15.2
 set /p OTTD_VERSION=<"%PROJECT_DIR%\.version"
@@ -11,7 +10,7 @@ if not defined OTTD_VERSION set OTTD_VERSION=15.2
 echo.
 echo ============================================================
 echo  GitHub Push + Release
-echo  Version: %OTTD_VERSION%
+echo  Version: %OTTD_VERSION% — BETA 6
 echo ============================================================
 echo.
 cd /d "%PROJECT_DIR%"
@@ -41,6 +40,7 @@ git add src\saveload\archipelago_sl.cpp
 git add src\saveload\saveload.cpp
 git add src\saveload\CMakeLists.txt
 git add src\lang\english.txt
+git add newgrf\iron_horse.grf
 git add changelog.md
 git add known-bugs.md
 git add build_and_package.bat
@@ -50,7 +50,7 @@ git rm -r --cached dist\ > nul 2>&1
 echo       OK.
 :: ── Commit ───────────────────────────────────────────────────
 echo [3/5] Committer...
-git commit -m "beta5: Toyland filter, town cap, bank loan scaling, shop guard, trap intensity, shop sort, deathlink default off, one_of_each start"
+git commit -m "beta6: Iron Horse support, UI scale fix, currency fix, shop_slots YAML fix, starter fallback, window drag fix, engine map fixes"
 if errorlevel 1 (
     echo       Intet nyt at committe - fortsætter til push.
 )
@@ -66,11 +66,11 @@ if errorlevel 1 (
 echo       OK.
 :: ── Tag og push release ──────────────────────────────────────
 echo [5/5] Opretter release-tag...
-set TAG=v%OTTD_VERSION%-beta5
+set TAG=v%OTTD_VERSION%-beta6
 :: Slet eksisterende tag lokalt og remote hvis det findes
 git tag -d %TAG% > nul 2>&1
 git push origin :refs/tags/%TAG% > nul 2>&1
-git tag -a %TAG% -m "OpenTTD %OTTD_VERSION% Archipelago beta5 - Toyland filter, town cap, bank loan, shop guard+sort, trap slider, deathlink off, one_of_each"
+git tag -a %TAG% -m "OpenTTD %OTTD_VERSION% Archipelago beta6 - Iron Horse, UI scale fix, currency fix, shop_slots YAML, starter fallback, window drag"
 git push origin %TAG%
 if errorlevel 1 (
     echo [FEJL] Tag-push fejlede!

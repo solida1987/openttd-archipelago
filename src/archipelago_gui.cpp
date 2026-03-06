@@ -16,9 +16,17 @@
 #include "gfx_func.h"
 #include "strings_func.h"
 #include "querystring_gui.h"
+#include "fontcache.h"
+#include "currency.h"
+#include "newgrf_config.h"
 #include "table/strings.h"
 #include "table/sprites.h"
 #include "safeguards.h"
+
+/* Forward declaration — defined in newgrf_gui.cpp */
+void ShowNewGRFSettings(bool editable, bool show_params, bool exec_changes, GRFConfigList &config);
+/* _grfconfig_newgame is the GRF list used for new game generation (not the running game). */
+extern GRFConfigList _grfconfig_newgame;
 
 /* =========================================================================
  * CONNECT WINDOW
@@ -35,6 +43,7 @@ enum APWidgets : WidgetID {
 	WAPGUI_SLOT_INFO,
 	WAPGUI_BTN_CONNECT,
 	WAPGUI_BTN_DISCONNECT,
+	WAPGUI_BTN_NEWGRF,
 	WAPGUI_BTN_CLOSE,
 };
 
@@ -59,6 +68,7 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_widgets = {
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
 				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPGUI_BTN_CONNECT),    SetStringTip(STR_ARCHIPELAGO_BTN_CONNECT),    SetMinimalSize(72, 14),
 				NWidget(WWT_PUSHTXTBTN, COLOUR_RED,    WAPGUI_BTN_DISCONNECT), SetStringTip(STR_ARCHIPELAGO_BTN_DISCONNECT), SetMinimalSize(72, 14),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPGUI_BTN_NEWGRF),     SetStringTip(STR_ARCHIPELAGO_BTN_NEWGRF),     SetMinimalSize(72, 14),
 				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPGUI_BTN_CLOSE),      SetStringTip(STR_ARCHIPELAGO_BTN_CLOSE),      SetMinimalSize(72, 14),
 			EndContainer(),
 		EndContainer(),
@@ -177,6 +187,13 @@ struct ArchipelagoConnectWindow : public Window {
 				if (_ap_client) _ap_client->Disconnect();
 				this->SetDirty();
 				break;
+			case WAPGUI_BTN_NEWGRF:
+				/* Open NewGRF settings editing the NEW GAME config (_grfconfig_newgame),
+				 * not the running game's config (_grfconfig).  This matches what the
+				 * world-generation dialog does (genworld_gui.cpp:849). Changes made here
+				 * will apply to the next AP-generated world. */
+				ShowNewGRFSettings(true, true, false, _grfconfig_newgame);
+				break;
 			case WAPGUI_BTN_CLOSE:
 				this->Close();
 				break;
@@ -185,7 +202,7 @@ struct ArchipelagoConnectWindow : public Window {
 };
 
 static WindowDesc _ap_connect_desc(
-	WDP_CENTER, {}, 340, 196,
+	WDP_CENTER, {}, 380, 196,
 	WC_ARCHIPELAGO, WC_NONE, {},
 	_nested_ap_widgets
 );
@@ -319,20 +336,14 @@ struct ArchipelagoStatusWindow : public Window {
 };
 
 static WindowDesc _ap_status_desc(
-	WDP_MANUAL, {}, 228, 82,
+	WDP_AUTO, {"ap_status"}, 228, 82,
 	WC_ARCHIPELAGO_TICKER, WC_NONE, {},
 	_nested_ap_status_widgets
 );
 
 void ShowArchipelagoStatusWindow()
 {
-	ArchipelagoStatusWindow *w =
-	    AllocateWindowDescFront<ArchipelagoStatusWindow>(_ap_status_desc, 0);
-	if (w != nullptr) {
-		w->left = _screen.width - w->width - 10;
-		w->top  = 32;
-		w->SetDirty();
-	}
+	AllocateWindowDescFront<ArchipelagoStatusWindow>(_ap_status_desc, 0);
 }
 
 /* =========================================================================
@@ -380,8 +391,28 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_missions_widgets 
 	EndContainer(),
 };
 
+/* ---------------------------------------------------------------------------
+ * Shared currency formatting helpers (used by both mission and shop windows).
+ * Uses GetCurrency() so the symbol and rate are always in sync with game settings.
+ * --------------------------------------------------------------------------- */
+
+/** Compact money string: "$50M", "£200k", "1,5M kr" etc. */
+static std::string AP_FormatMoneyCompact(int64_t amount)
+{
+	const CurrencySpec &cs = GetCurrency();
+	int64_t scaled = amount * cs.rate;
+
+	std::string num;
+	if (scaled >= 1000000) num = fmt::format("{:.1f}M", scaled / 1000000.0);
+	else if (scaled >= 1000) num = fmt::format("{}k", scaled / 1000);
+	else num = fmt::format("{}", scaled);
+
+	if (cs.symbol_pos == 0) return cs.prefix + num + cs.suffix;
+	return num + cs.suffix;
+}
+
 struct ArchipelagoMissionsWindow : public Window {
-	int           row_height    = 14;
+	int           row_height    = 0;      /* computed in constructor from font height */
 	std::string   filter        = "all";  /* "all","easy","medium","hard","extreme" */
 	std::vector<const APMission *> visible_missions;
 	Scrollbar *scrollbar = nullptr;
@@ -400,6 +431,7 @@ struct ArchipelagoMissionsWindow : public Window {
 	}
 
 	ArchipelagoMissionsWindow(WindowDesc &desc, WindowNumber wnum) : Window(desc) {
+		this->row_height = GetCharacterHeight(FS_NORMAL) + 3; /* +3px vertical padding */
 		this->CreateNestedTree();
 		this->scrollbar = this->GetScrollbar(WAPM_SCROLLBAR);
 		this->scrollbar->SetStepSize(1);
@@ -436,9 +468,14 @@ struct ArchipelagoMissionsWindow : public Window {
 	void DrawWidget(const Rect &r, WidgetID widget) const override {
 		if (widget != WAPM_LIST) return;
 
+		/* Recompute row height at draw time — GetCharacterHeight returns the
+		 * correct scaled value for the current UI zoom level.  Using the cached
+		 * constructor value causes rows to overlap at UI scale >=2. */
+		int rh = GetCharacterHeight(FS_NORMAL) + 3;
+
 		int y = r.top + 2;
 		int first = this->scrollbar->GetPosition();
-		int last  = first + (r.Height() / row_height) + 1;
+		int last  = first + (r.Height() / rh) + 1;
 
 		for (int i = first; i < last && i < (int)visible_missions.size(); i++) {
 			const APMission *m = visible_missions[i];
@@ -460,18 +497,15 @@ struct ArchipelagoMissionsWindow : public Window {
 			/* Build progress string for incomplete missions */
 			std::string progress_str;
 			if (!m->completed && m->amount > 0 && m->current_value > 0) {
-				if (m->unit.find('\xA3') != std::string::npos || m->unit.find("month") != std::string::npos) {
-					/* Money: show £Xk / £Yk */
-					int64_t cv = m->current_value;
-					int64_t am = m->amount;
-					auto fmt_money = [](int64_t v) -> std::string {
-						if (v >= 1000000) return fmt::format("\xC2\xA3{:.1f}M", v / 1000000.0);
-						if (v >= 1000)    return fmt::format("\xC2\xA3{}k", v / 1000);
-						return fmt::format("\xC2\xA3{}", v);
-					};
-					progress_str = fmt::format("  ({}/{})", fmt_money(cv), fmt_money(am));
+				/* Detect money missions by unit */
+				bool is_money = (m->unit == "\xC2\xA3" || m->unit == "£" ||
+				                 m->unit.find("/month") != std::string::npos ||
+				                 m->unit.find("month") != std::string::npos);
+				if (is_money) {
+					progress_str = fmt::format("  ({}/{})",
+					    AP_FormatMoneyCompact(m->current_value),
+					    AP_FormatMoneyCompact(m->amount));
 				} else {
-					/* Count/units */
 					auto fmt_num = [](int64_t v) -> std::string {
 						if (v >= 1000000) return fmt::format("{:.1f}M", v / 1000000.0);
 						if (v >= 1000)    return fmt::format("{}k", v / 1000);
@@ -481,10 +515,28 @@ struct ArchipelagoMissionsWindow : public Window {
 				}
 			}
 
-			std::string line = prefix + cap_diff + " - " + m->description + progress_str;
+			/* Bug 2 fix: replace hardcoded £ in description with the current
+			 * game currency prefix so the mission text matches the player's
+			 * chosen currency (e.g. USD shows $ instead of £). */
+			std::string desc = m->description;
+			{
+				const CurrencySpec &cs = GetCurrency();
+				std::string pound_utf8 = "\xC2\xA3"; /* UTF-8 encoding of £ */
+				std::string replacement = cs.prefix.empty() ? std::string(cs.suffix) : std::string(cs.prefix);
+				/* Only replace if the game isn't using GBP (prefix "£") */
+				if (replacement != pound_utf8 && replacement != "\xC2\xA3") {
+					size_t pos = 0;
+					while ((pos = desc.find(pound_utf8, pos)) != std::string::npos) {
+						desc.replace(pos, pound_utf8.size(), replacement);
+						pos += replacement.size();
+					}
+				}
+			}
+
+			std::string line = prefix + cap_diff + " - " + desc + progress_str;
 
 			DrawString(r.left + 4, r.right - 4, y, line, tc);
-			y += row_height;
+			y += rh;
 			if (y > r.bottom) break;
 		}
 	}
@@ -495,8 +547,9 @@ struct ArchipelagoMissionsWindow : public Window {
 
 	void OnResize() override {
 		if (this->scrollbar) {
+			int rh = GetCharacterHeight(FS_NORMAL) + 3;
 			this->scrollbar->SetCapacity(
-			    this->GetWidget<NWidgetBase>(WAPM_LIST)->current_y / row_height);
+			    this->GetWidget<NWidgetBase>(WAPM_LIST)->current_y / rh);
 		}
 	}
 
@@ -555,7 +608,7 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_shop_widgets = {
 };
 
 struct ArchipelagoShopWindow : public Window {
-	int row_height = 16;
+	int row_height = 0;      /* computed in constructor from font height */
 	int selected   = -1;
 	Scrollbar *scrollbar = nullptr;
 
@@ -575,19 +628,22 @@ struct ArchipelagoShopWindow : public Window {
 		int total       = slots * 20;               /* full pool */
 		int page_offset = AP_GetShopPageOffset();   /* rotates every refresh */
 
-		/* Show exactly shop_slots items starting at the current page offset */
-		for (int n = 0; n < slots; n++) {
+		/* Scan the full pool (wrapping around) until we have exactly shop_slots
+		 * items, or the pool is exhausted. This ensures the shop always shows
+		 * the configured number of slots even after some items are purchased. */
+		int found = 0;
+		for (int n = 0; n < total && found < slots; n++) {
 			int idx = (page_offset + n) % total + 1; /* 1-based location index */
-			std::string loc   = fmt::format("Shop_Purchase_{:04d}", idx);
+			std::string loc = fmt::format("Shop_Purchase_{:04d}", idx);
 			/* Skip slots already sent to the AP server this session */
 			if (AP_IsShopLocationSent(loc)) continue;
 			std::string label = AP_GetShopLocationLabel(loc);
 			if (label.empty()) label = fmt::format("Slot #{} (loading...)", idx);
 			int64_t price = AP_GetShopPrice(loc);
 			shop_items.push_back({loc, label, price});
+			found++;
 		}
-		/* Sort ascending by price so cheapest items are always at the top.
-		 * This makes the shop readable early-game when money is tight. */
+		/* Sort ascending by price so cheapest items are always at the top. */
 		std::sort(shop_items.begin(), shop_items.end(),
 		    [](const ShopEntry &a, const ShopEntry &b) { return a.price < b.price; });
 
@@ -597,6 +653,7 @@ struct ArchipelagoShopWindow : public Window {
 
 	ArchipelagoShopWindow(WindowDesc &desc, WindowNumber wnum) : Window(desc)
 	{
+		this->row_height = GetCharacterHeight(FS_NORMAL) + 3; /* +3px vertical padding */
 		this->CreateNestedTree();
 		this->scrollbar = this->GetScrollbar(WAPSH_SCROLLBAR);
 		this->scrollbar->SetStepSize(1);
@@ -629,15 +686,9 @@ struct ArchipelagoShopWindow : public Window {
 			TextColour tc;
 			if (i == selected)   tc = TC_WHITE;
 			else if (can_afford) tc = TC_YELLOW;
-			else                 tc = TC_GREY;  /* Can't afford = greyed out */
+			else                 tc = TC_GREY;
 
-			/* Format price nicely */
-			int64_t p = shop_items[i].price;
-			std::string price_str;
-			if (p >= 1000000)      price_str = fmt::format("£{:.1f}M", p / 1000000.0);
-			else if (p >= 1000)    price_str = fmt::format("£{}k", p / 1000);
-			else                   price_str = fmt::format("£{}", p);
-
+			std::string price_str = AP_FormatMoneyCompact(shop_items[i].price);
 			std::string line = fmt::format("[{}] {} — {}", i + 1, shop_items[i].label, price_str);
 			DrawString(r.left + 4, r.right - 4, y, line, tc);
 			y += row_height;
@@ -659,10 +710,7 @@ struct ArchipelagoShopWindow : public Window {
 					const ShopEntry &entry = shop_items[selected];
 					if (!AP_CanAffordShopItem(entry.location_name)) {
 						AP_ShowConsole(fmt::format("[AP] Shop: cannot afford {} — need {}",
-						    entry.label,
-						    entry.price >= 1000000
-						        ? fmt::format("£{:.1f}M", entry.price / 1000000.0)
-						        : fmt::format("£{}k", entry.price / 1000)));
+						    entry.label, AP_FormatMoneyCompact(entry.price)));
 						break;
 					}
 					AP_DeductShopPrice(entry.location_name);

@@ -543,6 +543,9 @@ static APSlotData ParseSlotData(const json &msg)
 	/* Death Link — from options.py; note: AP sends this as a top-level slot_data field */
 	sd.death_link                = d.value("death_link",           false);
 
+	/* NewGRF options */
+	sd.enable_iron_horse         = (bool)d.value("enable_iron_horse", 0);
+
 	/* Verbose log — visible in OpenTTD debug console (press ~ in game) */
 	Debug(misc, 0, "[AP] SlotData: version={} missions={} start_year={} vehicle='{}'",
 	      sd.game_version, sd.mission_count, sd.start_year, sd.starting_vehicle);
@@ -573,6 +576,18 @@ static APSlotData ParseSlotData(const json &msg)
 			}
 		}
 		Debug(misc, 0, "[AP] SlotData: {} shop prices loaded", sd.shop_prices.size());
+	}
+
+	/* locked_vehicles — the exact set of vehicle names to lock at session start.
+	 * Only engines whose English name is in this set are locked; others
+	 * (e.g. Iron Horse engines when enable_iron_horse=false) stay freely available. */
+	if (d.contains("locked_vehicles") && d["locked_vehicles"].is_array()) {
+		for (const auto &v : d["locked_vehicles"]) {
+			if (v.is_string()) sd.locked_vehicles.insert(v.get<std::string>());
+		}
+		Debug(misc, 0, "[AP] SlotData: {} locked_vehicles loaded", sd.locked_vehicles.size());
+	} else {
+		Debug(misc, 0, "[AP] SlotData: no locked_vehicles — will lock ALL non-wagon engines (legacy mode)");
 	}
 
 	/* Parse missions array */

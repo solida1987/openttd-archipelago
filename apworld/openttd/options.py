@@ -498,6 +498,21 @@ class VehicleBreakdowns(Choice):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  NEWGRF OPTIONS
+# ═══════════════════════════════════════════════════════════════
+
+class EnableIronHorse(Toggle):
+    """Enable Iron Horse train set (GPL v2, by andythenorth).
+    When enabled, ~100 additional British-inspired locomotives are added to
+    the item pool. The GRF is bundled with the patch and loaded automatically
+    at new game start — no manual installation required.
+    Iron Horse vehicles work on Temperate, Arctic and Tropical maps.
+    They are NOT available on Toyland maps."""
+    display_name = "Enable Iron Horse"
+    default = 0
+
+
+# ═══════════════════════════════════════════════════════════════
 #  OPTION GROUPS — defines the categories in the Options Creator
 # ═══════════════════════════════════════════════════════════════
 
@@ -573,6 +588,9 @@ OPTION_GROUPS = [
         Disasters,
         PlaneCrashes,
         VehicleBreakdowns,
+    ]),
+    OptionGroup("NewGRFs", [
+        EnableIronHorse,
     ]),
 ]
 
@@ -653,5 +671,7 @@ class OpenTTDOptions(PerGameCommonOptions):
     disasters:                       Disasters
     plane_crashes:                   PlaneCrashes
     vehicle_breakdowns:              VehicleBreakdowns
+    # NewGRFs
+    enable_iron_horse:               EnableIronHorse
     # Death Link
     death_link:                      OpenTTDDeathLink

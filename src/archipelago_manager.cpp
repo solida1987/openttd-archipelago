@@ -40,6 +40,7 @@
 #include "language.h"
 #include "genworld.h"
 #include "settings_type.h"
+#include "newgrf_airport.h"
 #include "debug.h"
 #include "strings_func.h"
 #include "news_type.h"
@@ -60,6 +61,8 @@
 #include "console_func.h"
 #include "window_func.h"
 #include "station_base.h"
+#include "newgrf_config.h"
+#include "fileio_func.h"
 #include "safeguards.h"
 
 /* Console log helpers */
@@ -437,29 +440,55 @@ bool        _ap_last_ssl = false;
  * ---------------------------------------------------------------------- */
 
 static std::map<std::string, EngineID> _ap_engine_map;
+/* Extra engines that share a name with an already-mapped engine (e.g. the three
+ * "Oil Tanker" wagon variants: Rail, Monorail, Maglev).  The primary map stores
+ * the first match; extras stores all subsequent ones so they all get unlocked. */
+static std::map<std::string, std::vector<EngineID>> _ap_engine_extras;
 static bool _ap_engine_map_built = false;
+
+/** EngineIDs that AP has explicitly unlocked for the local company this session.
+ *  The periodic re-lock sweep uses this to distinguish "AP-unlocked" from
+ *  "re-introduced by StartupEngines()" — only engines in this set survive. */
+static std::set<EngineID> _ap_unlocked_engine_ids;
 
 static void BuildEngineMap()
 {
 	_ap_engine_map.clear();
+	_ap_engine_extras.clear();
 	for (const Engine *e : Engine::Iterate()) {
-		/* Always use the English engine name regardless of the player's
-		 * language setting.  AP item names are always English, so the
-		 * lookup key must also be English.
-		 * GetString() uses _current_language; we temporarily switch to
-		 * en_GB, build the string, then restore — or we rely on the fact
-		 * that we force English at session-start (see below).
-		 * Using EngineNameContext::PurchaseList gives the same name that
-		 * the APWorld's items.py was generated from. */
+		/* Primary: context-aware name — returns the NewGRF/callback name when
+		 * available, and the language-file name for vanilla engines.
+		 * However, EngineNameContext::PurchaseList only returns a non-empty name
+		 * for engines that are currently in the purchase list (i.e. introduced and
+		 * not yet expired).  With never_expire_vehicles=true already set above,
+		 * expiry is no longer an issue — but intro_date still applies in early
+		 * game years, so some future engines may still return empty here. */
 		std::string name = GetString(STR_ENGINE_NAME,
 		    PackEngineNameDParam(e->index, EngineNameContext::PurchaseList));
-		if (!name.empty()) {
+
+		/* Fallback: if the PurchaseList context returned empty (engine not yet
+		 * available for purchase), get the name directly from the engine's
+		 * string_id.  This is always populated for both vanilla and NewGRF
+		 * engines, so it gives us the name regardless of availability. */
+		if (name.empty() && e->info.string_id != STR_NEWGRF_INVALID_ENGINE) {
+			name = GetString(e->info.string_id);
+		}
+
+		if (name.empty()) continue;
+
+		if (_ap_engine_map.count(name) == 0) {
 			_ap_engine_map[name] = e->index;
+		} else {
+			/* Same name used by multiple engine instances (e.g. the three
+			 * "Oil Tanker" wagon variants — Rail, Monorail, Maglev).
+			 * Store extras so AP_UnlockEngineByName can unlock them all. */
+			_ap_engine_extras[name].push_back(e->index);
 		}
 	}
 	_ap_engine_map_built = true;
 	Debug(misc, 1, "[AP] Engine map built: {} engines", _ap_engine_map.size());
-	AP_LOG(fmt::format("Engine map built: {} engines indexed", _ap_engine_map.size()));
+	AP_LOG(fmt::format("Engine map built: {} engines indexed ({} with shared names)",
+	       _ap_engine_map.size(), _ap_engine_extras.size()));
 }
 
 /**
@@ -599,7 +628,19 @@ static bool AP_UnlockEngineByName(const std::string &name)
 
 	/* Resolve alias if needed */
 	std::string resolved = name;
-	auto alias_it = aliases.find(name);
+
+	/* Iron Horse engines are prefixed "IH: " in AP item names to avoid
+	 * collisions with vanilla engines (e.g. "IH: Dragon" vs vanilla "Dragon").
+	 * Strip the prefix before looking up in the engine map — Iron Horse
+	 * registers its vehicles with plain names like "4-4-2 Lark". */
+	static const std::string ih_prefix = "IH: ";
+	if (resolved.size() > ih_prefix.size() &&
+	    resolved.substr(0, ih_prefix.size()) == ih_prefix) {
+		resolved = resolved.substr(ih_prefix.size());
+		Debug(misc, 1, "[AP] Iron Horse prefix stripped: '{}' → '{}'", name, resolved);
+	}
+
+	auto alias_it = aliases.find(resolved);
 	if (alias_it != aliases.end()) {
 		resolved = alias_it->second;
 		Debug(misc, 1, "[AP] Engine alias: '{}' → '{}'", name, resolved);
@@ -615,11 +656,29 @@ static bool AP_UnlockEngineByName(const std::string &name)
 	Engine *e = Engine::GetIfValid(it->second);
 	if (e == nullptr) return false;
 
+	/* Track that AP has explicitly unlocked this engine — the periodic
+	 * re-lock sweep will not re-lock engines present in this set. */
+	_ap_unlocked_engine_ids.insert(it->second);
+
 	/* Set EngineFlag::Available so the engine appears in the build-vehicle list.
 	 * EnableEngineForCompany() only sets company_avail, but the build-vehicle
 	 * window also checks EngineFlag::Available before showing any engine. */
 	e->flags.Set(EngineFlag::Available);
 	EnableEngineForCompany(it->second, cid);
+
+	/* Unlock any additional engines that share this name (e.g. all three
+	 * "Oil Tanker" wagon variants — Rail, Monorail, Maglev). */
+	auto extras_it = _ap_engine_extras.find(resolved);
+	if (extras_it != _ap_engine_extras.end()) {
+		for (EngineID extra_eid : extras_it->second) {
+			Engine *extra_e = Engine::GetIfValid(extra_eid);
+			if (extra_e == nullptr) continue;
+			_ap_unlocked_engine_ids.insert(extra_eid);
+			extra_e->flags.Set(EngineFlag::Available);
+			EnableEngineForCompany(extra_eid, cid);
+		}
+	}
+
 	/* Explicitly invalidate the build-vehicle window so the new engine shows up */
 	InvalidateWindowClassesData(WC_BUILD_VEHICLE, 0);
 	Debug(misc, 0, "[AP] Engine unlocked: {}", resolved);
@@ -1169,6 +1228,71 @@ void AP_ConsumeWorldStart()
 	/* ── Vehicles / Routing ──────────────────────────────────────── */
 	_settings_newgame.vehicle.road_side                = sd.road_side;
 
+	/* ── NewGRF: Iron Horse ──────────────────────────────────────────── */
+	if (sd.enable_iron_horse) {
+		/* iron_horse.grf is bundled in the {exe}/newgrf/ subfolder of the
+		 * Archipelago patch release zip.  OpenTTD searches SP_BINARY_DIR
+		 * last in its NewGRF scan, so if the user has not yet done a
+		 * ScanNewGRFFiles() that picked it up, we copy it into the personal
+		 * newgrf directory first so FillGRFDetails can find it. */
+
+		static const std::string IH_FILENAME = "iron_horse.grf";
+
+		/* 1) Does the file already exist anywhere OpenTTD would find it? */
+		auto ih = std::make_unique<GRFConfig>(IH_FILENAME);
+		ih->SetSuitablePalette();
+
+		if (!FillGRFDetails(*ih, false, NEWGRF_DIR)) {
+			/* Not found — try to copy from our bundle (next to the exe) */
+			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + IH_FILENAME;
+			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + IH_FILENAME;
+
+			bool copied = false;
+			{
+				/* std::filesystem is banned by safeguards — use fopen/fwrite */
+				FILE *fsrc = fopen(src.c_str(), "rb");
+				if (fsrc != nullptr) {
+					FILE *fdst = fopen(dst.c_str(), "wb");
+					if (fdst != nullptr) {
+						char buf[65536];
+						size_t n;
+						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) {
+							fwrite(buf, 1, n, fdst);
+						}
+						fclose(fdst);
+						copied = true;
+					}
+					fclose(fsrc);
+				}
+			}
+
+			if (copied) {
+				AP_OK(fmt::format("Iron Horse GRF installed from bundle to: {}", dst));
+				/* Re-try FillGRFDetails now that the file is in place */
+				ih = std::make_unique<GRFConfig>(IH_FILENAME);
+				ih->SetSuitablePalette();
+				if (!FillGRFDetails(*ih, false, NEWGRF_DIR)) {
+					/* Rescan so OpenTTD finds the newly copied file */
+					ScanNewGRFFiles(nullptr);
+					ih = std::make_unique<GRFConfig>(IH_FILENAME);
+					ih->SetSuitablePalette();
+					FillGRFDetails(*ih, false, NEWGRF_DIR);
+				}
+			} else {
+				AP_WARN(fmt::format(
+					"iron_horse.grf not found in bundle ({}) — "
+					"place it in your newgrf/ folder or re-download the patch zip.",
+					src));
+			}
+		}
+
+		/* 2) If the GRF is now resolved, add it to the new-game config */
+		if (ih->status != GCS_NOT_FOUND && ih->status != GCS_DISABLED) {
+			AppendToGRFConfigList(_grfconfig_newgame, std::move(ih));
+			AP_OK("Iron Horse GRF activated for new game.");
+		}
+	}
+
 	Debug(misc, 0, "[AP] World start ready: seed={}, year={}, map={}x{}, landscape={}",
 	      _ap_world_seed_to_use, sd.start_year,
 	      (1 << sd.map_x), (1 << sd.map_y), (int)sd.landscape);
@@ -1497,6 +1621,15 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Force English so that engine names match AP item names */
 			ForceEnglishLanguage();
 
+			/* Disable vehicle/airport expiry NOW — before building the engine
+			 * map.  EngineNameContext::PurchaseList only returns a name for
+			 * engines that are currently available; without this flag some
+			 * engines (especially early steam locos that have expired by 1950)
+			 * return an empty string and never make it into _ap_engine_map,
+			 * causing "Unknown item" warnings when AP tries to unlock them. */
+			_settings_game.vehicle.never_expire_vehicles = true;
+			_settings_game.station.never_expire_airports = true;
+
 			/* Build the engine name → ID lookup map (uses current language = English) */
 			BuildEngineMap();
 
@@ -1506,33 +1639,66 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Reset session statistics for mission evaluation */
 			AP_InitSessionStats();
 
-			/* AP settings: never expire vehicles or airports — ensures all
-			 * AP-unlocked engines/airports remain usable regardless of in-game year. */
-			_settings_game.vehicle.never_expire_vehicles = true;
-			_settings_game.station.never_expire_airports = true;
+			/* AP settings: vehicle/airport expiry already disabled above (before
+			 * BuildEngineMap).  No additional setting needed here. */
 
 			/* Strip the local company from every ENGINE that was auto-unlocked
 			 * by StartupOneEngine() at game start.
 			 * WAGONS are excluded — they are always freely available so the
-			 * player can use any locomotive they receive from AP. */
-			int locked_count = 0;
-			for (Engine *e : Engine::Iterate()) {
-				if (!e->company_avail.Test(cid)) continue;
+			 * player can use any locomotive they receive from AP.
+			 *
+			 * SELECTIVE LOCKING: if the APWorld sent a locked_vehicles list,
+			 * only lock engines whose English name is in that list.  Engines
+			 * NOT in the list (e.g. Iron Horse engines when enable_iron_horse=false)
+			 * remain available so the player can use them freely.
+			 * Legacy fallback: if no locked_vehicles list, lock everything (old behaviour). */
+			_ap_unlocked_engine_ids.clear();
 
-				/* Keep wagons always available */
+			/* DEBUG: diagnose why locking might not work */
+			AP_OK(fmt::format("[DBG] Session lock start: locked_vehicles={} entries, has_lock_list={}",
+			      _ap_pending_sd.locked_vehicles.size(), !_ap_pending_sd.locked_vehicles.empty()));
+
+			const bool has_lock_list = !_ap_pending_sd.locked_vehicles.empty();
+			int locked_count = 0;
+			int dbg_no_avail = 0, dbg_wagon = 0, dbg_not_in_list = 0;
+			for (Engine *e : Engine::Iterate()) {
+				if (!e->company_avail.Test(cid)) { dbg_no_avail++; continue; }
 				bool is_wagon = (e->type == VEH_TRAIN &&
 				                 e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON);
-				if (is_wagon) continue;
-
+				if (is_wagon) { dbg_wagon++; continue; }
+				/* Lock everything — both vanilla and NewGRF engines.
+				 * locked_vehicles is used to know what AP CAN unlock later,
+				 * but at session start we lock all non-wagon engines regardless. */
+				(void)has_lock_list; /* suppress unused warning */
 				e->company_avail.Reset(cid);
 				locked_count++;
 			}
+			AP_OK(fmt::format("[DBG] Lock result: {} locked / {} no_avail / {} wagon / {} not_in_list",
+			      locked_count, dbg_no_avail, dbg_wagon, dbg_not_in_list));
 
 			/* Unlock ALL rail and road types unconditionally — ensures any
 			 * AP-randomised engine's track/road type is always buildable. */
 			if (c != nullptr) {
 				c->avail_railtypes = GetRailTypes(true);
 				c->avail_roadtypes = GetRoadTypes(true);
+			}
+
+			/* Unlock ALL airports immediately regardless of in-game year.
+			 * AirportSpec::IsAvailable() checks min_year before never_expire_airports,
+			 * so setting min_year=0 on every enabled spec is the only reliable fix.
+			 * We leave max_year alone — never_expire_airports handles expiry. */
+			{
+				int airport_count = 0;
+				for (uint8_t i = 0; i < NUM_AIRPORTS; i++) {
+					AirportSpec *as = AirportSpec::GetWithoutOverride(i);
+					if (as == nullptr || !as->enabled) continue;
+					if (as->min_year > TimerGameCalendar::Year{0}) {
+						as->min_year = TimerGameCalendar::Year{0};
+					}
+					airport_count++;
+				}
+				InvalidateWindowData(WC_BUILD_STATION, TRANSPORT_AIR);
+				Debug(misc, 0, "[AP] All {} airports unlocked (min_year reset to 0)", airport_count);
 			}
 
 			InvalidateWindowClassesData(WC_BUILD_VEHICLE);
@@ -1544,14 +1710,97 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 
 			/* Unlock all starting vehicles.
 			 * For one_of_each mode this is one per transport type.
-			 * For normal modes it is a single vehicle. */
+			 * For normal modes it is a single vehicle.
+			 *
+			 * Safety net: if a road vehicle starter carries only cargo-specific
+			 * goods (coal, grain, oil, goods, etc.) and NOT passengers or mail,
+			 * it is useless without pre-built industry routes.  Substitute with
+			 * the first available bus instead and log a warning. */
+			static const std::vector<std::string> FALLBACK_BUSES = {
+				"MPS Regal Bus", "Hereford Leopard Bus", "Foster Bus",
+				"Foster MkII Superbus", "MPS Mail Truck", "Perry Mail Truck",
+			};
+
 			for (const std::string &sv : _ap_pending_sd.starting_vehicles) {
 				if (sv.empty()) continue;
-				if (AP_UnlockEngineByName(sv)) {
-					AP_OK("Starting vehicle unlocked: " + sv);
-					AP_ShowNews("[AP] Starting vehicle: " + sv);
+
+				/* Check if this is a road vehicle that only carries
+				 * cargo-specific goods (not passengers or mail). */
+				bool needs_fallback = false;
+				if (!_ap_engine_map_built) BuildEngineMap();
+				{
+					auto it = _ap_engine_map.find(sv);
+					if (it != _ap_engine_map.end()) {
+						const Engine *e = Engine::GetIfValid(it->second);
+						if (e != nullptr && e->type == VEH_ROAD) {
+							CargoType ct = e->GetDefaultCargoType();
+							bool is_pax  = ct != INVALID_CARGO && IsCargoInClass(ct, CargoClasses{CargoClass::Passengers});
+							bool is_mail = ct != INVALID_CARGO && IsCargoInClass(ct, CargoClasses{CargoClass::Mail});
+							if (!is_pax && !is_mail) {
+								AP_WARN(fmt::format(
+								    "Starting vehicle '{}' carries only cargo-specific goods "
+								    "(not passengers/mail) — substituting with a bus!", sv));
+								needs_fallback = true;
+							}
+						}
+					}
+				}
+
+				if (needs_fallback) {
+					bool found_fallback = false;
+					for (const std::string &bus : FALLBACK_BUSES) {
+						if (AP_UnlockEngineByName(bus)) {
+							AP_OK("Starter fallback: '" + sv + "' → '" + bus + "' (cargo truck → bus)");
+							AP_ShowNews("[AP] Starting vehicle: " + bus + " (bus fallback)");
+							found_fallback = true;
+							break;
+						}
+					}
+					if (!found_fallback) {
+						/* All buses also missing — just unlock what was requested */
+						AP_WARN("Starter fallback failed — no bus found, unlocking original: " + sv);
+						if (AP_UnlockEngineByName(sv)) {
+							AP_OK("Starting vehicle unlocked (no fallback): " + sv);
+						}
+					}
 				} else {
-					AP_WARN("Starting vehicle '" + sv + "' not found in engine map!");
+					if (AP_UnlockEngineByName(sv)) {
+						AP_OK("Starting vehicle unlocked: " + sv);
+						AP_ShowNews("[AP] Starting vehicle: " + sv);
+					} else {
+						/* Engine not found in map — this can happen if the engine
+						 * name in slot_data doesn't match what GetString returns.
+						 * Try rebuilding the map once (covers edge cases where the
+						 * map was built before all NewGRFs finished loading), then
+						 * fall back to the first available locomotive of any type. */
+						AP_WARN("Starting vehicle '" + sv + "' not found — rebuilding engine map and retrying");
+						_ap_engine_map_built = false;
+						BuildEngineMap();
+						if (AP_UnlockEngineByName(sv)) {
+							AP_OK("Starting vehicle unlocked after map rebuild: " + sv);
+							AP_ShowNews("[AP] Starting vehicle: " + sv);
+						} else {
+							/* Last resort: unlock the first non-wagon engine we can find */
+							AP_WARN("Starting vehicle '" + sv + "' still not found — using emergency fallback locomotive");
+							static const std::vector<std::string> LOCO_FALLBACKS = {
+								"Kirby Paul Tank (Steam)", "Wills 2-8-0 (Steam)",
+								"MJS 250 (Diesel)", "Ploddyphut Diesel",
+								"MPS Regal Bus", "Coleman Count",
+							};
+							bool loco_found = false;
+							for (const std::string &fb : LOCO_FALLBACKS) {
+								if (AP_UnlockEngineByName(fb)) {
+									AP_OK("Emergency starter fallback: '" + sv + "' → '" + fb + "'");
+									AP_ShowNews("[AP] Starting vehicle: " + fb + " (emergency fallback)");
+									loco_found = true;
+									break;
+								}
+							}
+							if (!loco_found) {
+								AP_ERR("CRITICAL: no starting vehicle could be unlocked for '" + sv + "'!");
+							}
+						}
+					}
 				}
 			}
 
@@ -1629,6 +1878,39 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		if (_ap_realtime_ticks % 20 == 0 &&
 		    _ap_session_started &&
 		    _game_mode == GM_NORMAL) {
+
+			/* Re-apply engine locks every ~5 s as a safety net against
+			 * OpenTTD's engine introduction system (StartupEngines/StartupOneEngine)
+			 * which runs on NewGRF changes and re-sets EngineFlag::Available and
+			 * company_avail for all engines whose intro_date has passed.
+			 * We use _ap_unlocked_engine_ids (set by AP_UnlockEngineByName) to
+			 * distinguish "AP-unlocked" from "re-introduced by StartupEngines". */
+			CompanyID lock_cid = _local_company;
+			if (lock_cid < MAX_COMPANIES) {
+				const bool has_lock_list = !_ap_pending_sd.locked_vehicles.empty();
+				static const std::string ih_prefix = "IH: ";
+				bool need_invalidate = false;
+				for (Engine *e : Engine::Iterate()) {
+					/* Wagons always stay available */
+					if (e->type == VEH_TRAIN &&
+					    e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON) continue;
+
+					/* Lock all non-wagon engines that AP hasn't explicitly unlocked */
+					(void)has_lock_list;
+
+					/* If AP has explicitly unlocked this engine this session, leave it alone */
+					if (_ap_unlocked_engine_ids.count(e->index) > 0) continue;
+
+					/* Otherwise suppress company_avail — do NOT clear EngineFlag::Available,
+					 * as that would cause CalendarEnginesMonthlyLoop to re-introduce
+					 * the engine for all companies via NewVehicleAvailable(). */
+					if (e->company_avail.Test(lock_cid)) {
+						e->company_avail.Reset(lock_cid);
+						need_invalidate = true;
+					}
+				}
+				if (need_invalidate) InvalidateWindowClassesData(WC_BUILD_VEHICLE, 0);
+			}
 
 			/* Accumulate cargo/profit from completed economy periods */
 			AP_UpdateSessionStats();

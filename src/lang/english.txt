@@ -2266,6 +2266,7 @@ STR_ARCHIPELAGO_LABEL_SLOT                                      :{BLACK}Slot nam
 STR_ARCHIPELAGO_LABEL_PASS                                      :{BLACK}Password:
 STR_ARCHIPELAGO_BTN_CONNECT                                     :{BLACK}Connect
 STR_ARCHIPELAGO_BTN_DISCONNECT                                  :{BLACK}Disconnect
+STR_ARCHIPELAGO_BTN_NEWGRF                                      :{BLACK}NewGRF
 STR_ARCHIPELAGO_BTN_CLOSE                                       :{BLACK}Close
 STR_ARCHIPELAGO_STATUS_CAPTION                                  :Archipelago Status
 STR_ARCHIPELAGO_BTN_RECONNECT                                   :{BLACK}Reconnect

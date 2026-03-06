@@ -18,6 +18,7 @@
 #include <vector>
 #include <deque>
 #include <map>
+#include <set>
 
 /** Connection states for the Archipelago client. */
 enum class APState : uint8_t {
@@ -124,11 +125,20 @@ struct APSlotData {
 	/* ── Death Link ─────────────────────────────────────────────────── */
 	bool                    death_link           = false;
 
+	/* ── NewGRF options ─────────────────────────────────────────────── */
+	bool                    enable_iron_horse    = false;
+
 	/** Maps item_id -> item_name, sent in slot_data by APWorld. */
 	std::map<int64_t, std::string> item_id_to_name;
 
 	/** Maps location_name -> price in £, sent in slot_data by APWorld. */
 	std::map<std::string, int64_t> shop_prices;
+
+	/** Vehicle item names that should be locked at session start.
+	 *  Only engines whose English name is in this set will be locked.
+	 *  Engines NOT in this set (e.g. IH engines when enable_iron_horse=false)
+	 *  are left available so the player can use them freely. */
+	std::set<std::string> locked_vehicles;
 
 	std::vector<APMission>  missions;
 };

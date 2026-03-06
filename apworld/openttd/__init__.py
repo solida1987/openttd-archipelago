@@ -16,7 +16,8 @@ from worlds.AutoWorld import World, WebWorld
 from .items import (
     ITEM_TABLE, ALL_VEHICLES, TRAP_ITEMS, UTILITY_ITEMS,
     VANILLA_TRAINS, VANILLA_WAGONS, VANILLA_ROAD_VEHICLES,
-    VANILLA_AIRCRAFT, VANILLA_SHIPS, STARTING_VEHICLES, OpenTTDItemData
+    VANILLA_AIRCRAFT, VANILLA_SHIPS, STARTING_VEHICLES, IRON_HORSE_ENGINES,
+    OpenTTDItemData
 )
 from .locations import (
     get_location_table, DIFFICULTY_DISTRIBUTION,
@@ -110,10 +111,13 @@ class OpenTTDWorld(World):
         scale = yaml_mc / 300.0
         total = max(250, int(base_total * scale))
 
-        # Split into missions (65%) and shop locations (35%)
-        mission_count = int(total * 0.65)
-        shop_loc_count = total - mission_count
-        shop_slots = max(3, shop_loc_count // 20)  # each shop_slot = 20 locations
+        # shop_slots: always respect the player's YAML setting (default 5, range 3-10)
+        # This fixes the bug where the computed value ignored the explicit YAML option.
+        shop_slots = self.options.shop_slots.value
+
+        # Remaining space goes to missions (minimum 50)
+        shop_loc_count = shop_slots * 20
+        mission_count = max(50, total - shop_loc_count)
 
         return mission_count, shop_slots
 
@@ -326,13 +330,18 @@ class OpenTTDWorld(World):
         is_toyland = (self.options.landscape.value == 3)
         TOYLAND_ONLY_STARTERS = {
             "Ploddyphut Choo-Choo", "Powernaut Choo-Choo", "MightyMover Choo-Choo",
+            # Ploddyphut Diesel and Powernaut Diesel are also Toyland-only in OpenTTD 15.2
+            "Ploddyphut Diesel", "Powernaut Diesel",
         }
 
         def _pick_starter(vtype: str) -> str:
             pool = STARTING_VEHICLES[vtype]
             if not is_toyland:
                 pool = [v for v in pool if v not in TOYLAND_ONLY_STARTERS]
-            return self.random.choice(pool or STARTING_VEHICLES[vtype])
+            # Fallback: if filter emptied the pool (shouldn't happen), use full pool
+            if not pool:
+                pool = STARTING_VEHICLES[vtype]
+            return self.random.choice(pool)
 
         if start_type == 5:
             # one_of_each: one safe starter per transport type
@@ -400,6 +409,15 @@ class OpenTTDWorld(World):
         eligible_vehicles = ALL_VEHICLES if is_toyland else [
             v for v in ALL_VEHICLES if v not in TOYLAND_ONLY_VEHICLES
         ]
+
+        # ── Iron Horse: add engines to pool if enabled ────────────────────
+        # Iron Horse vehicles don't exist on Toyland maps (no Toyland GRF
+        # variants). If Iron Horse is enabled but landscape is Toyland,
+        # the GRF is still loaded but no IH items enter the pool.
+        ih_enabled = bool(self.options.enable_iron_horse.value) and not is_toyland
+        self._slot_data["enable_iron_horse"] = 1 if ih_enabled else 0
+        if ih_enabled:
+            eligible_vehicles = eligible_vehicles + IRON_HORSE_ENGINES
         # Exclude ALL starting vehicles from the randomised pool (for one_of_each
         # this is 4 vehicles, for other modes just 1).
         starting_set = set(starting_vehicles)
@@ -407,6 +425,9 @@ class OpenTTDWorld(World):
         # Shuffle so trimming removes random vehicles rather than always the last ones
         self.random.shuffle(all_vehicles_shuffled)
         vehicle_pool = all_vehicles_shuffled[:vehicle_slots]
+        # Store for fill_slot_data (needed to build locked_vehicles list)
+        self._vehicle_pool = vehicle_pool
+        self._starting_vehicles = starting_vehicles
 
         # ── Assemble pool ─────────────────────────────────────────────────
         items_to_create: List[str] = vehicle_pool + utility_pool + trap_pool
@@ -472,6 +493,13 @@ class OpenTTDWorld(World):
         # Build item_id_to_name so the C++ client can resolve item IDs to names
         item_id_to_name = {str(data.code): name for name, data in ITEM_TABLE.items()}
 
+        # locked_vehicles: every vehicle item the C++ engine-locking system should
+        # lock at session start.  Only these engines will be locked; any GRF engine
+        # NOT in this list (e.g. Iron Horse engines when enable_iron_horse=False)
+        # is left untouched and remains freely available to the player.
+        locked_vehicle_set: set = set(getattr(self, "_vehicle_pool", [])) | set(getattr(self, "_starting_vehicles", []))
+        locked_vehicles_list = sorted(locked_vehicle_set)  # deterministic order
+
         self._slot_data.update({
             "game_version": "15.2",
             "mission_count": computed_mc,
@@ -488,6 +516,7 @@ class OpenTTDWorld(World):
             "landscape": self.options.landscape.value,
             "land_generator": self.options.land_generator.value,
             "item_id_to_name": item_id_to_name,
+            "locked_vehicles": locked_vehicles_list,
             "shop_prices": self._generate_shop_prices(),
             # ── Game settings: Accounting ──────────────────────────
             "infinite_money":             bool(self.options.infinite_money.value),

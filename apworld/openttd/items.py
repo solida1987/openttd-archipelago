@@ -287,6 +287,182 @@ UTILITY_ITEMS: List[str] = [
 ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  IRON HORSE — Standard Gauge Engines only (GPL v2, by andythenorth)
+#  Wagons are not items — they unlock automatically with their engine.
+#  Prefix "IH: " distinguishes them from vanilla vehicles in the item table.
+# ─────────────────────────────────────────────────────────────────────────────
+
+IRON_HORSE_ENGINES: List[str] = [
+    # ── Steam era — wheel arrangement locomotives ──────────────────────────────
+    # Names verified directly from iron_horse.grf 4.14.1 NFO (Action 4 strings)
+    "IH: 0-10-0 Decapod",
+    "IH: 0-10-0 Girt Licker",
+    "IH: 0-4-0+0-4-0 Pika",
+    "IH: 0-4-4-0 Alfama",
+    "IH: 0-4-4-0 Thor",
+    "IH: 0-6-0 Fireball",
+    "IH: 0-6-0 Hercules",
+    "IH: 0-6-0 Lamia",
+    "IH: 0-6-0+0-6-0 Keen",
+    "IH: 0-6-0+0-6-0 Xerxes",
+    "IH: 0-6-2 Buffalo",
+    "IH: 0-6-4 Stag",
+    "IH: 0-8-0 Eastern",
+    "IH: 0-8-0 Haar",
+    "IH: 0-8-0 Saxon",
+    "IH: 0-8-2 Yak",
+    "IH: 0-8-4 Abernant",
+    "IH: 2-4-0 Reliance",
+    "IH: 2-6-0 Braf",
+    "IH: 2-6-0 Diablo",
+    "IH: 2-6-0+0-6-2 Esk",
+    "IH: 2-6-0+0-6-2 Nile",
+    "IH: 2-6-2 Arrow",
+    "IH: 2-6-2 Cheese Bug",
+    "IH: 2-6-2 Merrylegs",
+    "IH: 2-6-2 Ox",
+    "IH: 2-6-2 Proper Job",
+    "IH: 2-6-4 Bean Feast",
+    "IH: 2-8-0 Mainstay",
+    "IH: 2-8-0 Vigilant",
+    "IH: 2-8-2 Backbone",
+    "IH: 2-8-2 Pegasus",
+    "IH: 4-2-2 Spinner",
+    "IH: 4-4-0 Carrack",
+    "IH: 4-4-0 Tencendur",
+    "IH: 4-4-2 Lark",
+    "IH: 4-4-2 Swift",
+    "IH: 4-6-0 Strongbow",
+    "IH: 4-6-0 Thunderer",
+    "IH: 4-6-4 Satyr",
+    "IH: 4-6-4 Streamer",
+    "IH: 4-8-0 Lemon",
+    "IH: 4-8-0 Tyrconnell",
+    "IH: 4-8-2 Hawkinge",
+    # ── Modern era — named locomotives ────────────────────────────────────────
+    "IH: Alizé",
+    "IH: Ares",
+    "IH: Argus",
+    "IH: Athena",
+    "IH: Avenger",
+    "IH: Bankside",
+    "IH: Blaze HST",
+    "IH: Boar Cat",
+    "IH: Booster",
+    "IH: Brash",
+    "IH: Breeze",
+    "IH: Brenner",
+    "IH: Canary",
+    "IH: Captain Steel",
+    "IH: Centaur",
+    "IH: Cheddar Valley",
+    "IH: Chinook",
+    "IH: Chronos",
+    "IH: Chuggypig",
+    "IH: Clipper",
+    "IH: Cyclone",
+    "IH: Daring",
+    "IH: Deasil",
+    "IH: Defiant",
+    "IH: Doubletide",
+    "IH: Dover",
+    "IH: Dragon",
+    "IH: Dryth",
+    "IH: Falcon",
+    "IH: Firebird",
+    "IH: Flanders Storm",
+    "IH: Flindermouse",
+    "IH: Foxhound",
+    "IH: Fury",
+    "IH: Gargouille",
+    "IH: General Endeavour",
+    "IH: Geronimo",
+    "IH: Golfinho",
+    "IH: Goliath",
+    "IH: Gowsty",
+    "IH: Grid",
+    "IH: Griffon",
+    "IH: Gronk",
+    "IH: Growler",
+    "IH: Grub",
+    "IH: Hammersmith",
+    "IH: Happy Train",
+    "IH: Helm Wind",
+    "IH: High Flyer",
+    "IH: Higuma",
+    "IH: Hinterland",
+    "IH: Hurly Burly",
+    "IH: Intrepid",
+    "IH: Jupiter",
+    "IH: Kelpie",
+    "IH: Kraken",
+    "IH: Lion",
+    "IH: Little Bear",
+    "IH: Longwater",
+    "IH: Lynx",
+    "IH: Maelstrom",
+    "IH: Magnum Vario",
+    "IH: Merlion",
+    "IH: Moor Gallop",
+    "IH: Mumble",
+    "IH: Nimbus",
+    "IH: Olympic",
+    "IH: Onslaught",
+    "IH: Peasweep",
+    "IH: Phoenix",
+    "IH: Pikel",
+    "IH: Pinhorse",
+    "IH: Plastic Postbox",
+    "IH: Poplar",
+    "IH: Progress",
+    "IH: Pylon",
+    "IH: Rapid",
+    "IH: Ravensbourne",
+    "IH: Relentless",
+    "IH: Resilient",
+    "IH: Resistance",
+    "IH: Roarer",
+    "IH: Ruby",
+    "IH: Scooby",
+    "IH: Screamer",
+    "IH: Serpentine",
+    "IH: Shoebox",
+    "IH: Shredder",
+    "IH: Sizzler",
+    "IH: Skeiron",
+    "IH: Skipper",
+    "IH: Slammer",
+    "IH: Snapper",
+    "IH: Stalwart",
+    "IH: Stentor",
+    "IH: Stoat",
+    "IH: Sunshine Coast",
+    "IH: Tenacious",
+    "IH: Tideway",
+    "IH: Tin Rocket",
+    "IH: Toaster",
+    "IH: Tornado",
+    "IH: Trojan",
+    "IH: Tyburn",
+    "IH: Typhoon",
+    "IH: Ultra Shoebox",
+    "IH: Viking",
+    "IH: Vulcan",
+    "IH: Walbrook",
+    "IH: Wandle",
+    "IH: Westbourne",
+    "IH: Wildfire",
+    "IH: Withershins",
+    "IH: Wyvern",
+    "IH: Yillen",
+    "IH: Zebedee",
+    "IH: Zest",
+    "IH: Zeus",
+    "IH: Zorro",
+]
+
+
 def _build_item_table() -> Dict[str, OpenTTDItemData]:
     table: Dict[str, OpenTTDItemData] = {}
     code = OPENTTD_BASE_ID
@@ -313,6 +489,11 @@ def _build_item_table() -> Dict[str, OpenTTDItemData]:
     for name in UTILITY_ITEMS:
         add(name, ItemClassification.useful, ItemType.UTILITY, "utility")
 
+    # Iron Horse engines — registered here so create_item() works even when
+    # the option is disabled. Items only enter the *pool* when enabled (see __init__.py).
+    for name in IRON_HORSE_ENGINES:
+        add(name, ItemClassification.progression, ItemType.VEHICLE, "train")
+
     add("Victory", ItemClassification.progression, ItemType.VICTORY, "victory")
     return table
 
@@ -330,6 +511,7 @@ VANILLA_WAGONS = ALL_WAGONS
 VANILLA_ROAD_VEHICLES = ALL_ROAD_VEHICLES
 VANILLA_AIRCRAFT = ALL_AIRCRAFT
 VANILLA_SHIPS = ALL_SHIPS
+
 
 STARTING_VEHICLES = {
     # Trains: steam and early diesel only.

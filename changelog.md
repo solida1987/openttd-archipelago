@@ -1,5 +1,53 @@
 # Changelog — OpenTTD Archipelago
 
+## [1.0.0-beta6] — 2026-03-07
+
+### Added
+- **Iron Horse 4.14.1 support** — 164 verified locomotives from the Iron Horse NewGRF
+  are now part of the item pool when the NewGRF is active. Engine names sourced
+  directly from the GRF NFO (Action 4 feature 0x00) — no invented names.
+  Enable via the NewGRF button in the AP Connect window before generating a world.
+- **`one_of_each` starting vehicle option** — start with one safe vehicle per transport
+  type (bus, train, small plane, passenger ferry) instead of a single random pick.
+
+### Fixed
+- **Mission text crushed at UI scale ≥2** — row height is now recomputed at draw
+  time using the current font/scale rather than cached at window construction.
+  Mission list is now fully readable at all interface sizes.
+- **Currency shows £ on non-GBP games** — mission descriptions now replace the
+  hardcoded £ symbol with the game's active currency prefix (e.g. $ for USD) at
+  render time, matching the rest of the UI.
+- **`random` starting vehicle could give unusable cargo wagon** — added a multi-level
+  fallback: (1) road cargo trucks → bus substitute, (2) engine map rebuild + retry,
+  (3) emergency fallback to first available locomotive. A starting vehicle is now
+  always unlocked regardless of edge cases.
+- **Shop shows fewer items than configured `shop_slots`** — `_compute_pool_size()`
+  previously computed its own slot count and ignored the player's YAML `shop_slots`
+  setting entirely. It now reads `self.options.shop_slots.value` directly. Setting
+  `shop_slots: 5` in your YAML now reliably shows 5 items in the shop.
+- **AP status window could not be dragged / was jammed in UI** — window placement
+  changed from `WDP_MANUAL` (hardcoded top-right) to `WDP_AUTO` with persistence key
+  `"ap_status"`. Position is now remembered between sessions and the window can be
+  freely dragged.
+- **"Unknown item: not handled" for vanilla engines** — `BuildEngineMap()` was called
+  before `never_expire_vehicles = true`, so expired/not-yet-introduced engines returned
+  empty names and were never indexed. Fix: expire flags set before map build + direct
+  `string_id` fallback for any engine still returning empty from purchase list context.
+- **Oil Tanker only unlocked one of three wagon variants** — `std::map` stored one
+  `EngineID` per name; the Rail/Monorail/Maglev Oil Tanker variants share a name.
+  Extras are now tracked in a parallel `_ap_engine_extras` map and all variants are
+  unlocked together.
+- **IH engine prefix mismatch in lock check** — Iron Horse engine names in slot_data
+  carry an `IH: ` prefix; the C++ lock lookup now strips it before map lookup.
+
+### Changed
+- Default trap settings toned down — Bank Loan and Recession traps are now **off** by
+  default; enable in YAML if desired.
+- DeathLink is now **off** by default.
+- Shop items sorted by price ascending so cheapest options are always visible first.
+
+---
+
 ## [1.0.0-beta5] — 2026-03-06
 
 ### Fixed

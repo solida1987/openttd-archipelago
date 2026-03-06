@@ -44,7 +44,39 @@ Fix: build with vcpkg toolchain so PNG and zlib are included.
 **Beta 4 fix:** The baseset warning widget is now unconditionally hidden in the
 Archipelago build. The bundled baseset is complete; the warning was a false positive
 caused by the build not being tagged as a vanilla "released version".
-### Toyland content on non-Toyland maps (fixed in Beta 5)
+### Mission menu text crushed at UI scale ≥2 (fixed in Beta 6)
+Row height was cached at window construction time. At UI scales ≥2 the font
+height changes, causing rows to overlap and text to become unreadable.
+Row height is now recomputed each draw call.
+**Severity:** Medium — cosmetic but made missions unreadable at higher scales.
+
+### Currency shows £ on non-GBP games (fixed in Beta 6)
+Mission descriptions were generated with a hardcoded £ symbol and never
+updated to match the player's chosen currency. The £ is now replaced at
+render time with the active currency prefix from `GetCurrency()`.
+**Severity:** Low — cosmetic, caused confusion but no gameplay impact.
+
+### `random` starting vehicle type could give cargo wagon only (fixed in Beta 6)
+In edge cases the selected starting vehicle could not be found in the engine
+map (name mismatch, map built before NewGRF loaded, etc.), leaving the player
+with nothing unlocked. A three-level fallback now ensures a vehicle is always
+provided: cargo truck → bus, engine map rebuild + retry, emergency loco list.
+**Severity:** High — player could start with no usable vehicle.
+
+### Shop shows fewer items than configured `shop_slots` (fixed in Beta 6)
+`_compute_pool_size()` computed its own slot count internally and completely
+ignored the player's YAML `shop_slots` option. Setting `shop_slots: 5` would
+often result in only 3–4 visible shop items. Now reads the YAML value directly.
+**Severity:** Medium — YAML option had no effect.
+
+### AP status window could not be dragged (fixed in Beta 6)
+Status window used `WDP_MANUAL` placement with a hardcoded screen position.
+This caused it to snap back or appear jammed in the toolbar area with no way
+to move it. Changed to `WDP_AUTO` with a persistence key so the position is
+remembered and the window is freely draggable.
+**Severity:** Low — cosmetic annoyance, no gameplay impact.
+
+
 Mission generator could produce Toyland cargo missions (Candyfloss, Cola etc.)
 and the item pool could contain Toyland-only vehicles even when the map was
 Temperate, Arctic or Tropical. Both are now filtered by landscape at world
