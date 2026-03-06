@@ -396,26 +396,12 @@ static bool EvaluateMission(APMission &m)
 
 	/* ── "maintain..." type ────────────────────────────────────────────
 	 * "Maintain 75%/90%+ station rating for {amount} months"
-	 * Simplified: complete if company has ≥1 station with that rating right now.
-	 * (True sustained-months tracking is future work.) */
+	 * m.amount = number of consecutive months required.
+	 * m.maintain_months_ok = counter, incremented monthly by the calendar timer
+	 *   if ALL rated stations held the threshold that month, reset to 0 otherwise.
+	 * Here we just expose the current counter as the live progress value. */
 	else if (m.type.find("maintain") != std::string::npos) {
-		/* Determine threshold: 75% → 191/255, 90% → 229/255 */
-		uint8_t threshold = 191; /* 75% */
-		if (m.type.find("90") != std::string::npos) threshold = 229;
-
-		CompanyID cid = _local_company;
-		int qualifying_stations = 0;
-		for (const Station *st : Station::Iterate()) {
-			if (st->owner != cid) continue;
-			for (CargoType ct = 0; ct < NUM_CARGO; ct++) {
-				if (st->goods[ct].HasRating() && st->goods[ct].rating >= threshold) {
-					qualifying_stations++;
-					break; /* Count station once even if multiple cargo types qualify */
-				}
-			}
-		}
-		/* Treat "amount months" as "amount qualifying stations" as approximation */
-		current = (int64_t)qualifying_stations;
+		current = (int64_t)m.maintain_months_ok;
 	}
 
 	/* ── "buy a vehicle from the shop" ────────────────────────────────
@@ -998,8 +984,15 @@ static void AP_OnDeathReceived(const std::string &source)
 		/* Find the town name for the news message */
 		const Town *t = victim->town;
 		std::string town_name = (t != nullptr) ? "near " + std::string(t->name) : "";
-		AP_ShowNews(fmt::format("[AP] DEATH LINK from {}! Industry closure {}!",
-		            source, town_name));
+		/* Large newspaper-style news for death events so player can't miss it */
+		AddNewsItem(
+			GetEncodedString(STR_ARCHIPELAGO_NEWS,
+			    fmt::format("DEATH LINK from {}! {} industry shut down!", source, town_name)),
+			NewsType::General,
+			NewsStyle::Normal,
+			{}
+		);
+		IConsolePrint(CC_ERROR, fmt::format("[AP] DEATH LINK from {}! Industry closure {}!", source, town_name));
 		Debug(misc, 0, "[AP] Death received from {} — shut down industry {}", source, victim->index.base());
 	} else {
 		/* Fallback: no active industries yet — take a money penalty */
@@ -1007,7 +1000,14 @@ static void AP_OnDeathReceived(const std::string &source)
 		if (c != nullptr) {
 			c->money -= (Money)std::max((int64_t)50000LL, (int64_t)(c->money / 10));
 		}
-		AP_ShowNews(fmt::format("[AP] DEATH LINK from {}! Emergency costs drained your funds!", source));
+		AddNewsItem(
+			GetEncodedString(STR_ARCHIPELAGO_NEWS,
+			    fmt::format("DEATH LINK from {}! Emergency costs drained your funds!", source)),
+			NewsType::General,
+			NewsStyle::Normal,
+			{}
+		);
+		IConsolePrint(CC_ERROR, fmt::format("[AP] DEATH LINK from {}! Emergency costs drained your funds!", source));
 		Debug(misc, 0, "[AP] Death received from {} — no active industries, money penalty applied", source);
 	}
 }
@@ -1255,7 +1255,138 @@ static uint32_t _ap_realtime_ticks = 0;
 static int _ap_shop_day_counter  = 0;   ///< Days elapsed since last shop refresh
 static int _ap_shop_page_offset  = 0;   ///< Current page offset into the full shop list
 
-int AP_GetShopPageOffset() { return _ap_shop_page_offset; }
+/* ── Savegame accessor functions (used by archipelago_sl.cpp) ────── */
+int  AP_GetShopPageOffset()  { return _ap_shop_page_offset; }
+void AP_SetShopPageOffset(int v) { _ap_shop_page_offset = v; }
+int  AP_GetShopDayCounter()  { return _ap_shop_day_counter; }
+void AP_SetShopDayCounter(int v) { _ap_shop_day_counter = v; }
+bool AP_GetGoalSent()        { return _ap_goal_sent; }
+void AP_SetGoalSent(bool v)  { _ap_goal_sent = v; }
+
+std::string AP_GetCompletedMissionsStr()
+{
+    std::string out;
+    for (const APMission &m : _ap_pending_sd.missions) {
+        if (!m.completed) continue;
+        if (!out.empty()) out += ',';
+        out += m.location;
+    }
+    return out;
+}
+
+void AP_SetCompletedMissionsStr(const std::string &s)
+{
+    if (s.empty()) return;
+    /* Split by comma and mark matching missions as completed */
+    std::set<std::string> done;
+    std::string token;
+    for (char c : s) {
+        if (c == ',') { if (!token.empty()) done.insert(token); token.clear(); }
+        else token += c;
+    }
+    if (!token.empty()) done.insert(token);
+    for (APMission &m : _ap_pending_sd.missions) {
+        if (done.count(m.location)) m.completed = true;
+    }
+}
+
+void AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out)
+{
+    for (int i = 0; i < num_cargo && i < (int)NUM_CARGO; i++)
+        cargo_out[i] = _ap_cumul_cargo[i];
+    *profit_out = (int64_t)_ap_cumul_profit;
+}
+
+void AP_SetCumulStats(const uint64_t *cargo_in, int num_cargo, int64_t profit_in)
+{
+    for (int i = 0; i < num_cargo && i < (int)NUM_CARGO; i++)
+        _ap_cumul_cargo[i] = cargo_in[i];
+    _ap_cumul_profit = (Money)profit_in;
+    _ap_stats_initialized = true;
+}
+
+/* Returns "location=N,location=N,..." for all maintain missions with N>0 */
+std::string AP_GetMaintainCountersStr()
+{
+    std::string out;
+    for (const APMission &m : _ap_pending_sd.missions) {
+        if (m.type.find("maintain") == std::string::npos) continue;
+        if (m.maintain_months_ok == 0) continue;
+        if (!out.empty()) out += ',';
+        out += m.location + '=' + fmt::format("{}", m.maintain_months_ok);
+    }
+    return out;
+}
+
+void AP_SetMaintainCountersStr(const std::string &s)
+{
+    if (s.empty()) return;
+    /* Parse "loc=N,loc=N,..." */
+    std::string token;
+    auto apply = [&](const std::string &t) {
+        auto eq = t.find('=');
+        if (eq == std::string::npos) return;
+        std::string loc = t.substr(0, eq);
+        int n = 0;
+        for (char c : t.substr(eq + 1)) {
+            if (c >= '0' && c <= '9') n = n * 10 + (c - '0');
+        }
+        for (APMission &m : _ap_pending_sd.missions) {
+            if (m.location == loc) { m.maintain_months_ok = n; break; }
+        }
+    };
+    for (char c : s) {
+        if (c == ',') { apply(token); token.clear(); }
+        else token += c;
+    }
+    apply(token);
+}
+
+/* -------------------------------------------------------------------------
+ * Monthly timer: advance "maintain rating" mission counters.
+ * For each incomplete maintain-mission, check if ALL rated stations owned by
+ * the player currently meet the threshold. If yes, increment the counter;
+ * if any station falls below, reset it to zero.
+ * ---------------------------------------------------------------------- */
+static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
+	{ TimerGameCalendar::MONTH, TimerGameCalendar::Priority::NONE },
+	[](auto) {
+		if (!_ap_session_started) return;
+
+		CompanyID cid = _local_company;
+
+		for (APMission &m : _ap_pending_sd.missions) {
+			if (m.completed) continue;
+			if (m.type.find("maintain") == std::string::npos) continue;
+
+			/* Determine threshold: 75% → 191/255, 90% → 229/255 */
+			uint8_t threshold = 191;
+			if (m.type.find("90") != std::string::npos) threshold = 229;
+
+			/* Check every rated station — ALL must pass */
+			int rated_count = 0;
+			for (const Station *st : Station::Iterate()) {
+				if (st->owner != cid) continue;
+				for (CargoType ct = 0; ct < NUM_CARGO; ct++) {
+					if (!st->goods[ct].HasRating()) continue;
+					rated_count++;
+					if (st->goods[ct].rating < threshold) {
+						/* This station failed — reset and stop checking */
+						m.maintain_months_ok = 0;
+						goto next_mission;
+					}
+				}
+			}
+			/* Only count progress if player actually has rated stations */
+			if (rated_count > 0) {
+				m.maintain_months_ok++;
+				Debug(misc, 1, "[AP] Maintain mission '{}': {}/{} months OK",
+				      m.location, m.maintain_months_ok, m.amount);
+			}
+			next_mission:;
+		}
+	}
+);
 
 static const IntervalTimer<TimerGameCalendar> _ap_calendar_shop_refresh(
 	{ TimerGameCalendar::DAY, TimerGameCalendar::Priority::NONE },

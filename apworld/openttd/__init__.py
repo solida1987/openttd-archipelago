@@ -22,12 +22,13 @@ from .locations import (
     get_location_table, DIFFICULTY_DISTRIBUTION,
     MISSION_TEMPLATES, CARGO_TYPES
 )
-from .options import OpenTTDOptions
+from .options import OpenTTDOptions, OPTION_GROUPS
 from .rules import set_rules
 
 
 class OpenTTDWeb(WebWorld):
     theme = "ocean"
+    option_groups = OPTION_GROUPS
     tutorials = [Tutorial(
         "OpenTTD Setup Guide",
         "A guide to setting up OpenTTD Archipelago.",

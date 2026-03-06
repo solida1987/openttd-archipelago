@@ -5,12 +5,6 @@ For base OpenTTD known bugs, see the upstream repository.
 
 ## Archipelago Integration
 
-### "Maintain X% rating for N months" mission is easier than described
-Counts the number of stations currently meeting the rating threshold rather than
-tracking a sustained rating over a rolling time window.
-Completable but slightly easier than the description implies.
-**Severity:** Low — does not affect game stability.
-
 ### WebSocket compression not supported
 The client does not support permessage-deflate compression.
 The Archipelago server logs a warning about this but the connection works normally.

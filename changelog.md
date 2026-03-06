@@ -1,17 +1,45 @@
 # Changelog — OpenTTD Archipelago
 
+## [1.0.0-beta3] — 2026-03-06
+
+### Fixed
+- **"Maintain X% rating for N months" missions** — now correctly tracks consecutive months
+  where ALL rated stations meet the threshold. Any station falling below threshold resets
+  the counter to zero. Previously approximated by counting qualifying stations.
+- **DeathLink notification** — inbound deaths now show a full newspaper popup
+  (`NewsStyle::Normal`) instead of the small corner notification, making them impossible
+  to miss. Error is also printed in red to the console.
+- **Server field placeholder** — default no longer shows `wss://` prefix; auto-detection
+  handles protocol selection transparently.
+
+### Added
+- **Savegame persistence (APST chunk)** — AP session state now survives save/load:
+  - Connection credentials (host, port, slot, password)
+  - Completed mission list
+  - Shop page offset and day counter
+  - Cumulative cargo and profit statistics
+  - "Maintain rating" month counters
+- **Maintain rating counter persistence** — month counters for rating missions are saved
+  and restored, so long-running missions are not reset by a save/load cycle.
+
+### Changed
+- Dead code cleanup: removed unused `bool fin` warning (C4189), unused `bool all_pass`
+  variable in maintain timer, and unreachable `WAPGUI_BTN_MISSIONS` click handler.
+
+---
+
 ## [1.0.0-beta2] — 2026-03-05
 
 ### Fixed
-- **WSS support** — client now connects to the official archipelago.gg WebHost using encrypted WebSocket (wss://)
-  - TLS implemented via Windows Schannel — no external dependencies required
-  - `wss://` is now always prepended automatically; users only type the host and port
-- **Build fix** — zlib dependency is now optional (`#ifdef WITH_ZLIB`); build succeeds without it and falls back to uncompressed WebSocket frames
-- **GUI** — `wss://` displayed as a fixed label next to the server field so it cannot be accidentally deleted
+- **WSS/WS auto-detection** — client now probes WSS first and falls back to plain WS
+  automatically; users never need to type a scheme prefix
+- **Build fix** — zlib dependency is now optional (`#ifdef WITH_ZLIB`); build succeeds
+  without it and falls back to uncompressed WebSocket frames
 
 ### Changed
-- Server field default placeholder changed from `archipelago.gg:38281` to `archipelago.gg:38281` (scheme handled automatically)
-- Reconnect button also uses WSS automatically
+- Server field placeholder changed to `archipelago.gg:38281` — scheme is handled
+  automatically and no longer shown in the input field
+- Reconnect button uses the same auto-detection logic
 
 ---
 
@@ -47,9 +75,3 @@ First public beta release.
 **APWorld**
 - Full Archipelago APWorld (`openttd.apworld`) with 56 configurable YAML options
 - Supports Archipelago 0.6.6+
-
-### Known Issues
-
-- "Maintain X% rating for N months" counts qualifying stations rather than tracking sustained rating over time
-- WebSocket compression not supported (server shows a warning, connection works normally)
-- Multiplayer (multiple companies in one game) not supported

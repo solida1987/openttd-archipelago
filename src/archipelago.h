@@ -46,6 +46,8 @@ struct APMission {
 	int64_t     amount = 0;
 	int64_t     current_value = 0; ///< Live progress – updated by CheckMissions() each tick
 	bool        completed = false;
+	/* "maintain" missions: counts consecutive months ALL stations have held the required rating */
+	int32_t     maintain_months_ok = 0;
 };
 
 /** Win condition type. */

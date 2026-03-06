@@ -768,7 +768,7 @@ bool ArchipelagoClient::RecvWsFrame(int sockfd, std::string &out_text, bool &out
 	}
 
 	uint8_t opcode = header[0] & 0x0F;
-	bool fin       = (header[0] & 0x80) != 0;
+	[[maybe_unused]] bool fin = (header[0] & 0x80) != 0;
 	bool masked    = (header[1] & 0x80) != 0;
 	uint64_t plen  = header[1] & 0x7F;
 
@@ -1176,35 +1176,86 @@ void ArchipelagoClient::WorkerThread()
 	freeaddrinfo(res);
 	AP_OK("TCP connected! Starting WebSocket handshake...");
 
+/* ── Auto-detect WSS vs WS ──────────────────────────────────────────────
+ * Strategy: try WSS (TLS) first. If TLS or WS handshake fails, reconnect
+ * and retry as plain WS. This means users never need to type wss:// or ws://.
+ * ──────────────────────────────────────────────────────────────────────── */
 #ifdef _WIN32
 	ApTlsCtx *tls = nullptr;
-	if (use_ssl) {
-		tls = new ApTlsCtx();
-		AP_LOG("Starting TLS handshake (Schannel)...");
-		if (!tls->Handshake(s, host)) {
-			delete tls;
-			sock_close(s);
-			last_error = "TLS handshake failed";
-			AP_ERR("TLS handshake failed — certificate or network error");
+	bool ws_ok = false;
+
+	/* Attempt 1: WSS */
+	AP_LOG("Trying WSS (TLS)...");
+	tls = new ApTlsCtx();
+	if (tls->Handshake(s, host)) {
+		tls_ctx_tl = tls;
+		AP_OK("TLS handshake OK — trying WebSocket upgrade...");
+		if (DoWebSocketHandshake((int)s, host, port)) {
+			ws_ok = true;
+			AP_OK("WSS connection established.");
+		} else {
+			AP_WARN("WSS WebSocket handshake failed — falling back to plain WS.");
+			delete tls; tls = nullptr; tls_ctx_tl = nullptr;
+		}
+	} else {
+		AP_WARN("TLS handshake failed — falling back to plain WS.");
+		delete tls; tls = nullptr;
+	}
+
+	if (!ws_ok) {
+		/* Attempt 2: plain WS — reconnect the socket */
+		sock_close(s);
+		if (tls_ctx_tl) { delete tls_ctx_tl; tls_ctx_tl = nullptr; }
+
+		struct addrinfo hints2{}, *res2 = nullptr;
+		hints2.ai_family   = AF_UNSPEC;
+		hints2.ai_socktype = SOCK_STREAM;
+		if (getaddrinfo(host.c_str(), port_str.c_str(), &hints2, &res2) != 0 || res2 == nullptr) {
+			last_error = "Could not resolve host: " + host;
 			state.store(APState::AP_ERROR);
 			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
 			return;
 		}
-		tls_ctx_tl = tls; /* thread-local pointer used by SendAll/RecvAll */
-		AP_OK("TLS handshake OK.");
+		s = socket(res2->ai_family, res2->ai_socktype, res2->ai_protocol);
+		if (s == SOCK_INVALID) {
+			freeaddrinfo(res2);
+			last_error = "Socket creation failed (WS retry)";
+			state.store(APState::AP_ERROR);
+			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
+			return;
+		}
+		AP_LOG(fmt::format("Retrying TCP connect to {}:{} (plain WS)...", host, port));
+		if (connect(s, res2->ai_addr, (int)res2->ai_addrlen) != 0) {
+			freeaddrinfo(res2);
+			sock_close(s);
+			last_error = "Could not connect to " + host + ":" + fmt::format("{}", port);
+			state.store(APState::AP_ERROR);
+			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
+			return;
+		}
+		freeaddrinfo(res2);
+		AP_LOG("TCP reconnected — trying plain WebSocket...");
+		if (!DoWebSocketHandshake((int)s, host, port)) {
+			sock_close(s);
+			last_error = "WebSocket handshake failed (both WSS and WS attempted)";
+			AP_ERR("Both WSS and WS failed — check server address.");
+			state.store(APState::AP_ERROR);
+			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
+			return;
+		}
+		AP_OK("Plain WS connection established.");
 	}
-#endif
-
-	state.store(APState::CONNECTED);
+#else
+	/* Non-Windows: plain WS only */
 	if (!DoWebSocketHandshake((int)s, host, port)) {
 		sock_close(s);
 		last_error = "WebSocket handshake failed";
-		AP_ERR("WebSocket handshake failed — server rejected upgrade");
 		state.store(APState::AP_ERROR);
 		PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
 		return;
 	}
-	AP_OK("WebSocket handshake OK! Waiting for RoomInfo...");
+	AP_OK("WS connection established.");
+#endif
 
 	/* Set recv timeout AFTER handshake — 30s so the loop can poll stop_requested */
 #ifdef _WIN32

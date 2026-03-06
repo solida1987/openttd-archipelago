@@ -2,6 +2,7 @@ add_subdirectory(compat)
 
 add_files(
     afterload.cpp
+    archipelago_sl.cpp
     ai_sl.cpp
     airport_sl.cpp
     animated_tile_sl.cpp
