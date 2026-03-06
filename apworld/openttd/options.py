@@ -581,13 +581,13 @@ OPTION_GROUPS = [
 #  MAIN OPTIONS DATACLASS
 # ═══════════════════════════════════════════════════════════════
 
-@dataclass
 class OpenTTDDeathLink(DeathLink):
     """When you die, everyone dies. When anyone else dies, you die.
     Death is triggered by vehicle crashes. Off by default."""
     default = 0
 
 
+@dataclass
 class OpenTTDOptions(PerGameCommonOptions):
     # Randomizer
     mission_count:                   MissionCount
