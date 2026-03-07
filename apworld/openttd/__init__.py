@@ -59,7 +59,7 @@ class OpenTTDWorld(World):
     # Pre-build with max possible config so AP can read locations at class level
     location_name_to_id: Dict[str, int] = {
         name: data.code
-        for name, data in get_location_table(mission_count=300, shop_slots=10).items()
+        for name, data in get_location_table(mission_count=1140, shop_slots=3).items()
     }
 
     # Slot data stored during generation
@@ -70,6 +70,7 @@ class OpenTTDWorld(World):
         super().__init__(*args, **kwargs)
         self._generated_missions = []
         self._slot_data = {}
+        self._shop_prices_cache: Dict[str, int] = {}
 
     def _get_location_table(self):
         mc, ss = self._compute_pool_size()
@@ -148,6 +149,13 @@ class OpenTTDWorld(World):
         mission_count, _shop_slots = self._compute_pool_size()
         missions = []
 
+        # Difficulty multiplier — only applied to monetary / cargo amounts.
+        # Vehicle counts, town counts, station counts, months, etc. are NOT scaled
+        # so missions stay logically completable regardless of difficulty setting.
+        _DIFFICULTY_SCALES = {0: 0.25, 1: 0.5, 2: 1.0, 3: 2.0, 4: 4.0}
+        diff_scale = _DIFFICULTY_SCALES.get(self.options.mission_difficulty.value, 1.0)
+        _SCALE_UNITS = {"£", "£/month", "units", "passengers", "tons", "passengers_to_town", "mail_to_town", "cargo_to_industry", "cargo_from_industry"}
+
         # Climate-appropriate cargo list
         landscape = self.options.landscape.value
         cargo_list = CARGO_BY_LANDSCAPE.get(landscape, CARGO_TYPES)
@@ -200,16 +208,20 @@ class OpenTTDWorld(World):
                     amount = 1
                 else:
                     # Determine the minimum allowed amount for this slot
-                    floor = amt_min
+                    # Apply difficulty scaling to monetary/cargo units only
+                    scaled_min = max(1, int(amt_min * diff_scale)) if unit in _SCALE_UNITS else amt_min
+                    scaled_max = max(scaled_min, int(amt_max * diff_scale)) if unit in _SCALE_UNITS else amt_max
+
+                    floor = scaled_min
                     if type_key in type_max:
                         floor = max(floor, type_max[type_key] * MIN_SPACING_FACTOR)
 
                     # If the floor already exceeds the template max, skip this
                     # template entirely for this difficulty (pool exhausted)
-                    if floor > amt_max:
+                    if floor > scaled_max:
                         continue
 
-                    amount = rng.randint(floor, amt_max)
+                    amount = rng.randint(floor, scaled_max)
                     amount = self._round_to_nice(amount)
                     amount = max(floor, amount)  # rounding must not go below floor
 
@@ -238,11 +250,19 @@ class OpenTTDWorld(World):
                 if unit != "purchase":
                     type_max[type_key] = max(type_max.get(type_key, 0), amount)
 
+                # For named-destination missions (town/industry), the unit IS the
+                # canonical type identifier that C++ uses for matching.
+                # Override the template-derived type_key with the unit string.
+                effective_type = unit if unit in {
+                    "passengers_to_town", "mail_to_town",
+                    "cargo_to_industry", "cargo_from_industry"
+                } else type_key
+
                 generated.append({
                     "location":    f"Mission_{difficulty.capitalize()}_{len(generated)+1:03d}",
                     "difficulty":  difficulty,
                     "description": description,
-                    "type":        type_key,
+                    "type":        effective_type,
                     "amount":      amount,
                     "cargo":       cargo,
                     "unit":        unit,
@@ -277,8 +297,31 @@ class OpenTTDWorld(World):
 
         class OpenTTDLocation(APLocation):
             game = "OpenTTD"
+            _hint_text_override: str = ""
+
+            @property
+            def hint_text(self) -> str:
+                if self._hint_text_override:
+                    return self._hint_text_override
+                return super().hint_text
+
+            @hint_text.setter
+            def hint_text(self, value: str) -> None:
+                self._hint_text_override = value
 
         loc_table = self._get_location_table()
+
+        # Pre-generate shop prices so we can annotate hint text
+        shop_prices = self._generate_shop_prices()
+
+        # Build mission description lookup for hint text
+        mission_hints: Dict[str, str] = {}
+        for m in self._generated_missions:
+            loc  = m.get("location", "")
+            desc = m.get("description", "")
+            mtyp = m.get("type", "")
+            if loc and (desc or mtyp):
+                mission_hints[loc] = desc if desc else mtyp
 
         # Create all regions
         region_names = ["Menu", "mission_easy", "mission_medium",
@@ -294,6 +337,14 @@ class OpenTTDWorld(World):
             address = None if loc_name == "Goal_Victory" else loc_data.code
             location = OpenTTDLocation(self.player, loc_name, address, region)
             location.progress_type = loc_data.progress_type
+
+            # Hint text: shop locations show price, missions show description/type
+            if loc_name in shop_prices:
+                price = shop_prices[loc_name]
+                location.hint_text = f"costs £{price:,}"
+            elif loc_name in mission_hints:
+                location.hint_text = mission_hints[loc_name]
+
             region.locations.append(location)
 
         # Connect Menu → everything
@@ -350,6 +401,43 @@ class OpenTTDWorld(World):
             chosen_type = "one_of_each"
             for sv in starting_vehicles:
                 self.multiworld.push_precollected(self.create_item(sv))
+
+        elif start_type == 6:
+            # custom: give the player N randomly chosen starting vehicles.
+            # We sample from ALL available starter pools (all four transport
+            # types) so the player gets a mix, then deduplicate.
+            count = max(1, self.options.starting_vehicle_count.value)
+            chosen_type = "custom"
+            all_starters: List[str] = []
+            for vtype in type_names.values():
+                pool = STARTING_VEHICLES[vtype]
+                if not is_toyland:
+                    pool = [v for v in pool if v not in TOYLAND_ONLY_STARTERS]
+                all_starters.extend(pool)
+            # Remove duplicates but keep order deterministic via seeded rng
+            seen: set = set()
+            unique_starters: List[str] = []
+            for v in all_starters:
+                if v not in seen:
+                    seen.add(v)
+                    unique_starters.append(v)
+            self.random.shuffle(unique_starters)
+            # Pick up to `count` vehicles; wrap around if count > pool size
+            starting_vehicles = []
+            for i in range(count):
+                starting_vehicles.append(unique_starters[i % len(unique_starters)])
+            # Deduplicate while preserving order (no point unlocking same vehicle twice)
+            seen2: set = set()
+            starting_vehicles_deduped: List[str] = []
+            for v in starting_vehicles:
+                if v not in seen2:
+                    seen2.add(v)
+                    starting_vehicles_deduped.append(v)
+            starting_vehicles = starting_vehicles_deduped
+            starting_vehicle = starting_vehicles[0]
+            for sv in starting_vehicles:
+                self.multiworld.push_precollected(self.create_item(sv))
+
         else:
             if start_type == 0:
                 chosen_type = self.random.choice(list(type_names.values()))
@@ -378,7 +466,15 @@ class OpenTTDWorld(World):
             trap_pool = []
 
         utility_target = max(10, int(total_locations * 0.20))
-        utility_pool = (UTILITY_ITEMS * 20)[:utility_target]
+        # Build the utility pool by cycling evenly through all utility types
+        # rather than repeating the list in order. This prevents any single
+        # item (e.g. Reliability Boost) from dominating the shop rotation.
+        utility_pool: List[str] = []
+        while len(utility_pool) < utility_target:
+            batch = list(UTILITY_ITEMS)
+            self.random.shuffle(batch)
+            utility_pool.extend(batch)
+        utility_pool = utility_pool[:utility_target]
 
         reserved = len(trap_pool) + len(utility_pool)
 
@@ -518,6 +614,12 @@ class OpenTTDWorld(World):
             "item_id_to_name": item_id_to_name,
             "locked_vehicles": locked_vehicles_list,
             "shop_prices": self._generate_shop_prices(),
+            "shop_item_names": {
+                loc: self.multiworld.get_location(loc, self.player).item.name
+                for loc in self._get_location_table()
+                if loc.startswith("Shop_Purchase_")
+                and self.multiworld.get_location(loc, self.player).item is not None
+            },
             # ── Game settings: Accounting ──────────────────────────
             "infinite_money":             bool(self.options.infinite_money.value),
             "inflation":                  bool(self.options.inflation.value),
@@ -553,6 +655,12 @@ class OpenTTDWorld(World):
             "industry_density":           self.options.industry_density.value,
             "allow_town_roads":           bool(self.options.allow_town_roads.value),
             "road_side":                  self.options.road_side.value,
+            # ── DeathLink ──────────────────────────────────────────
+            "death_link":                 bool(self.options.death_link.value),
+            # ── Difficulty / balance ───────────────────────────────
+            "starting_cash_bonus":        self.options.starting_cash_bonus.value,
+            "starting_vehicle_count":     self.options.starting_vehicle_count.value,
+            "mission_difficulty":         self.options.mission_difficulty.value,
         })
         return self._slot_data
 
@@ -565,18 +673,47 @@ class OpenTTDWorld(World):
     }
 
     def _generate_shop_prices(self) -> Dict[str, int]:
-        """Assign a random price to every shop location based on the chosen tier."""
-        tier = self.options.shop_price_tier.value
-        price_min, price_max = self.SHOP_PRICE_RANGES[tier]
+        """Assign a random price to every shop location.
+
+        Uses shop_price_min / shop_price_max if both are non-zero.
+        Otherwise falls back to the shop_price_tier ranges.
+        Prices are sorted ascending so early shop rotations are cheapest.
+        Result is cached so repeated calls return identical prices.
+        """
+        if self._shop_prices_cache:
+            return self._shop_prices_cache
+
+        price_min_opt = self.options.shop_price_min.value
+        price_max_opt = self.options.shop_price_max.value
+
+        if price_min_opt > 0 or price_max_opt > 0:
+            # Custom range — clamp and validate
+            price_min = max(1, price_min_opt)
+            price_max = max(price_min + 1, price_max_opt) if price_max_opt > 0 else price_min * 10
+        else:
+            # Tier fallback
+            tier = self.options.shop_price_tier.value
+            price_min, price_max = self.SHOP_PRICE_RANGES[tier]
+
         rng = self.random
         _mc, computed_ss = self._compute_pool_size()
         shop_total = computed_ss * 20
+        # Generate all prices randomly, then sort ascending so the shop
+        # naturally shows affordable items first and expensive ones last.
+        # This means the first shop rotation is always cheapest, later ones
+        # progressively more expensive — a natural difficulty ramp.
+        raw_prices = [
+            self._round_to_nice(rng.randint(price_min, price_max))
+            for _ in range(shop_total)
+        ]
+        raw_prices.sort()  # cheapest → most expensive
+
         prices: Dict[str, int] = {}
-        for i in range(1, shop_total + 1):
+        for i, price in enumerate(raw_prices, start=1):
             loc = f"Shop_Purchase_{i:04d}"
-            raw = rng.randint(price_min, price_max)
-            # Round to a "nice" number
-            prices[loc] = self._round_to_nice(raw)
+            prices[loc] = price
+
+        self._shop_prices_cache = prices
         return prices
 
     def generate_output(self, output_directory: str) -> None:

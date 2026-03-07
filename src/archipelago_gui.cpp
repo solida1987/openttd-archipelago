@@ -15,6 +15,7 @@
 #include "window_func.h"
 #include "gfx_func.h"
 #include "strings_func.h"
+#include "viewport_func.h"
 #include "querystring_gui.h"
 #include "fontcache.h"
 #include "currency.h"
@@ -462,6 +463,20 @@ struct ArchipelagoMissionsWindow : public Window {
 			case WAPM_FILTER_MEDIUM:  SetFilterButton("medium");  break;
 			case WAPM_FILTER_HARD:    SetFilterButton("hard");    break;
 			case WAPM_FILTER_EXTREME: SetFilterButton("extreme"); break;
+
+			case WAPM_LIST: {
+				/* Click on a mission row — if it has a named entity (town/industry),
+				 * scroll the main viewport to that location on the map. */
+				int rh    = GetCharacterHeight(FS_NORMAL) + 3;
+				const Rect &r = this->GetWidget<NWidgetBase>(WAPM_LIST)->GetCurrentRect();
+				int row   = this->scrollbar->GetPosition() + (pt.y - r.top - 2) / rh;
+				if (row < 0 || row >= (int)visible_missions.size()) break;
+				const APMission *m = visible_missions[row];
+				if (m->named_entity.tile != UINT32_MAX) {
+					ScrollMainWindowToTile(TileIndex{m->named_entity.tile});
+				}
+				break;
+			}
 		}
 	}
 
@@ -485,18 +500,26 @@ struct ArchipelagoMissionsWindow : public Window {
 			if      (m->difficulty == "easy")    tc = TC_GREEN;
 			else if (m->difficulty == "medium")  tc = TC_YELLOW;
 			else if (m->difficulty == "hard")    tc = TC_ORANGE;
-			else if (m->difficulty == "extreme") tc = TC_RED;
+			else if (m->difficulty == "extreme") tc = TC_WHITE; /* TC_RED was too harsh */
 
-			if (m->completed) tc = TC_DARK_GREEN;
+			if (m->completed) {
+				tc = TC_DARK_GREEN; /* completed missions always dark green */
+			} else if (m->named_entity.tile != UINT32_MAX) {
+				tc = TC_WHITE; /* clickable named missions drawn in white — signals interactivity */
+			}
 
 			/* Format: [X] Easy - Description  (current/target) */
 			std::string prefix = m->completed ? "[X] " : "[ ] ";
 			std::string cap_diff = m->difficulty.empty() ? "" :
 				std::string(1, (char)toupper((unsigned char)m->difficulty[0])) + m->difficulty.substr(1);
 
-			/* Build progress string for incomplete missions */
+			/* Build progress string for incomplete missions.
+			 * Named missions always show progress (even 0) so the player knows
+			 * the tracker is live. Other missions only show once progress > 0. */
+			bool is_named = (m->type == "passengers_to_town" || m->type == "mail_to_town" ||
+			                 m->type == "cargo_from_industry" || m->type == "cargo_to_industry");
 			std::string progress_str;
-			if (!m->completed && m->amount > 0 && m->current_value > 0) {
+			if (!m->completed && m->amount > 0 && (m->current_value > 0 || is_named)) {
 				/* Detect money missions by unit */
 				bool is_money = (m->unit == "\xC2\xA3" || m->unit == "£" ||
 				                 m->unit.find("/month") != std::string::npos ||
@@ -533,7 +556,13 @@ struct ArchipelagoMissionsWindow : public Window {
 				}
 			}
 
-			std::string line = prefix + cap_diff + " - " + desc + progress_str;
+			/* For named missions (town/industry assigned), append a map-pin symbol
+			 * to hint that clicking this row will scroll the viewport there. */
+			std::string nav_hint;
+			if (m->named_entity.tile != UINT32_MAX) {
+				nav_hint = " \xe2\x86\x91"; /* ↑ unicode arrow — visual cue to scroll map */
+			}
+			std::string line = prefix + cap_diff + " - " + desc + progress_str + nav_hint;
 
 			DrawString(r.left + 4, r.right - 4, y, line, tc);
 			y += rh;
@@ -673,6 +702,14 @@ struct ArchipelagoShopWindow : public Window {
 			}
 		}
 		if (any_loading) RebuildShopList();
+	}
+
+	void OnInvalidateData([[maybe_unused]] int data = 0, [[maybe_unused]] bool gui_scope = true) override
+	{
+		/* Called when the shop rotates (SetWindowClassesDirty) or any other
+		 * invalidation — rebuild the list immediately so the new page is
+		 * visible without waiting for the next OnRealtimeTick poll. */
+		RebuildShopList();
 	}
 
 	void DrawWidget(const Rect &r, WidgetID widget) const override

@@ -62,6 +62,10 @@ void         AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profi
 void         AP_SetCumulStats(const uint64_t *cargo_in, int num_cargo, int64_t profit_in);
 std::string  AP_GetMaintainCountersStr();
 void         AP_SetMaintainCountersStr(const std::string &s);
+void         AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station);
+void         AP_SetEffectTimers(int fuel, int cargo, int reliability, int station);
+std::string  AP_GetNamedEntityStr();
+void         AP_SetNamedEntityStr(const std::string &s);
 
 /* ── Scratch variables for Save/Load ────────────────────────────────── */
 static std::string _ap_sl_host;
@@ -75,6 +79,11 @@ static bool        _ap_sl_goal_sent   = false;
 static int64_t     _ap_sl_profit      = 0;
 static std::string _ap_sl_cargo_str;
 static std::string _ap_sl_maintain_str;
+static int32_t     _ap_sl_fuel_ticks      = 0;
+static int32_t     _ap_sl_cargo_ticks     = 0;
+static int32_t     _ap_sl_reliability_ticks = 0;
+static int32_t     _ap_sl_station_ticks   = 0;
+static std::string _ap_sl_named_str;         /* named entity data: "loc:id:cumul;..." */
 
 /* ── SaveLoad table ─────────────────────────────────────────────────── */
 static const SaveLoad _ap_desc[] = {
@@ -88,7 +97,12 @@ static const SaveLoad _ap_desc[] = {
     SLEG_VAR ("goal_sent",   _ap_sl_goal_sent,    SLE_BOOL),
     SLEG_VAR ("profit",      _ap_sl_profit,       SLE_INT64),
     SLEG_SSTR("cargo",       _ap_sl_cargo_str,    SLE_STR),
-    SLEG_SSTR("maintain",    _ap_sl_maintain_str, SLE_STR),
+    SLEG_SSTR("maintain",    _ap_sl_maintain_str,      SLE_STR),
+    SLEG_VAR ("fuel_ticks",  _ap_sl_fuel_ticks,        SLE_INT32),
+    SLEG_VAR ("cargo_ticks", _ap_sl_cargo_ticks,       SLE_INT32),
+    SLEG_VAR ("rel_ticks",   _ap_sl_reliability_ticks, SLE_INT32),
+    SLEG_SSTR("named",       _ap_sl_named_str,         SLE_STR),
+    SLEG_VAR ("sta_ticks",   _ap_sl_station_ticks,     SLE_INT32),
 };
 
 struct APSTChunkHandler : ChunkHandler {
@@ -112,6 +126,11 @@ struct APSTChunkHandler : ChunkHandler {
         _ap_sl_profit    = profit;
         _ap_sl_cargo_str = PackCargo_AP(cargo, NC);
         _ap_sl_maintain_str = AP_GetMaintainCountersStr();
+        _ap_sl_named_str    = AP_GetNamedEntityStr();
+
+        /* Save active timed effect counters so bonuses/traps survive save/load */
+        AP_GetEffectTimers(&_ap_sl_fuel_ticks, &_ap_sl_cargo_ticks,
+                           &_ap_sl_reliability_ticks, &_ap_sl_station_ticks);
 
         SlTableHeader(_ap_desc);
         SlSetArrayIndex(0);
@@ -139,6 +158,9 @@ struct APSTChunkHandler : ChunkHandler {
         UnpackCargo_AP(_ap_sl_cargo_str, cargo, NC);
         AP_SetCumulStats(cargo, NC, _ap_sl_profit);
         AP_SetMaintainCountersStr(_ap_sl_maintain_str);
+        AP_SetNamedEntityStr(_ap_sl_named_str);
+        AP_SetEffectTimers(_ap_sl_fuel_ticks, _ap_sl_cargo_ticks,
+                           _ap_sl_reliability_ticks, _ap_sl_station_ticks);
     }
 };
 

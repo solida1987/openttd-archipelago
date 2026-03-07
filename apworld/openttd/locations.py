@@ -43,51 +43,93 @@ CARGO_TYPES = CARGO_BY_LANDSCAPE[0]
 # ─────────────────────────────────────────────────────────────────────────────
 
 MISSION_TEMPLATES = {
+    # ── EASY ─────────────────────────────────────────────────────────────
+    # Simple objectives suitable for new players building their first routes.
+    # Unique to easy: "Buy a vehicle from the shop", "Build X stations".
+    # Named missions (passengers_to_town / mail_to_town) force map exploration.
     "easy": [
-        ("Transport {amount} units of {cargo}",         2_000,    15_000,   "units"),
-        ("Earn £{amount} total profit",                 80_000,   300_000,  "£"),
-        ("Have {amount} vehicles running simultaneously", 3,       6,        "vehicles"),
-        ("Service {amount} different towns",            2,        4,        "towns"),
-        ("Transport {amount} passengers",               3_000,    20_000,   "passengers"),
-        ("Buy a vehicle from the shop",                 1,        1,        "purchase"),
-        ("Build {amount} stations",                     3,        6,        "stations"),
-        ("Earn £{amount} in one month",                 8_000,    40_000,   "£/month"),
+        ("Transport {amount} units of {cargo}",              2_000,   15_000,  "units"),
+        ("Earn £{amount} total profit",                      80_000,  300_000, "£"),
+        ("Have {amount} vehicles running simultaneously",    3,       6,       "vehicles"),
+        ("Service {amount} different towns",                 2,       4,       "towns"),
+        ("Transport {amount} passengers",                    3_000,   20_000,  "passengers"),
+        ("Buy a vehicle from the shop",                      1,       1,       "purchase"),
+        ("Build {amount} stations",                          3,       6,       "stations"),
+        ("Earn £{amount} in one month",                      8_000,   40_000,  "£/month"),
+        ("Have {amount} trains running simultaneously",      2,       5,       "trains"),
+        ("Have {amount} road vehicles running simultaneously", 2,     6,       "road vehicles"),
+        # Named-destination missions — C++ fills in real town/industry name at session start
+        ("Deliver {amount} passengers to [Town]",            500,     4_000,   "passengers_to_town"),
+        ("Deliver {amount} mail to [Town]",                  300,     3_000,   "mail_to_town"),
     ],
+    # ── MEDIUM ───────────────────────────────────────────────────────────
+    # Introduces ships, aircraft, station quality and multi-city rail networks.
+    # Unique to medium: "Deliver X tons to one station", "Maintain 75%".
+    # Named missions force players to build routes to specific map locations.
     "medium": [
-        ("Transport {amount} units of {cargo}",         30_000,   150_000,  "units"),
-        ("Earn £{amount} total profit",                 800_000,  4_000_000,"£"),
-        ("Have {amount} vehicles running simultaneously", 15,      40,       "vehicles"),
-        ("Service {amount} different towns",            8,        16,       "towns"),
-        ("Transport {amount} passengers",               80_000,   400_000,  "passengers"),
-        ("Deliver {amount} tons of {cargo} to one station", 8_000, 50_000,  "tons"),
-        ("Maintain 75%+ station rating for {amount} months", 4,   10,       "months"),
-        ("Earn £{amount} in one month",                 120_000,  600_000,  "£/month"),
-        ("Have {amount} trains running simultaneously", 8,        20,       "trains"),
-        ("Connect {amount} cities with rail",           4,        8,        "cities"),
+        ("Transport {amount} units of {cargo}",                   30_000,  150_000,  "units"),
+        ("Earn £{amount} total profit",                           800_000, 4_000_000,"£"),
+        ("Have {amount} vehicles running simultaneously",         15,      40,       "vehicles"),
+        ("Service {amount} different towns",                      8,       16,       "towns"),
+        ("Transport {amount} passengers",                         80_000,  400_000,  "passengers"),
+        ("Deliver {amount} tons of {cargo} to one station",      8_000,   50_000,   "tons"),
+        ("Maintain 75%+ station rating for {amount} months",     4,       10,       "months"),
+        ("Earn £{amount} in one month",                           120_000, 600_000,  "£/month"),
+        ("Have {amount} trains running simultaneously",           8,       20,       "trains"),
+        ("Connect {amount} cities with rail",                     4,       8,        "cities"),
+        ("Have {amount} ships running simultaneously",            2,       6,        "ships"),
+        ("Have {amount} aircraft running simultaneously",         3,       8,        "aircraft"),
+        ("Have {amount} road vehicles running simultaneously",    12,      30,       "road vehicles"),
+        # Named-destination missions
+        ("Deliver {amount} passengers to [Town]",                 5_000,   40_000,   "passengers_to_town"),
+        ("Deliver {amount} mail to [Town]",                       3_000,   20_000,   "mail_to_town"),
+        ("Supply {amount} tons to [Industry near Town]",          5_000,   40_000,   "cargo_to_industry"),
+        ("Transport {amount} tons from [Industry near Town]",     5_000,   40_000,   "cargo_from_industry"),
     ],
+    # ── HARD ─────────────────────────────────────────────────────────────
+    # Large-scale operations across all transport modes.
+    # Unique to hard: "Deliver X tons of goods in one year", "Maintain 90%".
+    # Named missions at hard scale require significant dedicated infrastructure.
     "hard": [
-        ("Transport {amount} units of {cargo}",         300_000,  1_500_000,"units"),
-        ("Earn £{amount} total profit",                 8_000_000, 30_000_000,"£"),
-        ("Have {amount} vehicles running simultaneously", 60,      120,      "vehicles"),
-        ("Service {amount} different towns",            20,       40,       "towns"),
-        ("Transport {amount} passengers",               800_000,  3_000_000,"passengers"),
-        ("Deliver {amount} tons of goods in one year",  150_000,  700_000,  "tons"),
-        ("Earn £{amount} in one month",                 800_000,  4_000_000,"£/month"),
-        ("Have {amount} trains running simultaneously", 25,       60,       "trains"),
-        ("Maintain 90%+ station rating for {amount} months", 8,   20,       "months"),
-        ("Transport {amount} units of {cargo}",         15_000,   80_000,   "units"),  # replaces hardcoded valuables — cargo filtered by landscape
+        ("Transport {amount} units of {cargo}",                   300_000,  1_500_000,"units"),
+        ("Earn £{amount} total profit",                           8_000_000,30_000_000,"£"),
+        ("Have {amount} vehicles running simultaneously",         60,       120,      "vehicles"),
+        ("Service {amount} different towns",                      20,       40,       "towns"),
+        ("Transport {amount} passengers",                         800_000,  3_000_000,"passengers"),
+        ("Deliver {amount} tons of goods in one year",            150_000,  700_000,  "tons"),
+        ("Earn £{amount} in one month",                           800_000,  4_000_000,"£/month"),
+        ("Have {amount} trains running simultaneously",           25,       60,       "trains"),
+        ("Maintain 90%+ station rating for {amount} months",     8,        20,       "months"),
+        ("Have {amount} ships running simultaneously",            8,        20,       "ships"),
+        ("Have {amount} aircraft running simultaneously",         10,       25,       "aircraft"),
+        ("Have {amount} road vehicles running simultaneously",    30,       70,       "road vehicles"),
+        ("Connect {amount} cities with rail",                     12,       25,       "cities"),
+        # Named-destination missions
+        ("Deliver {amount} passengers to [Town]",                 80_000,   500_000,  "passengers_to_town"),
+        ("Deliver {amount} mail to [Town]",                       40_000,   200_000,  "mail_to_town"),
+        ("Supply {amount} tons to [Industry near Town]",          50_000,   300_000,  "cargo_to_industry"),
+        ("Transport {amount} tons from [Industry near Town]",     50_000,   300_000,  "cargo_from_industry"),
     ],
+    # ── EXTREME ──────────────────────────────────────────────────────────
+    # Megacorporation-level targets. No generic "vehicles" count — only
+    # mode-specific fleets to push players towards a diversified empire.
+    # Unique to extreme: "Earn in a single month" (vs "in one month"), huge cargo haul.
     "extreme": [
-        ("Transport {amount} units of {cargo}",         3_000_000, 15_000_000,"units"),
-        ("Earn £{amount} total profit",                 80_000_000, 300_000_000,"£"),
-        ("Have {amount} vehicles running simultaneously", 150,     350,      "vehicles"),
-        ("Service {amount} different towns",            60,       100,      "towns"),
-        ("Transport {amount} passengers in total",      8_000_000, 30_000_000,"passengers"),
-        ("Earn £{amount} in a single month",            8_000_000, 30_000_000,"£/month"),
-        ("Have {amount} trains running simultaneously", 100,      200,      "trains"),
-        ("Have {amount} aircraft running simultaneously", 30,     80,       "aircraft"),
-        ("Transport {amount} units of {cargo}",         800_000,  3_000_000,"units"),  # replaces hardcoded steel — cargo filtered by landscape
-        ("Have {amount} road vehicles running simultaneously", 80, 200,     "road vehicles"),
+        ("Transport {amount} units of {cargo}",                   3_000_000, 15_000_000,"units"),
+        ("Earn £{amount} total profit",                           80_000_000,300_000_000,"£"),
+        ("Service {amount} different towns",                      60,        100,       "towns"),
+        ("Transport {amount} passengers",                         8_000_000, 30_000_000,"passengers"),
+        ("Earn £{amount} in a single month",                      8_000_000, 30_000_000,"£/month"),
+        ("Have {amount} trains running simultaneously",           100,       200,       "trains"),
+        ("Have {amount} aircraft running simultaneously",         30,        80,        "aircraft"),
+        ("Have {amount} road vehicles running simultaneously",    80,        200,       "road vehicles"),
+        ("Have {amount} ships running simultaneously",            20,        60,        "ships"),
+        ("Connect {amount} cities with rail",                     40,        80,        "cities"),
+        ("Deliver {amount} tons of {cargo} to one station",      500_000,   2_000_000, "tons"),
+        # Named-destination missions — extreme scale requires massive dedicated networks
+        ("Deliver {amount} passengers to [Town]",                 500_000,   3_000_000,  "passengers_to_town"),
+        ("Supply {amount} tons to [Industry near Town]",          300_000,   2_000_000,  "cargo_to_industry"),
+        ("Transport {amount} tons from [Industry near Town]",     300_000,   2_000_000,  "cargo_from_industry"),
     ],
 }
 

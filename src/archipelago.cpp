@@ -542,6 +542,9 @@ static APSlotData ParseSlotData(const json &msg)
 
 	/* Death Link — from options.py; note: AP sends this as a top-level slot_data field */
 	sd.death_link                = d.value("death_link",           false);
+	sd.starting_cash_bonus       = d.value("starting_cash_bonus",  0);
+	sd.starting_vehicle_count    = d.value("starting_vehicle_count", 1);
+	sd.mission_difficulty        = d.value("mission_difficulty",   2);
 
 	/* NewGRF options */
 	sd.enable_iron_horse         = (bool)d.value("enable_iron_horse", 0);
@@ -576,6 +579,15 @@ static APSlotData ParseSlotData(const json &msg)
 			}
 		}
 		Debug(misc, 0, "[AP] SlotData: {} shop prices loaded", sd.shop_prices.size());
+
+	/* shop_item_names — APWorld sends {location_name: item_name} */
+	if (d.contains("shop_item_names") && d["shop_item_names"].is_object()) {
+		for (auto &[loc, name] : d["shop_item_names"].items()) {
+			if (name.is_string())
+				sd.shop_item_names[loc] = name.get<std::string>();
+		}
+		Debug(misc, 0, "[AP] SlotData: {} shop item names loaded", sd.shop_item_names.size());
+	}
 	}
 
 	/* locked_vehicles — the exact set of vehicle names to lock at session start.
@@ -959,24 +971,16 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				std::lock_guard<std::mutex> lg(slot_mutex);
 				slot_data = sd;
 
-				/* Build location name -> ID map */
+				/* Build location name -> ID map.
+				 * Use the actual missions list from slot_data so the IDs match
+				 * exactly what the APWorld generated — avoids off-by-one mismatches
+				 * when the Python generator produces fewer missions than the
+				 * distribution formula would predict (e.g. due to max_attempts). */
 				location_ids.clear();
 				int64_t base = 6100000;
 
-				const std::vector<std::pair<std::string,double>> dist = {
-					{"easy",    0.30},
-					{"medium",  0.35},
-					{"hard",    0.25},
-					{"extreme", 0.10},
-				};
-				for (auto &[diff, frac] : dist) {
-					int count = std::max(1, (int)(sd.mission_count * frac));
-					for (int i = 1; i <= count; i++) {
-						std::string loc = fmt::format("Mission_{}{}_{:03d}",
-						         (char)toupper((unsigned char)diff[0]),
-						         diff.c_str() + 1, i);
-						location_ids[loc] = base++;
-					}
+				for (const auto &mission : sd.missions) {
+					location_ids[mission.location] = base++;
 				}
 
 				/* Shop locations */

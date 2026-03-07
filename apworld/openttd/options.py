@@ -19,8 +19,9 @@ class MissionCount(Range):
 
 class StartingVehicleType(Choice):
     """Which vehicle type you start with.
-    'one_of_each' gives you one safe starting vehicle from every transport type
-    so you can try all four from the beginning regardless of what gets randomized."""
+    'one_of_each' gives one safe starting vehicle from every transport type.
+    'custom' uses the Starting Vehicle Count slider to give you multiple
+    random vehicles of mixed types from the very beginning."""
     display_name = "Starting Vehicle Type"
     option_random        = 0
     option_train         = 1
@@ -28,7 +29,20 @@ class StartingVehicleType(Choice):
     option_aircraft      = 3
     option_ship          = 4
     option_one_of_each   = 5
+    option_custom        = 6
     default = 0
+
+
+class StartingVehicleCount(Range):
+    """How many vehicles to start with when Starting Vehicle Type is set to 'custom'.
+    The vehicles are drawn randomly from all starter-safe vehicle types (trains,
+    road vehicles, aircraft, ships). If the count exceeds the number of unique
+    starter vehicles available (~16), you simply receive all of them.
+    Has no effect when Starting Vehicle Type is anything other than 'custom'."""
+    display_name = "Starting Vehicle Count"
+    range_start = 1
+    range_end   = 50
+    default     = 5
 
 
 class WinCondition(Choice):
@@ -51,11 +65,11 @@ class WinConditionCompanyValue(Range):
 
 
 class WinConditionTownPopulation(Range):
-    """Target town population (win condition: town population)."""
+    """Target total world population across all towns combined (win condition: town population)."""
     display_name = "Target Town Population"
     range_start = 10_000
     range_end   = 500_000
-    default     = 20_000
+    default     = 50_000
 
 
 class WinConditionVehicleCount(Range):
@@ -109,6 +123,9 @@ class ShopPriceTier(Choice):
     Normal:  £100,000 – £5,000,000
     Hard:    £1,000,000 – £50,000,000
     Extreme: £10,000,000 – £300,000,000
+
+    Deprecated: use shop_price_min / shop_price_max for a custom range.
+    If shop_price_min or shop_price_max are non-zero they override this setting.
     """
     display_name  = "Shop Price Tier"
     option_easy    = 0
@@ -116,6 +133,71 @@ class ShopPriceTier(Choice):
     option_hard    = 2
     option_extreme = 3
     default = 1
+
+
+class ShopPriceMin(Range):
+    """
+    Minimum price (in pounds) for a shop purchase.
+    Set to 0 to use the shop_price_tier setting instead.
+    Range: £0 – £100,000,000
+    Example: 10000 = £10,000 minimum
+    """
+    display_name = "Shop Price Minimum (£)"
+    range_start  = 0
+    range_end    = 100_000_000
+    default      = 0
+
+
+class ShopPriceMax(Range):
+    """
+    Maximum price (in pounds) for a shop purchase.
+    Set to 0 to use the shop_price_tier setting instead.
+    Must be greater than shop_price_min.
+    Range: £0 – £500,000,000
+    Example: 50000000 = £50,000,000 maximum
+    """
+    display_name = "Shop Price Maximum (£)"
+    range_start  = 0
+    range_end    = 500_000_000
+    default      = 0
+
+class MissionDifficulty(Choice):
+    """Scales the target amounts in all generated missions up or down.
+    Does not affect vehicle/town/station counts — only monetary and cargo targets.
+
+    Very Easy: amounts × 0.25  — great for first-timers or short sessions
+    Easy:      amounts × 0.5
+    Normal:    amounts × 1.0  — the balanced default experience
+    Hard:      amounts × 2.0
+    Very Hard: amounts × 4.0  — for veteran players who want a serious challenge"""
+    display_name   = "Mission Difficulty"
+    option_very_easy = 0
+    option_easy      = 1
+    option_normal    = 2
+    option_hard      = 3
+    option_very_hard = 4
+    default = 2  # normal
+
+
+class StartingCashBonus(Choice):
+    """Extra cash given to your company at the start of a session,
+    on top of whatever loan you take. Helps new players build their
+    first routes without going bankrupt.
+    None:        £0          (default — no bonus)
+    Small:       £50,000
+    Medium:      £200,000
+    Large:       £500,000
+    Very Large:  £2,000,000"""
+    display_name       = "Starting Cash Bonus"
+    option_none        = 0
+    option_small       = 1
+    option_medium      = 2
+    option_large       = 3
+    option_very_large  = 4
+    default = 0
+
+
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -194,15 +276,12 @@ class StartYear(Range):
 
 
 class MapSizeX(Choice):
-    """Width of the generated map."""
+    """Width of the generated map. Minimum 512 — smaller maps don't have enough towns and industries for named missions."""
     display_name = "Map Width"
-    option_64   = 0
-    option_128  = 1
-    option_256  = 2
     option_512  = 3
     option_1024 = 4
     option_2048 = 5
-    default = 2  # 256
+    default = 3  # 512
 
     @property
     def map_bits(self) -> int:
@@ -210,15 +289,12 @@ class MapSizeX(Choice):
 
 
 class MapSizeY(Choice):
-    """Height of the generated map."""
+    """Height of the generated map. Minimum 512 — smaller maps don't have enough towns and industries for named missions."""
     display_name = "Map Height"
-    option_64   = 0
-    option_128  = 1
-    option_256  = 2
     option_512  = 3
     option_1024 = 4
     option_2048 = 5
-    default = 2  # 256
+    default = 3  # 512
 
     @property
     def map_bits(self) -> int:
@@ -520,6 +596,7 @@ OPTION_GROUPS = [
     OptionGroup("Randomizer", [
         MissionCount,
         StartingVehicleType,
+        StartingVehicleCount,
         WinCondition,
         WinConditionCompanyValue,
         WinConditionTownPopulation,
@@ -531,6 +608,8 @@ OPTION_GROUPS = [
         ShopSlots,
         ShopRefreshDays,
         ShopPriceTier,
+        MissionDifficulty,
+        StartingCashBonus,
     ]),
     OptionGroup("Traps", [
         EnableTraps,
@@ -610,6 +689,7 @@ class OpenTTDOptions(PerGameCommonOptions):
     # Randomizer
     mission_count:                   MissionCount
     starting_vehicle_type:           StartingVehicleType
+    starting_vehicle_count:          StartingVehicleCount
     win_condition:                   WinCondition
     win_condition_company_value:     WinConditionCompanyValue
     win_condition_town_population:   WinConditionTownPopulation
@@ -620,6 +700,10 @@ class OpenTTDOptions(PerGameCommonOptions):
     shop_slots:                      ShopSlots
     shop_refresh_days:               ShopRefreshDays
     shop_price_tier:                 ShopPriceTier
+    shop_price_min:                  ShopPriceMin
+    shop_price_max:                  ShopPriceMax
+    mission_difficulty:              MissionDifficulty
+    starting_cash_bonus:             StartingCashBonus
     # Traps
     enable_traps:                    EnableTraps
     trap_intensity:                  TrapIntensity

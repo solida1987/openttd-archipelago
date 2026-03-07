@@ -21,6 +21,7 @@
  */
 
 #include "stdafx.h"
+#include <charconv>
 #include "archipelago.h"
 #include "archipelago_gui.h"
 #include "engine_base.h"
@@ -61,6 +62,7 @@
 #include "console_func.h"
 #include "window_func.h"
 #include "station_base.h"
+#include "cargomonitor.h"
 #include "newgrf_config.h"
 #include "fileio_func.h"
 #include "safeguards.h"
@@ -415,6 +417,13 @@ static bool EvaluateMission(APMission &m)
 		current = _ap_shop_purchased ? 1 : 0;
 	}
 
+	/* ── named-destination missions ────────────────────────────────────
+	 * Progress is accumulated monthly by AP_UpdateNamedMissions(). */
+	else if (m.type == "passengers_to_town" || m.type == "mail_to_town" ||
+	         m.type == "cargo_from_industry" || m.type == "cargo_to_industry") {
+		current = (int64_t)m.named_entity.cumulative;
+	}
+
 	/* Update live progress on the mission (visible in missions window) */
 	m.current_value = current;
 
@@ -737,6 +746,9 @@ bool              AP_IsConnected()  { return _ap_client != nullptr &&
  * Callbacks
  * ---------------------------------------------------------------------- */
 
+/* Forward declaration — defined later in this file */
+static void AP_AssignNamedEntities();
+
 static void AP_OnSlotData(const APSlotData &sd)
 {
 	AP_OK("[CALLBACK] AP_OnSlotData called on main thread!");
@@ -759,6 +771,15 @@ static void AP_OnSlotData(const APSlotData &sd)
 	} else {
 		AP_ERR(fmt::format("[OnSlotData] World start SKIPPED: game_mode={} world_started={}",
 		      (int)_game_mode, _ap_world_started_this_session));
+
+		/* If already in GM_NORMAL (reconnect/reload), assign named entities
+		 * immediately — first-tick setup may have already fired before this
+		 * slot_data arrived, so we can't rely on it to re-run. */
+		if (_game_mode == GM_NORMAL) {
+			AP_AssignNamedEntities();
+			_ap_status_dirty.store(true);
+		}
+
 		ShowArchipelagoStatusWindow();
 	}
 }
@@ -1340,8 +1361,18 @@ int AP_GetShopRefreshDays()
 
 std::string AP_GetShopLocationLabel(const std::string &location_name)
 {
-	if (_ap_client == nullptr) return location_name;
-	return _ap_client->GetLocationHint(location_name);
+	/* First: check slot_data for the actual item name at this location */
+	const APSlotData &sd = AP_GetSlotData();
+	auto it = sd.shop_item_names.find(location_name);
+	if (it != sd.shop_item_names.end() && !it->second.empty())
+		return it->second;
+
+	/* Fallback: LocationScouts hint (returns "player (game)" for multi-world) */
+	if (_ap_client != nullptr) {
+		std::string hint = _ap_client->GetLocationHint(location_name);
+		if (!hint.empty()) return hint;
+	}
+	return location_name; /* last resort: show location ID */
 }
 
 int64_t AP_GetShopPrice(const std::string &location_name)
@@ -1411,6 +1442,22 @@ int  AP_GetShopDayCounter()  { return _ap_shop_day_counter; }
 void AP_SetShopDayCounter(int v) { _ap_shop_day_counter = v; }
 bool AP_GetGoalSent()        { return _ap_goal_sent; }
 void AP_SetGoalSent(bool v)  { _ap_goal_sent = v; }
+
+void AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station)
+{
+	*fuel        = _ap_fuel_shortage_ticks;
+	*cargo       = _ap_cargo_bonus_ticks;
+	*reliability = _ap_reliability_boost_ticks;
+	*station     = _ap_station_boost_ticks;
+}
+
+void AP_SetEffectTimers(int fuel, int cargo, int reliability, int station)
+{
+	_ap_fuel_shortage_ticks      = fuel;
+	_ap_cargo_bonus_ticks        = cargo;
+	_ap_reliability_boost_ticks  = reliability;
+	_ap_station_boost_ticks      = station;
+}
 
 std::string AP_GetCompletedMissionsStr()
 {
@@ -1490,6 +1537,252 @@ void AP_SetMaintainCountersStr(const std::string &s)
     }
     apply(token);
 }
+std::string AP_GetNamedEntityStr()
+{
+	std::string out;
+	for (const APMission &m : _ap_pending_sd.missions) {
+		if (m.named_entity.id < 0) continue;
+		if (!out.empty()) out += ';';
+		out += m.location + ':' +
+		       fmt::format("{}", m.named_entity.id) + ':' +
+		       fmt::format("{}", m.named_entity.cumulative);
+	}
+	return out;
+}
+
+/** Restore named entity assignments from save/load string.
+ *  Format: "location:entity_id:cumulative;..." (semicolon-separated)
+ *  Uses std::from_chars — no sscanf/strchr (both forbidden by safeguards.h). */
+/* Forward declarations for helpers defined later in this file */
+static std::string AP_TownName(const Town *t);
+static std::string AP_IndustryLabel(const Industry *ind);
+static void AP_StrReplace(std::string &s, const std::string &from, const std::string &to);
+
+void AP_SetNamedEntityStr(const std::string &s)
+{
+	if (s.empty()) return;
+
+	std::string_view sv(s);
+	while (!sv.empty()) {
+		/* Find the ';' that ends this entry (or end-of-string) */
+		auto semi = sv.find(';');
+		std::string_view entry = sv.substr(0, semi);
+		if (semi == std::string_view::npos) sv = {}; else sv = sv.substr(semi + 1);
+
+		/* Split entry into "loc : eid : cum" */
+		auto c1 = entry.find(':');
+		if (c1 == std::string_view::npos) continue;
+		auto c2 = entry.find(':', c1 + 1);
+		if (c2 == std::string_view::npos) continue;
+
+		std::string_view loc_sv  = entry.substr(0, c1);
+		std::string_view eid_sv  = entry.substr(c1 + 1, c2 - c1 - 1);
+		std::string_view cum_sv  = entry.substr(c2 + 1);
+
+		int32_t  eid = -1;
+		uint64_t cum = 0;
+		std::from_chars(eid_sv.data(), eid_sv.data() + eid_sv.size(), eid);
+		std::from_chars(cum_sv.data(), cum_sv.data() + cum_sv.size(), cum);
+
+		std::string loc_str(loc_sv);
+		for (APMission &m : _ap_pending_sd.missions) {
+			if (m.location != loc_str) continue;
+			m.named_entity.id         = eid;
+			m.named_entity.cumulative = cum;
+
+			/* Re-resolve name, tile and cargo_type from the live map objects.
+			 * AP_AssignNamedEntities won't re-run for missions with id>=0+name set,
+			 * so we do it here after every load/reconnect. */
+			if (m.type == "passengers_to_town" || m.type == "mail_to_town") {
+				const Town *t = Town::GetIfValid((TownID)eid);
+				if (t != nullptr) {
+					m.named_entity.name       = AP_TownName(t);
+					m.named_entity.tile       = t->xy.base();
+					m.named_entity.tae        = (m.type == "passengers_to_town") ? TAE_PASSENGERS : TAE_MAIL;
+					m.named_entity.cargo_type = (uint8_t)((m.type == "passengers_to_town")
+					    ? AP_FindCargoType("passengers")
+					    : AP_FindCargoType("mail"));
+					AP_StrReplace(m.description, "[Town]", m.named_entity.name);
+				}
+			} else if (m.type == "cargo_from_industry") {
+				const Industry *ind = Industry::GetIfValid((IndustryID)eid);
+				if (ind != nullptr) {
+					m.named_entity.name       = AP_IndustryLabel(ind);
+					m.named_entity.tile       = ind->location.tile.base();
+					m.named_entity.cargo_slot = 0;
+					m.named_entity.cargo_type = ind->produced.empty() ? (uint8_t)0xFF : (uint8_t)ind->produced[0].cargo;
+					AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
+				}
+			} else if (m.type == "cargo_to_industry") {
+				const Industry *ind = Industry::GetIfValid((IndustryID)eid);
+				if (ind != nullptr) {
+					m.named_entity.name       = AP_IndustryLabel(ind);
+					m.named_entity.tile       = ind->location.tile.base();
+					m.named_entity.cargo_slot = 0;
+					m.named_entity.cargo_type = ind->accepted.empty() ? (uint8_t)0xFF : (uint8_t)ind->accepted[0].cargo;
+					AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
+				}
+			}
+			break;
+		}
+	}
+}
+/* -------------------------------------------------------------------------
+ * Named-destination missions: assign map entities and accumulate progress.
+ * Placed after all AP state variables so _ap_pending_sd is accessible.
+ * ---------------------------------------------------------------------- */
+
+/** Get town name using OTTDv15 variadic GetString API. */
+static std::string AP_TownName(const Town *t)
+{
+	if (t == nullptr) return "Unknown";
+	return GetString(STR_TOWN_NAME, t->index);
+}
+
+/** Get "IndustryType near TownName" label. */
+static std::string AP_IndustryLabel(const Industry *ind)
+{
+	if (ind == nullptr) return "Unknown Industry";
+	std::string ind_name  = GetString(STR_INDUSTRY_NAME, ind->index);
+	std::string town_name = GetString(STR_TOWN_NAME,     ind->town->index);
+	return ind_name + " near " + town_name;
+}
+
+/** Replace first occurrence of 'from' in 's' with 'to'. */
+static void AP_StrReplace(std::string &s, const std::string &from, const std::string &to)
+{
+	size_t pos = s.find(from);
+	if (pos != std::string::npos) s.replace(pos, from.size(), to);
+}
+
+/**
+ * At session start: assign real map towns/industries to named-destination
+ * missions (type "passengers_to_town", "mail_to_town", "cargo_to_industry",
+ * "cargo_from_industry").  Assignments are seed-deterministic.
+ */
+static void AP_AssignNamedEntities()
+{
+	/* Collect candidates */
+	std::vector<const Town     *> towns;
+	std::vector<const Industry *> prod_inds;
+	std::vector<const Industry *> acc_inds;
+	for (const Town     *t   : Town::Iterate())     towns.push_back(t);
+	for (const Industry *ind : Industry::Iterate()) {
+		if (!ind->produced.empty()) prod_inds.push_back(ind);
+		if (!ind->accepted.empty()) acc_inds.push_back(ind);
+	}
+	if (towns.empty()) return;
+
+	/* XOR-shift RNG seeded from world seed */
+	/* Use the actual map generation seed for deterministic town/industry
+	 * assignment.  _ap_pending_sd.world_seed is 0 (Python sends 0 and lets
+	 * OpenTTD pick its own seed), so we fall back to the real game seed. */
+	const uint32_t map_seed = (_ap_pending_sd.world_seed != 0)
+		? _ap_pending_sd.world_seed
+		: _settings_game.game_creation.generation_seed;
+	uint32_t rng = map_seed ^ 0xDEADBEEFu;
+	auto next_rng = [&]() -> uint32_t {
+		rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng;
+	};
+	auto shuffle = [&](auto &v) {
+		for (size_t i = v.size(); i > 1; --i) std::swap(v[i-1], v[next_rng() % i]);
+	};
+	shuffle(towns); shuffle(prod_inds); shuffle(acc_inds);
+
+	std::set<int32_t> used_towns, used_inds;
+	size_t ti = 0, pi = 0, ai = 0;
+
+	for (APMission &m : _ap_pending_sd.missions) {
+		if (m.named_entity.id >= 0 && !m.named_entity.name.empty()) continue; /* already fully resolved */
+
+		if (m.type == "passengers_to_town" || m.type == "mail_to_town") {
+			while (ti < towns.size() && used_towns.count((int32_t)towns[ti]->index.base())) ti++;
+			if (ti >= towns.size()) ti = 0;
+			const Town *t           = towns[ti++];
+			m.named_entity.id       = (int32_t)t->index.base();
+			m.named_entity.name     = AP_TownName(t);
+			m.named_entity.tile     = t->xy.base();
+			m.named_entity.tae      = (m.type == "passengers_to_town") ? TAE_PASSENGERS : TAE_MAIL;
+			m.named_entity.cargo_type = (uint8_t)((m.type == "passengers_to_town")
+			    ? AP_FindCargoType("passengers")
+			    : AP_FindCargoType("mail"));
+			used_towns.insert(m.named_entity.id);
+			AP_StrReplace(m.description, "[Town]", m.named_entity.name);
+
+		} else if (m.type == "cargo_from_industry") {
+			while (pi < prod_inds.size() && used_inds.count((int32_t)prod_inds[pi]->index.base())) pi++;
+			if (pi >= prod_inds.size()) pi = 0;
+			const Industry *ind        = prod_inds[pi++];
+			m.named_entity.id          = (int32_t)ind->index.base();
+			m.named_entity.name        = AP_IndustryLabel(ind);
+			m.named_entity.tile        = ind->location.tile.base();
+			m.named_entity.cargo_slot  = 0;
+			m.named_entity.cargo_type  = ind->produced.empty() ? (uint8_t)0xFF : (uint8_t)ind->produced[0].cargo;
+			used_inds.insert(m.named_entity.id);
+			AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
+
+		} else if (m.type == "cargo_to_industry") {
+			while (ai < acc_inds.size() && used_inds.count((int32_t)acc_inds[ai]->index.base())) ai++;
+			if (ai >= acc_inds.size()) ai = 0;
+			const Industry *ind        = acc_inds[ai++];
+			m.named_entity.id          = (int32_t)ind->index.base();
+			m.named_entity.name        = AP_IndustryLabel(ind);
+			m.named_entity.tile        = ind->location.tile.base();
+			m.named_entity.cargo_slot  = 0;
+			m.named_entity.cargo_type  = ind->accepted.empty() ? (uint8_t)0xFF : (uint8_t)ind->accepted[0].cargo;
+			used_inds.insert(m.named_entity.id);
+			AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
+		}
+	}
+}
+
+/**
+ * Called monthly: accumulate named-entity progress and protect industries
+ * from random closure while their mission is active.
+ */
+static void AP_UpdateNamedMissions()
+{
+	CompanyID cid = _local_company;
+	if (cid >= MAX_COMPANIES) return;
+
+	for (APMission &m : _ap_pending_sd.missions) {
+		if (m.completed)           continue;
+		if (m.named_entity.id < 0) continue;
+		if (m.named_entity.cargo_type == 0xFF) continue;
+
+		CargoType ct = (CargoType)m.named_entity.cargo_type;
+
+		if (m.type == "passengers_to_town" || m.type == "mail_to_town") {
+			/* Use cargomonitor: company-specific deliveries to this town only */
+			TownID tid = (TownID)m.named_entity.id;
+			if (!Town::IsValidID(tid)) { m.named_entity.cumulative = (uint64_t)m.amount; continue; }
+			CargoMonitorID monitor = EncodeCargoTownMonitor(cid, ct, tid);
+			int32_t delivered = GetDeliveryAmount(monitor, true); /* true = keep monitoring */
+			if (delivered > 0) m.named_entity.cumulative += (uint64_t)delivered;
+
+		} else if (m.type == "cargo_from_industry") {
+			/* Use cargomonitor: company-specific pickups from this industry */
+			IndustryID iid = (IndustryID)m.named_entity.id;
+			Industry *ind = Industry::GetIfValid(iid);
+			if (ind == nullptr) { m.named_entity.cumulative = (uint64_t)m.amount; continue; }
+			if (ind->prod_level < PRODLEVEL_DEFAULT) ind->prod_level = PRODLEVEL_DEFAULT;
+			CargoMonitorID monitor = EncodeCargoIndustryMonitor(cid, ct, iid);
+			int32_t picked_up = GetPickupAmount(monitor, true);
+			if (picked_up > 0) m.named_entity.cumulative += (uint64_t)picked_up;
+
+		} else if (m.type == "cargo_to_industry") {
+			/* Use cargomonitor: company-specific deliveries to this industry */
+			IndustryID iid = (IndustryID)m.named_entity.id;
+			Industry *ind = Industry::GetIfValid(iid);
+			if (ind == nullptr) { m.named_entity.cumulative = (uint64_t)m.amount; continue; }
+			if (ind->prod_level < PRODLEVEL_DEFAULT) ind->prod_level = PRODLEVEL_DEFAULT;
+			CargoMonitorID monitor = EncodeCargoIndustryMonitor(cid, ct, iid);
+			int32_t delivered = GetDeliveryAmount(monitor, true);
+			if (delivered > 0) m.named_entity.cumulative += (uint64_t)delivered;
+		}
+	}
+}
+
 
 /* -------------------------------------------------------------------------
  * Monthly timer: advance "maintain rating" mission counters.
@@ -1501,6 +1794,9 @@ static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 	{ TimerGameCalendar::MONTH, TimerGameCalendar::Priority::NONE },
 	[](auto) {
 		if (!_ap_session_started) return;
+
+		/* Named-destination: accumulate town/industry progress */
+		AP_UpdateNamedMissions();
 
 		CompanyID cid = _local_company;
 
@@ -1638,6 +1934,10 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 
 			/* Reset session statistics for mission evaluation */
 			AP_InitSessionStats();
+
+				/* Assign named map entities to named-destination missions */
+				AP_AssignNamedEntities();
+				_ap_status_dirty.store(true); /* refresh GUI to show resolved [Town]/[Industry] names */
 
 			/* AP settings: vehicle/airport expiry already disabled above (before
 			 * BuildEngineMap).  No additional setting needed here. */
@@ -1801,6 +2101,21 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 							}
 						}
 					}
+				}
+			}
+
+			/* Apply starting cash bonus if configured */
+			if (_ap_pending_sd.starting_cash_bonus > 0 && c != nullptr) {
+				static const Money bonus_amounts[] = {
+					0, 50000LL, 200000LL, 500000LL, 2000000LL
+				};
+				int tier = std::clamp(_ap_pending_sd.starting_cash_bonus, 0, 4);
+				if (tier > 0) {
+					c->money += bonus_amounts[tier];
+					AP_ShowNews(fmt::format("[AP] Starting bonus: \xc2\xa3{} added to your account!",
+					    (long long)bonus_amounts[tier]));
+					AP_OK(fmt::format("[AP] Starting cash bonus tier {} = +\xc2\xa3{}",
+					    tier, (long long)bonus_amounts[tier]));
 				}
 			}
 

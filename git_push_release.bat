@@ -2,18 +2,21 @@
 setlocal EnableDelayedExpansion
 :: ============================================================
 ::  OpenTTD Archipelago — GitHub Push + Release Script
-::  Beta 6
+::  Beta 7
 :: ============================================================
 set PROJECT_DIR=C:\Users\marco\OneDrive\Desktop\openttd-15.2
 set /p OTTD_VERSION=<"%PROJECT_DIR%\.version"
 if not defined OTTD_VERSION set OTTD_VERSION=15.2
+
 echo.
 echo ============================================================
 echo  GitHub Push + Release
-echo  Version: %OTTD_VERSION% — BETA 6
+echo  Version: %OTTD_VERSION% — BETA 7
 echo ============================================================
 echo.
+
 cd /d "%PROJECT_DIR%"
+
 :: ── Tjek git er tilgængeligt ─────────────────────────────────
 git --version > nul 2>&1
 if errorlevel 1 (
@@ -21,15 +24,18 @@ if errorlevel 1 (
     echo Installer Git fra https://git-scm.com/
     pause & exit /b 1
 )
+
 :: ── Vis status inden commit ──────────────────────────────────
 echo [1/5] Nuværende git status:
 echo ============================================================
 git status --short
 echo.
+
 :: ── Stage alle relevante filer ───────────────────────────────
 echo [2/5] Stager ændringer...
 git add apworld\
 git add git_push_release.bat
+git add build_and_package.bat
 git add src\archipelago.cpp
 git add src\archipelago.h
 git add src\archipelago_gui.cpp
@@ -41,19 +47,21 @@ git add src\saveload\saveload.cpp
 git add src\saveload\CMakeLists.txt
 git add src\lang\english.txt
 git add newgrf\iron_horse.grf
-git add changelog.md
-git add known-bugs.md
-git add build_and_package.bat
+git add CHANGELOG.md
+git add KNOWN_BUGS.md
+
 :: Slet build og dist fra tracking hvis de er staged ved en fejl
 git rm -r --cached build\ > nul 2>&1
 git rm -r --cached dist\ > nul 2>&1
 echo       OK.
+
 :: ── Commit ───────────────────────────────────────────────────
 echo [3/5] Committer...
-git commit -m "beta6: Iron Horse support, UI scale fix, currency fix, shop_slots YAML fix, starter fallback, window drag fix, engine map fixes"
+git commit -m "beta7: named destination missions (cargomonitor), min map 512x512, extreme color fix, clickable mission scroll, shop labels, all mission type bugs fixed"
 if errorlevel 1 (
     echo       Intet nyt at committe - fortsætter til push.
 )
+
 :: ── Push til GitHub ──────────────────────────────────────────
 echo [4/5] Pusher til GitHub...
 git pull --no-rebase origin main
@@ -64,24 +72,31 @@ if errorlevel 1 (
     pause & exit /b 1
 )
 echo       OK.
+
 :: ── Tag og push release ──────────────────────────────────────
 echo [5/5] Opretter release-tag...
-set TAG=v%OTTD_VERSION%-beta6
+set TAG=v%OTTD_VERSION%-beta7
+
 :: Slet eksisterende tag lokalt og remote hvis det findes
 git tag -d %TAG% > nul 2>&1
 git push origin :refs/tags/%TAG% > nul 2>&1
-git tag -a %TAG% -m "OpenTTD %OTTD_VERSION% Archipelago beta6 - Iron Horse, UI scale fix, currency fix, shop_slots YAML, starter fallback, window drag"
+
+git tag -a %TAG% -m "OpenTTD %OTTD_VERSION% Archipelago beta7 — named destination missions, cargomonitor tracking, min 512x512 map, all named mission type bugs fixed, extreme color, clickable map scroll"
 git push origin %TAG%
 if errorlevel 1 (
     echo [FEJL] Tag-push fejlede!
     pause & exit /b 1
 )
+
 echo.
 echo ============================================================
 echo  PUSH SUCCESFULD!
 echo.
 echo  Tag    : %TAG%
 echo  Branch : pushed til GitHub
+echo.
+echo  VIGTIGT: Kør nu build_and_package.bat for at bygge beta7.
+echo  Versionen viser nu korrekt "beta7" i titelbaren.
 echo.
 echo  Gaa til GitHub og opret et Release fra tagget %TAG%
 echo  og upload dist\openttd-%OTTD_VERSION%-archipelago-windows-win64.zip
