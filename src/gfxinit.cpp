@@ -21,6 +21,8 @@
 #include "base_media_func.h"
 #include "base_media_graphics.h"
 #include "base_media_sounds.h"
+#include "fileio_func.h"      /* AP: FioFOpenFile — check for archipelago_icons.grf */
+#include "newgrf_config.h"    /* AP: GRFConfig */
 
 #include "table/sprites.h"
 
@@ -212,7 +214,21 @@ static void LoadSpriteTables()
 	_grfconfig.insert(std::begin(_grfconfig), std::move(default_extra));
 	_grfconfig.insert(std::next(std::begin(_grfconfig)), std::move(baseset_extra));
 
-	LoadNewGRF(SPR_NEWGRFS_BASE, 2);
+	/* AP: If archipelago_icons.grf is present in the baseset directory, inject it
+	 * as the third entry in _grfconfig so LoadNewGRF processes it as a base-set GRF.
+	 * Base-set GRFs can use Action A to replace sprites directly by SpriteID.
+	 * Our GRF uses Action A to replace sprite 714 with the AP logo. */
+	static constexpr std::string_view AP_ICONS_GRF = "archipelago_icons.grf";
+	int ap_extra_grfs = 0;
+	if (FioFOpenFile(AP_ICONS_GRF, "rb", BASESET_DIR).has_value()) {
+		auto ap_grf = std::make_unique<GRFConfig>(std::string(AP_ICONS_GRF));
+		ap_grf->palette |= GRFP_GRF_DOS;
+		FillGRFDetails(*ap_grf, false, BASESET_DIR);
+		_grfconfig.insert(std::next(std::begin(_grfconfig), 2), std::move(ap_grf));
+		ap_extra_grfs = 1;
+	}
+
+	LoadNewGRF(SPR_NEWGRFS_BASE, 2 + ap_extra_grfs);
 
 	uint total_extra_graphics = SPR_NEWGRFS_BASE - SPR_OPENTTD_BASE;
 	Debug(sprite, 4, "Checking sprites from fallback grf");
@@ -223,8 +239,8 @@ static void LoadSpriteTables()
 	 * Let's say everything which provides less than 500 sprites misses the rest intentionally. */
 	if (500 + _missing_extra_graphics > total_extra_graphics) _missing_extra_graphics = 0;
 
-	/* Remove the default and baseset extra graphics from the config. */
-	_grfconfig.erase(std::begin(_grfconfig), std::next(std::begin(_grfconfig), 2));
+	/* Remove default, baseset extra, and AP icon GRFs from the runtime config. */
+	_grfconfig.erase(std::begin(_grfconfig), std::next(std::begin(_grfconfig), 2 + ap_extra_grfs));
 }
 
 

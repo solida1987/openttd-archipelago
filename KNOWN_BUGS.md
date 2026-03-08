@@ -1,235 +1,120 @@
-# Known Issues — OpenTTD Archipelago
+# Known Bugs & Limitations — OpenTTD Archipelago
 
-This file covers known issues specific to the Archipelago integration.
-For base OpenTTD known bugs, see the upstream repository.
-
----
-
-## Active Known Issues
-
-### WebSocket compression not supported
-The client does not support permessage-deflate compression.
-The Archipelago server logs a warning about this but the connection works normally.
-Compressed frames are skipped gracefully.
-**Severity:** Low — no gameplay impact.
-**Note:** Will be resolved if zlib WebSocket support is added to the client.
-
-### Multiplayer (multiple companies) not supported
-All Archipelago logic assumes `_local_company`.
-Running multiple human companies in the same OpenTTD game is not supported.
-Co-op within a single company works fine.
-**Severity:** Medium — do not start multiplayer OpenTTD games with this build.
-
-### Windows-only TLS build
-The TLS (WSS) implementation uses Windows Schannel.
-Linux and macOS builds will connect via plain WS only (no wss://).
-**Severity:** Low for current usage — Windows build is the primary release target.
-
-### AP re-sends all items on reconnect — traps may fire twice
-When the connection to the AP server drops and reconnects, the server re-sends
-the full item list. Trap items that were already applied will be applied again
-(Fuel Shortage re-engages, Bank Loan re-fires, etc.).
-This is a consequence of the stateless item delivery model and affects all
-Archipelago games that reconnect mid-session.
-**Severity:** Medium — unexpected trap re-triggers. Workaround: avoid disconnecting
-mid-session, or save before connecting if reconnects are expected.
-
-### Named missions: industry may close before mission is complete
-OpenTTD can close industries that are not being serviced. If the industry assigned
-to a `cargo_from_industry` or `cargo_to_industry` mission closes, the mission
-will remain in the list but can no longer be completed.
-`AP_UpdateNamedMissions()` marks the mission as completed (auto-win) if the
-industry is `nullptr`, but this may feel inconsistent to players who had started
-working towards it.
-**Severity:** Low — only affects sessions where industries close and no service
-has been established. The `no_industry_close` option mitigates this.
-
-### `locked_vehicles` YAML option not enforced in C++ lock logic
-The `locked_vehicles` list from slot_data is parsed and stored in
-`_ap_pending_sd.locked_vehicles` but the periodic engine lock sweep ignores it
-— it locks all non-AP-unlocked engines regardless of this list.
-In practice this is the intended behaviour (all engines are locked until AP
-sends them), but the field is effectively unused and could cause confusion if
-it was intended to allow pre-unlocked vehicles.
-**Severity:** Low — no gameplay impact in current usage.
-
-### Named mission `cargo_type` defaults to first produced/accepted slot only
-`AP_AssignNamedEntities` always uses `ind->produced[0].cargo` or
-`ind->accepted[0].cargo` for the cargomonitor lookup. Industries with multiple
-produced or accepted cargos will only have their first cargo tracked.
-**Severity:** Low — most industries have a single primary cargo. Edge cases with
-multi-output industries (e.g. Oil Refinery producing both Petrol and Chemicals
-in some NewGRFs) may track only one.
+Sidst opdateret: Beta 8 (2026-03-08)
 
 ---
 
-## Fixed in Beta 7
+## 🔴 Kritiske bugs (game-breaking)
 
-### Named missions never replaced [Town] / [Industry near Town] (fixed in Beta 7)
-Python computed `type` from the template text before `{amount}`, so named missions
-always had wrong types (`"deliver"`, `"supply"`, `"transport"`) instead of
-`"passengers_to_town"` etc. C++ never matched these in `AP_AssignNamedEntities`
-so no assignment ever happened and the placeholder text was never replaced.
-**Fixed:** Python now sends `type = unit` directly for named mission templates.
-
-### Named missions tracked all companies, not just the player's (fixed in Beta 7)
-`AP_UpdateNamedMissions()` used global town/industry statistics that include
-AI company deliveries. Any AI train servicing the target town would count toward
-the player's mission progress.
-**Fixed:** replaced with `cargomonitor.h` API (`GetDeliveryAmount` /
-`GetPickupAmount`) which tracks per-company cargo flow.
-
-### `cargo_to_industry` missions could never be completed (fixed in Beta 7)
-Python generated `type="supply"` for these missions. `EvaluateMission()` had no
-handler for `"supply"` so `current_value` was always 0.
-**Fixed:** as part of the type-key fix above.
-
-### `cargo_from_industry` missions counted all cargo session-wide (fixed in Beta 7)
-Python generated `type="transport"` which matched the generic transport handler
-and summed all cargo ever delivered — not just from the target industry.
-**Fixed:** as part of the type-key fix above.
-
-### [Town]/[Industry] still shown after save/load (fixed in Beta 7)
-`AP_SetNamedEntityStr()` only restored `id` and `cumulative` from the save chunk.
-`name` was always empty after a reload so `AP_StrReplace` never ran.
-**Fixed:** `AP_SetNamedEntityStr()` now re-resolves `name`, `tile`, and
-`cargo_type` from the live `Town`/`Industry` object after every load/reconnect.
-
-### Named missions showed no progress bar at 0 (fixed in Beta 7)
-The GUI only showed a progress string when `current_value > 0`. Named missions
-starting at zero had no visible `(0/15,000)` indicator.
-**Fixed:** named missions always show a progress string regardless of current value.
-
-### TileIndex cast errors in named mission scroll (fixed in Beta 7)
-`(uint32_t)t->xy` and similar casts did not compile (TileIndex is a strong typedef).
-**Fixed:** `.base()` for reading, `TileIndex{value}` for construction.
-
-### Shop labels showed player name instead of item name (fixed in Beta 7)
-`GetLocationHint()` returned the AP player name for shop locations.
-**Fixed:** Python sends `shop_item_names` dict in slot_data; C++ uses it as
-primary source in `AP_GetShopLocationLabel()`.
-
-### DeathLink never functioned (fixed in Beta 7)
-`fill_slot_data()` never included the `"death_link"` key so C++ always parsed it
-as `false`.
-**Fixed:** `"death_link": bool(self.options.death_link.value)` added to
-`fill_slot_data()`.
-
-### Timed effects ran down in menu/pause (fixed in Beta 7)
-Timer counters decremented on every realtime tick regardless of `_game_mode`.
-**Fixed:** decrements now only happen when `_game_mode == GM_NORMAL`.
-
-### Shop rotation did not update UI immediately (fixed in Beta 7)
-`ArchipelagoShopWindow` was missing `OnInvalidateData()`.
-**Fixed:** `OnInvalidateData()` override added, calls `RebuildShopList()` directly.
-
-### C++ location IDs out of sync with actual generated missions (fixed in Beta 7)
-Location IDs were computed from hardcoded distribution percentages, not from the
-actual mission list generated by Python.
-**Fixed:** `location_ids` built directly from `sd.missions`.
-
-### Loan Reduction wasted if loan already paid off (fixed in Beta 7)
-If loan was 0, the item silently did nothing.
-**Fixed:** three cases handled: normal reduction, partial loan, no loan (cash).
-
-### Shop repeated the same utility item (fixed in Beta 7)
-Utility pool was built by repeating `UTILITY_ITEMS` in fixed order.
-**Fixed:** pool is now shuffled in batches for even distribution.
-
-### `location_name_to_id` too small for large multiworlds (fixed in Beta 7)
-Class-level dict was hardcoded to `mission_count=300` — missions 301+ were
-invisible to Archipelago in large multiworld games.
-**Fixed:** built with worst-case values `mission_count=1140, shop_slots=3`.
-
-### Timed effects lost on save/load (fixed in Beta 7)
-Timer counters were not included in the APST save chunk.
-**Fixed:** all four timers saved and restored via `AP_GetEffectTimers()` /
-`AP_SetEffectTimers()`.
-
-### `town_population` win condition checked world population (fixed in Beta 7)
-Description said "any single town" but C++ used `GetWorldPopulation()`.
-**Fixed:** documentation updated to reflect actual behaviour (total world population).
-
-### Recession trap gave bonus to players in debt (fixed in Beta 7)
-`c->money / 2` on a negative value halved the debt instead of punishing the player.
-**Fixed:** players in debt receive an extra 25% of `max_loan` as additional debt.
-
-### Town Growth Boost permanently mutated `growth_rate` (fixed in Beta 7)
-Halved `growth_rate` for all towns without ever restoring it.
-**Fixed:** `grow_counter` is reset instead — triggers an immediate growth pulse
-with no lasting side-effects.
+*Ingen kendte kritiske bugs i beta 9.*
 
 ---
 
-## Fixed in Beta 6
+## 🟠 Alvorlige bugs (forkert opførsel)
 
-### Mission text crushed at UI scale ≥2 (fixed in Beta 6)
-Row height was cached at window construction. **Fixed:** recomputed each draw call.
-
-### Currency showed £ on non-GBP games (fixed in Beta 6)
-Hardcoded £ in mission descriptions. **Fixed:** replaced at render-time with
-active currency prefix.
-
-### `random` starting vehicle could give cargo wagon only (fixed in Beta 6)
-Engine map lookup could fail leaving player with no vehicle.
-**Fixed:** three-level fallback added.
-
-### Shop showed fewer items than configured `shop_slots` (fixed in Beta 6)
-`_compute_pool_size()` ignored the YAML option.
-**Fixed:** reads `self.options.shop_slots.value` directly.
-
-### AP status window could not be dragged (fixed in Beta 6)
-`WDP_MANUAL` snapped back to fixed position.
-**Fixed:** changed to `WDP_AUTO` with persistence key.
-
-### Oil Tanker only unlocked one of three wagon variants (fixed in Beta 6)
-**Fixed:** `_ap_engine_extras` map added.
-
-### IH engine prefix mismatch in lock check (fixed in Beta 6)
-**Fixed:** `IH: ` prefix stripped before engine map lookup.
+*Ingen kendte alvorlige bugs i beta 8.*
 
 ---
 
-## Fixed in Beta 5
+## 🟡 Medium bugs (noget er forkert men ikke game-breaking)
 
-### Toyland missions/vehicles on wrong climate (fixed in Beta 5)
-**Fixed:** filtered by landscape at world generation.
+### Shop `OnRealtimeTick` poller unødigt efter hints er loaded
+**Status:** Åben  
+**Siden:** Beta 1  
+**Beskrivelse:** `ArchipelagoShopWindow::OnRealtimeTick` kører hvert 250ms og tjekker
+om der er "loading..."-labels. Selv efter alle hints er modtaget og alle labels er
+resolved, fortsætter polling. Ubetydelig CPU-effekt, men unødigt.  
+**Fix:** Tilføj et `_hints_loaded`-flag der stopper polling når alle labels er gyldige.
 
-### "Service X towns" impossible on small maps (fixed in Beta 5)
-**Fixed:** capped to realistic estimate based on map dimensions.
-
-### Bank Loan Forced trap — 500M hardcoded (fixed in Beta 5)
-**Fixed:** scales to `max_loan`.
-
-### Shop re-purchase of already-bought slots (fixed in Beta 5)
-**Fixed:** bought slots removed from list immediately.
-
----
-
-## Fixed in Beta 4
-
-### Wine incompatibility (fixed in Beta 4)
-**Fixed:** WSS probe skipped under Wine (detected via `HKLM\Software\Wine`).
-
-### "Missing 140 sprites" warning on main menu (fixed in Beta 4)
-**Fixed:** warning widget unconditionally hidden.
-
-### Starting vehicle locked on non-Toyland maps (fixed in Beta 4)
-**Fixed:** Toyland-only vehicles excluded from starter pool.
+### WebSocket compression-advarsel i server-log
+**Status:** Åben  
+**Siden:** Beta 1  
+**Beskrivelse:** Serveren logger en advarsel om WebSocket permessage-deflate
+compression. Funktionaliteten virker korrekt — det er en serverside-advarsel der
+ikke påvirker gameplay.  
+**Fix:** Lav en korrekt compression-handshake i `archipelago.cpp`.
 
 ---
 
-## Fixed in Beta 3
+## 🔵 Kendte begrænsninger (by design eller lav prioritet)
 
-### "Maintain X% rating" missions tracked incorrectly (fixed in Beta 3)
-**Fixed:** consecutive month counter implemented correctly.
+### AP-knap viser standard-ikon i stedet for AP-logo
+**Status:** Åben — lav prioritet  
+**Siden:** Beta 8  
+**Beskrivelse:** Archipelago-knappen (toolbar + intro-menu) viser et generisk OpenTTD-ikon i stedet for AP-logoet. C++ peger korrekt på sprite 714, og `archipelago_icons.grf` indeholder korrekt Action A der erstatter sprite 714 med AP-logoet. Problemet er i `gfxinit.cpp`'s GRF-loading mekanisme — OpenTTD's NewGRF-loader processerer ikke vores GRF's Action A korrekt i den kontekst vi loader den. Problemet har vist sig svært at fixe uden adgang til fuld kildekode og debugger.  
+**Workaround:** Ingen — knappen er fuldt funktionel, kun ikonet er forkert.  
+**Fix:** Gennemgå `LoadNewGRF` base-set sprite replacement mekanisme med adgang til debugger/fuld kildekode.
 
-### DeathLink notification missing (fixed in Beta 3)
-**Fixed:** full news item shown on inbound death.
+### Multiplayer (flere companies) ikke understøttet
+**Status:** Ikke planlagt  
+**Beskrivelse:** Kun single-company gameplay er understøttet. Med flere companies
+ville engine lock-systemet og mission-tracking skulle have per-company logik.
+
+### Windows-only TLS/WSS
+**Status:** Lav prioritet  
+**Beskrivelse:** WSS (WebSocket Secure) bruger Windows Schannel (`Secur32.dll`).
+Linux/macOS builds kan kun forbinde via plain WS (port 38281 uden SSL).
+
+### `£`-tegnet i item-navne er platform-afhængigt
+**Status:** Lav prioritet  
+**Beskrivelse:** `UTILITY_ITEMS` i `items.py` bruger `£` direkte (UTF-8 `\xC2\xA3`).
+C++ sammenligner med hardkodede strenge der indeholder samme tegn. Risiko for
+mismatch på Windows-systemer med ikke-UTF-8 system-locale (sjælden, men mulig).
 
 ---
 
-## Fixed in Beta 2
+## ✅ Løste bugs (arkiv)
 
-### WSS/WS connection failed on plain WS servers (fixed in Beta 2)
-**Fixed:** probes WSS first, falls back to WS automatically.
+| Version | Bug | Fix |
+|---------|-----|-----|
+| Beta 9 | **Named missioner viste hvide** — difficulty-farven overskrevet til TC_WHITE for alle named-destination missioner | Removed TC_WHITE override; named missions beholder difficulty-farve |
+| Beta 9 | **`mission_count=300` gav 250 missioner** — pool-size brugte scale-faktor mod base 350, minus shop slots | mission_count bruges nu direkte som antal missioner |
+| Beta 9 | **`maintain`-type brugte skrøbelig string-søgning** — `type.find("90")` for tærskeldetektering | Python emitter nu `maintain_75`/`maintain_90`; C++ matcher eksplicit |
+| Beta 9 | **Shop label-fallback viste rå `Shop_Purchase_NNNN`** — ingen nyttig tekst ved manglende item-hints | Fallback viser nu `"Shop Slot #N"` |
+| Beta 9 | **Sugar/Toys/Batteries manglede fra Toyland cargo-pool** | Tilføjet til `CARGO_BY_LANDSCAPE[3]` |
+
+
+| Beta | Bug | Fix |
+|------|-----|-----|
+| Beta 8 | **Iron Horse engines låstes ikke (locked_vehicles IH-prefix mismatch)** — `locked_vehicles` indeholdt `"IH: 4-4-2 Lark"` men C++ søgte på `"4-4-2 Lark"` → IH engines aldrig låst | Begge lock-steder tjekker nu også `"IH: " + eng_name` |
+| Beta 8 | **Server crash "No location for player 1"** — shop_slots*20 vs direkte shop_item_count | Læser shop_item_count direkte; fallback til shop_slots*20 for gamle saves |
+| Beta 8 | **Startende tog forkert på Temperate/Arctic/Tropic** — ingen klimafiltrering i STARTING_VEHICLES | ARCTIC_TROPIC_ONLY_TRAINS + TEMPERATE_ONLY_TRAINS frozensets tilføjet |
+| Beta 8 | **Mission- og shop-vinduer kun lodrette resize** — step_width aldrig sat | step_width = 1 i begge vindues-konstruktører |
+| Beta 8 | **10 Toyland-cargos manglede i BuildCargoMap()** — AP_FindCargoType() returnerede INVALID_CARGO for Sugar/Toys/Batteries/Sweets/Toffee/Cola/Candyfloss/Bubbles/Plastic/Fizzy Drinks — Toyland transport-missioner talte alt cargo i stedet for specifik type | Alle 10 Toyland-labels tilføjet til kNameLabel[] |
+| Beta 8 | **`cargo_to_industry` tæller ikke alle cargo-typer** — kun slot 0, rapporteret af killeroid356 (Steel talte ikke i Cadton Factory) | Itererer nu over alle `ind->accepted`-slots |
+| Beta 8 | **`cargo_from_industry` tæller ikke alle cargo-typer** — kun slot 0 (Oil Refinery: kun Oil, ikke Goods) | Itererer nu over alle `ind->produced`-slots |
+| Beta 8 | **`cargo_type` sentinel brugte slot[0]** — 0xFF-guard skippede gyldige missioner lydløst | Alle fire assignments bruger nu første *gyldige* slot |
+| Beta 8 | **Guru Galaxy (ID 232) fejlagtigt ekskluderet fra non-Toyland** | Fjernet fra `TOYLAND_ONLY_VEHICLES` |
+| Beta 8 | **10 Toyland-only køretøjer manglede i filteret** — sendt som items til non-Toyland spillere | Tilføjet alle 10 til `TOYLAND_ONLY_VEHICLES` |
+| Beta 7 | **DeathLink virker aldrig** — `death_link` manglede i `fill_slot_data()` | Tilføjet `"death_link": bool(self.options.death_link.value)` til `fill_slot_data()` |
+| Beta 7 | **Timed effects løber af i menu/pause** — timer-tæller decrementerede udenfor `GM_NORMAL` | Alle 4 timer-decrements wrappet i `if (_game_mode == GM_NORMAL)` |
+| Beta 7 | **Shop-rotation vises ikke straks** — manglede `OnInvalidateData()` override | `OnInvalidateData()` tilføjet til `ArchipelagoShopWindow` |
+| Beta 7 | **C++ location IDs fra beregnet distribution, ikke faktiske missions** — mismatch ved `max_attempts` | `location_ids` bygges nu fra `sd.missions`-array direkte |
+| Beta 7 | **Loan Reduction spildt ved lån=0** — ingen effekt, ingen besked | Konverteres nu til kontanter med besked |
+| Beta 7 | **Shop spammede samme utility item** — fast rækkefølge i pool | Utility-pool shuffles nu i tilfældige batches |
+| Beta 7 | **`location_name_to_id` for lille — missions 301+ manglede fra AP registry** | class-level dict bruger nu mission_count=1140 |
+| Beta 7 | **Timed effects nulstilledes ved save/load** — timers ikke gemt i APST | Gemmes/gendannes nu via AP_GetEffectTimers/AP_SetEffectTimers |
+| Beta 7 | **`town_population` win: "single town" vs faktisk world total** | Dokumentation og docstring rettet |
+| Beta 7 | **Recession trap gav bonus til spillere i gæld** — halvering af negativ Money reducerede gæld | Gæld-path tilføjer nu lån-straf i stedet |
+| Beta 7 | **Town Growth Boost muterede growth_rate permanent** — stackede til 1, byer stoppede med at vokse | Nulstiller nu kun grow_counter (puls) |
+| Beta 6 | Mission tekst knust ved UI scale ≥2 | Row height genberegnes ved draw-time |
+| Beta 6 | Valuta viser £ på ikke-GBP spil | Currency-prefix erstattes ved render-tid |
+| Beta 6 | `random` starting vehicle gav ubrugelig cargo wagon | Multi-niveau fallback |
+| Beta 6 | Shop viste færre items end konfigureret `shop_slots` | Læser nu YAML-option direkte |
+| Beta 6 | AP status-vindue kunne ikke trækkes | `WDP_AUTO` med persistens-key |
+| Beta 6 | "Unknown item: not handled" for vanilla engines | `BuildEngineMap()` efter expire-flag |
+| Beta 6 | Oil Tanker kun unlockede én wagon-variant | Parallel `_ap_engine_extras`-map |
+| Beta 6 | IH engine prefix mismatch i lock check | `IH: ` prefix strippes før opslag |
+| Beta 5 | Toyland missions på ikke-Toyland maps | Climate-filtreret cargo-liste |
+| Beta 5 | Toyland køretøjer i pool på forkert map | Ekskluderes fra randomiseret pool |
+| Beta 5 | "Service X towns" umulig på små maps | Cap baseret på map-dimensioner |
+| Beta 5 | Bank Loan trap hardkodet til 500M | Skaleres til `max_loan` |
+| Beta 5 | Shop afviste køb / forkert prisvisning | Købte slots filtreres øjeblikkeligt |
+| Beta 4 | Wine inkompatibilitet med WSS | WSS-probe springes over under Wine |
+| Beta 4 | "Missing 140 sprites" advarsel | Warning-widget skjules |
+| Beta 4 | Starting vehicle låst på forkert klima | Toyland-only ekskluderes fra starter-pool |
+| Beta 3 | "Maintain X% rating" tracker forkert | Korrekte konsekutive måneder |
+| Beta 3 | DeathLink notification usynlig | Fuld avisopslag ved inbound death |
+| Beta 3 | AP-state tabt ved save/load | APST savegame-chunk tilføjet |
+| Beta 2 | WSS/WS auto-detection | Prober WSS, falder tilbage til WS |
+| Beta 2 | Build fejlede uden zlib | `#ifdef WITH_ZLIB` guard tilføjet |

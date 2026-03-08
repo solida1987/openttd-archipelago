@@ -23,6 +23,7 @@ CARGO_BY_LANDSCAPE = {
     ],
     3: [  # Toyland
         "Passengers", "Mail",
+        "Sugar", "Toys", "Batteries",
         "Sweets", "Cola", "Candyfloss", "Bubbles",
         "Plastic", "Fizzy Drinks", "Toffee",
     ],
@@ -147,7 +148,7 @@ class OpenTTDLocationData(NamedTuple):
     progress_type: LocationProgressType = LocationProgressType.DEFAULT
 
 
-def _build_location_table(mission_count: int = 100, shop_slots: int = 5) -> Dict[str, OpenTTDLocationData]:
+def _build_location_table(mission_count: int = 100, shop_item_count: int = 100) -> Dict[str, OpenTTDLocationData]:
     table: Dict[str, OpenTTDLocationData] = {}
     code = OPENTTD_LOC_BASE_ID
 
@@ -161,7 +162,7 @@ def _build_location_table(mission_count: int = 100, shop_slots: int = 5) -> Dict
             table[name] = OpenTTDLocationData(code, f"mission_{difficulty}", pt)
             code += 1
 
-    for i in range(1, shop_slots * 20 + 1):
+    for i in range(1, shop_item_count + 1):
         name = f"Shop_Purchase_{i:04d}"
         table[name] = OpenTTDLocationData(code, "shop", LocationProgressType.DEFAULT)
         code += 1
@@ -175,5 +176,5 @@ def _build_location_table(mission_count: int = 100, shop_slots: int = 5) -> Dict
 LOCATION_TABLE: Dict[str, OpenTTDLocationData] = _build_location_table()
 
 
-def get_location_table(mission_count: int, shop_slots: int) -> Dict[str, OpenTTDLocationData]:
-    return _build_location_table(mission_count, shop_slots)
+def get_location_table(mission_count: int, shop_item_count: int) -> Dict[str, OpenTTDLocationData]:
+    return _build_location_table(mission_count, shop_item_count)

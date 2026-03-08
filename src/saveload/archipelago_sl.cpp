@@ -66,6 +66,8 @@ void         AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *st
 void         AP_SetEffectTimers(int fuel, int cargo, int reliability, int station);
 std::string  AP_GetNamedEntityStr();
 void         AP_SetNamedEntityStr(const std::string &s);
+std::string  AP_GetSentShopStr();
+void         AP_SetSentShopStr(const std::string &s);
 
 /* ── Scratch variables for Save/Load ────────────────────────────────── */
 static std::string _ap_sl_host;
@@ -84,6 +86,7 @@ static int32_t     _ap_sl_cargo_ticks     = 0;
 static int32_t     _ap_sl_reliability_ticks = 0;
 static int32_t     _ap_sl_station_ticks   = 0;
 static std::string _ap_sl_named_str;         /* named entity data: "loc:id:cumul;..." */
+static std::string _ap_sl_shop_sent;          /* sent shop locations: "Shop_Purchase_0001,..." */
 
 /* ── SaveLoad table ─────────────────────────────────────────────────── */
 static const SaveLoad _ap_desc[] = {
@@ -103,6 +106,7 @@ static const SaveLoad _ap_desc[] = {
     SLEG_VAR ("rel_ticks",   _ap_sl_reliability_ticks, SLE_INT32),
     SLEG_SSTR("named",       _ap_sl_named_str,         SLE_STR),
     SLEG_VAR ("sta_ticks",   _ap_sl_station_ticks,     SLE_INT32),
+    SLEG_SSTR("shop_sent",  _ap_sl_shop_sent,          SLE_STR),
 };
 
 struct APSTChunkHandler : ChunkHandler {
@@ -117,6 +121,7 @@ struct APSTChunkHandler : ChunkHandler {
         _ap_sl_completed   = AP_GetCompletedMissionsStr();
         _ap_sl_shop_offset = AP_GetShopPageOffset();
         _ap_sl_shop_days   = AP_GetShopDayCounter();
+        _ap_sl_shop_sent   = AP_GetSentShopStr();
         _ap_sl_goal_sent   = AP_GetGoalSent();
 
         constexpr int NC = 64;
@@ -139,28 +144,36 @@ struct APSTChunkHandler : ChunkHandler {
 
     void Load() const override
     {
-        const std::vector<SaveLoad> slt = SlCompatTableHeader(_ap_desc, {});
-        if (SlIterateArray() == -1) return;
-        SlGlobList(slt);
+        try {
+            const std::vector<SaveLoad> slt = SlCompatTableHeader(_ap_desc, {});
+            if (SlIterateArray() == -1) return;
+            SlGlobList(slt);
 
-        _ap_last_host = _ap_sl_host;
-        _ap_last_port = _ap_sl_port;
-        _ap_last_slot = _ap_sl_slot;
-        _ap_last_pass = _ap_sl_pass;
+            _ap_last_host = _ap_sl_host;
+            _ap_last_port = _ap_sl_port;
+            _ap_last_slot = _ap_sl_slot;
+            _ap_last_pass = _ap_sl_pass;
 
-        AP_SetCompletedMissionsStr(_ap_sl_completed);
-        AP_SetShopPageOffset(_ap_sl_shop_offset);
-        AP_SetShopDayCounter(_ap_sl_shop_days);
-        AP_SetGoalSent(_ap_sl_goal_sent);
+            AP_SetCompletedMissionsStr(_ap_sl_completed);
+            AP_SetShopPageOffset(_ap_sl_shop_offset);
+            AP_SetShopDayCounter(_ap_sl_shop_days);
+            AP_SetSentShopStr(_ap_sl_shop_sent);
+            AP_SetGoalSent(_ap_sl_goal_sent);
 
-        constexpr int NC = 64;
-        uint64_t cargo[NC] = {};
-        UnpackCargo_AP(_ap_sl_cargo_str, cargo, NC);
-        AP_SetCumulStats(cargo, NC, _ap_sl_profit);
-        AP_SetMaintainCountersStr(_ap_sl_maintain_str);
-        AP_SetNamedEntityStr(_ap_sl_named_str);
-        AP_SetEffectTimers(_ap_sl_fuel_ticks, _ap_sl_cargo_ticks,
-                           _ap_sl_reliability_ticks, _ap_sl_station_ticks);
+            constexpr int NC = 64;
+            uint64_t cargo[NC] = {};
+            UnpackCargo_AP(_ap_sl_cargo_str, cargo, NC);
+            AP_SetCumulStats(cargo, NC, _ap_sl_profit);
+            AP_SetMaintainCountersStr(_ap_sl_maintain_str);
+            AP_SetNamedEntityStr(_ap_sl_named_str);
+            AP_SetEffectTimers(_ap_sl_fuel_ticks, _ap_sl_cargo_ticks,
+                               _ap_sl_reliability_ticks, _ap_sl_station_ticks);
+        } catch (...) {
+            /* If any AP saveload field fails to parse (e.g. malformed string,
+             * version mismatch), swallow and continue rather than crashing.
+             * The player loses AP progress for this session but the
+             * savegame itself loads successfully. */
+        }
     }
 };
 

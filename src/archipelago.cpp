@@ -468,7 +468,12 @@ static APSlotData ParseSlotData(const json &msg)
 
 	sd.game_version         = d.value("game_version", "15.2");
 	sd.mission_count        = d.value("mission_count", 100);
-	sd.shop_slots           = d.value("shop_slots", 5);
+	/* shop_item_count is the direct count (new). Fall back to shop_slots*20 for old saves. */
+	if (d.contains("shop_item_count")) {
+		sd.shop_slots = d.value("shop_item_count", 100);
+	} else {
+		sd.shop_slots = d.value("shop_slots", 5) * 20;
+	}
 	sd.shop_refresh_days    = d.value("shop_refresh_days", 90);
 	sd.starting_vehicle     = d.value("starting_vehicle", "");
 	sd.starting_vehicle_type = d.value("starting_vehicle_type", "");
@@ -984,7 +989,7 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				}
 
 				/* Shop locations */
-				int shop_total = sd.shop_slots * 20;
+				int shop_total = sd.shop_slots; /* shop_slots now stores direct item count */
 				for (int i = 1; i <= shop_total; i++) {
 					location_ids[fmt::format("Shop_Purchase_{:04d}", i)] = base++;
 				}

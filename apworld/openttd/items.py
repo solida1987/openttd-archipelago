@@ -514,17 +514,26 @@ VANILLA_SHIPS = ALL_SHIPS
 
 
 STARTING_VEHICLES = {
-    # Trains: steam and early diesel only.
-    # These can haul passengers and mail which are always available regardless
-    # of map industries. Toyland Choo-Choos are filtered out at world-gen time
-    # when the landscape is not Toyland (see __init__.py).
+    # Trains: steam and early diesel only (no electric — needs electric rail infrastructure).
+    # Entries are filtered by landscape at world-gen time (see __init__.py):
+    #   Temperate: Kirby Paul Tank, Chaney Jubilee, Ginzu A4, SH 8P, SH/Hendry 25, UU 37, Floss 47
+    #   Arctic/Tropic: Wills 2-8-0, MJS 250
+    #   Toyland: Ploddyphut/Powernaut/MightyMover Choo-Choo, Ploddyphut/Powernaut Diesel
     "train": [
-        "Wills 2-8-0 (Steam)",
+        # Temperate-only
         "Kirby Paul Tank (Steam)",
+        "Chaney 'Jubilee' (Steam)",
+        "Ginzu 'A4' (Steam)",
+        "SH '8P' (Steam)",
+        "SH/Hendry '25' (Diesel)",
+        "UU '37' (Diesel)",
+        "Floss '47' (Diesel)",
+        # Arctic/Tropic-only
+        "Wills 2-8-0 (Steam)",
         "MJS 250 (Diesel)",
+        # Toyland-only (filtered out on non-Toyland maps)
         "Ploddyphut Diesel",
         "Powernaut Diesel",
-        # Toyland — only selectable when landscape == Toyland
         "Ploddyphut Choo-Choo",
         "Powernaut Choo-Choo",
         "MightyMover Choo-Choo",
@@ -561,3 +570,28 @@ STARTING_VEHICLES = {
         "Chugger-Chug Passenger Ferry",
     ],
 }
+
+# Trains only available on Arctic or Tropic maps (NOT on Temperate).
+ARCTIC_TROPIC_ONLY_TRAINS: frozenset = frozenset({
+    "Wills 2-8-0 (Steam)",
+    "MJS 250 (Diesel)",
+    "CS 4000 (Diesel)",
+    "CS 2400 (Diesel)",
+    "Centennial (Diesel)",
+    "Kelling 3100 (Diesel)",
+    "MJS 1000 (Diesel)",
+})
+
+# Trains only available on Temperate maps.
+TEMPERATE_ONLY_TRAINS: frozenset = frozenset({
+    "Kirby Paul Tank (Steam)",
+    "Chaney 'Jubilee' (Steam)",
+    "Ginzu 'A4' (Steam)",
+    "SH '8P' (Steam)",
+    "SH/Hendry '25' (Diesel)",
+    "UU '37' (Diesel)",
+    "Floss '47' (Diesel)",
+    "SH '30' (Electric)",
+    "SH '40' (Electric)",
+})
+

@@ -77,7 +77,7 @@ enum class APWinCondition : uint8_t {
 struct APSlotData {
 	std::string             game_version;
 	int                     mission_count        = 0;
-	int                     shop_slots           = 5;
+	int                     shop_slots           = 100; /* Fixed: all items always visible */
 	int                     shop_refresh_days    = 90;
 	std::string             starting_vehicle;
 	std::string             starting_vehicle_type;

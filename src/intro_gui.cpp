@@ -419,7 +419,7 @@ static constexpr std::initializer_list<NWidgetPart> _nested_select_game_widgets 
 
 			/* Archipelago multiworld randomizer */
 			NWidget(NWID_VERTICAL),
-				NWidget(WWT_PUSHIMGTEXTBTN, COLOUR_ORANGE, WID_SGI_ARCHIPELAGO), SetToolbarMinimalSize(1), SetSpriteStringTip(SPR_IMG_COMPANY_GENERAL, STR_INTRO_ARCHIPELAGO, STR_INTRO_TOOLTIP_ARCHIPELAGO), SetAlignment(SA_LEFT | SA_VERT_CENTER), SetFill(1, 0),
+				NWidget(WWT_PUSHIMGTEXTBTN, COLOUR_ORANGE, WID_SGI_ARCHIPELAGO), SetToolbarMinimalSize(1), SetSpriteStringTip((SpriteID)714, STR_INTRO_ARCHIPELAGO, STR_INTRO_TOOLTIP_ARCHIPELAGO), SetAlignment(SA_LEFT | SA_VERT_CENTER), SetFill(1, 0),
 			EndContainer(),
 		EndContainer(),
 	EndContainer(),

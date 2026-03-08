@@ -9,40 +9,27 @@ from Options import (
 #  RANDOMIZER OPTIONS
 # ═══════════════════════════════════════════════════════════════
 
-class MissionCount(Range):
-    """How many missions to generate as checks."""
-    display_name = "Mission Count"
-    range_start = 50
-    range_end = 300
-    default = 100
-
-
 class StartingVehicleType(Choice):
     """Which vehicle type you start with.
-    'one_of_each' gives one safe starting vehicle from every transport type.
-    'custom' uses the Starting Vehicle Count slider to give you multiple
-    random vehicles of mixed types from the very beginning."""
+    'random' picks randomly from all transport types.
+    For all options, Starting Vehicle Count controls how many vehicles you receive."""
     display_name = "Starting Vehicle Type"
     option_random        = 0
     option_train         = 1
     option_road_vehicle  = 2
     option_aircraft      = 3
     option_ship          = 4
-    option_one_of_each   = 5
-    option_custom        = 6
     default = 0
 
 
 class StartingVehicleCount(Range):
-    """How many vehicles to start with when Starting Vehicle Type is set to 'custom'.
-    The vehicles are drawn randomly from all starter-safe vehicle types (trains,
-    road vehicles, aircraft, ships). If the count exceeds the number of unique
-    starter vehicles available (~16), you simply receive all of them.
-    Has no effect when Starting Vehicle Type is anything other than 'custom'."""
+    """How many starting vehicles to receive.
+    For 'random', vehicles are drawn from all transport types.
+    For a specific type, all vehicles come from that type."""
     display_name = "Starting Vehicle Count"
     range_start = 1
-    range_end   = 50
-    default     = 5
+    range_end   = 20
+    default     = 3
 
 
 class WinCondition(Choice):
@@ -100,12 +87,24 @@ class WinConditionMonthlyProfit(Range):
 #  SHOP OPTIONS
 # ═══════════════════════════════════════════════════════════════
 
-class ShopSlots(Range):
-    """How many shop slots are available at a time."""
-    display_name = "Shop Slots"
-    range_start = 3
-    range_end   = 10
-    default     = 5
+class TrapCount(Range):
+    """How many trap items to include in the item pool.
+    The total pool size is determined automatically from the available vehicles
+    for your chosen landscape and GRFs. Traps are distributed across locations
+    alongside vehicles and utility items."""
+    display_name = "Trap Count"
+    range_start = 0
+    range_end   = 50
+    default     = 10
+
+
+class UtilityCount(Range):
+    """How many utility items (cash injections, loan reductions, boosts) to include.
+    The remainder of the item pool is filled with vehicles for your landscape."""
+    display_name = "Utility Count"
+    range_start = 5
+    range_end   = 100
+    default     = 20
 
 
 class ShopRefreshDays(Range):
@@ -118,31 +117,37 @@ class ShopRefreshDays(Range):
 
 class ShopPriceTier(Choice):
     """
-    How expensive shop purchases are.
-    Easy:    £10,000 – £500,000
-    Normal:  £100,000 – £5,000,000
-    Hard:    £1,000,000 – £50,000,000
-    Extreme: £10,000,000 – £300,000,000
+    How expensive shop purchases are. Seven tiers from cheapest to most expensive.
+    If Shop Price Min or Shop Price Max are set to non-zero values below,
+    those sliders override this setting and this option is ignored.
 
-    Deprecated: use shop_price_min / shop_price_max for a custom range.
-    If shop_price_min or shop_price_max are non-zero they override this setting.
+    Tier 1: £10,000 – £500,000
+    Tier 2: £50,000 – £1,000,000
+    Tier 3: £100,000 – £5,000,000
+    Tier 4: £500,000 – £15,000,000
+    Tier 5: £1,000,000 – £50,000,000
+    Tier 6: £5,000,000 – £150,000,000
+    Tier 7: £10,000,000 – £500,000,000
     """
-    display_name  = "Shop Price Tier"
-    option_easy    = 0
-    option_normal  = 1
-    option_hard    = 2
-    option_extreme = 3
-    default = 1
+    display_name = "Shop Price Tier"
+    option_tier_1_10k_500k         = 0
+    option_tier_2_50k_1m           = 1
+    option_tier_3_100k_5m          = 2
+    option_tier_4_500k_15m         = 3
+    option_tier_5_1m_50m           = 4
+    option_tier_6_5m_150m          = 5
+    option_tier_7_10m_500m         = 6
+    default = 0
 
 
 class ShopPriceMin(Range):
     """
-    Minimum price (in pounds) for a shop purchase.
-    Set to 0 to use the shop_price_tier setting instead.
+    Custom minimum price (in pounds) for a shop purchase.
+    Set to 0 (default) to use the Shop Price Tier setting above.
+    If this or Shop Price Max is non-zero, the tier setting is disabled.
     Range: £0 – £100,000,000
-    Example: 10000 = £10,000 minimum
     """
-    display_name = "Shop Price Minimum (£)"
+    display_name = "Shop Price Minimum (£)  [overrides Tier if non-zero]"
     range_start  = 0
     range_end    = 100_000_000
     default      = 0
@@ -150,13 +155,13 @@ class ShopPriceMin(Range):
 
 class ShopPriceMax(Range):
     """
-    Maximum price (in pounds) for a shop purchase.
-    Set to 0 to use the shop_price_tier setting instead.
-    Must be greater than shop_price_min.
+    Custom maximum price (in pounds) for a shop purchase.
+    Set to 0 (default) to use the Shop Price Tier setting above.
+    If this or Shop Price Min is non-zero, the tier setting is disabled.
+    Must be greater than Shop Price Min.
     Range: £0 – £500,000,000
-    Example: 50000000 = £50,000,000 maximum
     """
-    display_name = "Shop Price Maximum (£)"
+    display_name = "Shop Price Maximum (£)  [overrides Tier if non-zero]"
     range_start  = 0
     range_end    = 500_000_000
     default      = 0
@@ -209,16 +214,6 @@ class EnableTraps(Toggle):
     display_name = "Enable Traps"
     default = 1
 
-
-class TrapIntensity(Range):
-    """How large a share of the item pool consists of trap items (0–100%).
-    At 0 traps are enabled but very rare. At 100 roughly 25% of all items
-    are traps. Default 30 gives a light sprinkling without overwhelming the
-    player. Only has effect when Enable Traps is on."""
-    display_name = "Trap Intensity (%)"
-    range_start = 0
-    range_end   = 100
-    default     = 30
 
 
 class TrapBreakdownWave(Toggle):
@@ -594,7 +589,8 @@ class EnableIronHorse(Toggle):
 
 OPTION_GROUPS = [
     OptionGroup("Randomizer", [
-        MissionCount,
+        TrapCount,
+        UtilityCount,
         StartingVehicleType,
         StartingVehicleCount,
         WinCondition,
@@ -605,15 +601,15 @@ OPTION_GROUPS = [
         WinConditionMonthlyProfit,
     ]),
     OptionGroup("Shop", [
-        ShopSlots,
         ShopRefreshDays,
         ShopPriceTier,
+        ShopPriceMin,
+        ShopPriceMax,
         MissionDifficulty,
         StartingCashBonus,
     ]),
     OptionGroup("Traps", [
         EnableTraps,
-        TrapIntensity,
         TrapBreakdownWave,
         TrapRecession,
         TrapMaintenanceSurge,
@@ -687,7 +683,6 @@ class OpenTTDDeathLink(DeathLink):
 @dataclass
 class OpenTTDOptions(PerGameCommonOptions):
     # Randomizer
-    mission_count:                   MissionCount
     starting_vehicle_type:           StartingVehicleType
     starting_vehicle_count:          StartingVehicleCount
     win_condition:                   WinCondition
@@ -697,7 +692,8 @@ class OpenTTDOptions(PerGameCommonOptions):
     win_condition_cargo_delivered:   WinConditionCargoDelivered
     win_condition_monthly_profit:    WinConditionMonthlyProfit
     # Shop
-    shop_slots:                      ShopSlots
+    trap_count:                      TrapCount
+    utility_count:                   UtilityCount
     shop_refresh_days:               ShopRefreshDays
     shop_price_tier:                 ShopPriceTier
     shop_price_min:                  ShopPriceMin
@@ -706,7 +702,6 @@ class OpenTTDOptions(PerGameCommonOptions):
     starting_cash_bonus:             StartingCashBonus
     # Traps
     enable_traps:                    EnableTraps
-    trap_intensity:                  TrapIntensity
     trap_breakdown_wave:             TrapBreakdownWave
     trap_recession:                  TrapRecession
     trap_maintenance_surge:          TrapMaintenanceSurge

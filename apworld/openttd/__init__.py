@@ -17,6 +17,7 @@ from .items import (
     ITEM_TABLE, ALL_VEHICLES, TRAP_ITEMS, UTILITY_ITEMS,
     VANILLA_TRAINS, VANILLA_WAGONS, VANILLA_ROAD_VEHICLES,
     VANILLA_AIRCRAFT, VANILLA_SHIPS, STARTING_VEHICLES, IRON_HORSE_ENGINES,
+    ARCTIC_TROPIC_ONLY_TRAINS, TEMPERATE_ONLY_TRAINS,
     OpenTTDItemData
 )
 from .locations import (
@@ -25,6 +26,45 @@ from .locations import (
 )
 from .options import OpenTTDOptions, OPTION_GROUPS
 from .rules import set_rules
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  LANDSCAPE VEHICLE FILTER — module-level so _compute_pool_size and
+#  create_items both use the exact same set (no drift between the two).
+# ─────────────────────────────────────────────────────────────────────────────
+_TOYLAND_ONLY_VEHICLES: frozenset = frozenset({
+    # Trains — engines
+    "Ploddyphut Choo-Choo", "Powernaut Choo-Choo", "MightyMover Choo-Choo",
+    "Ploddyphut Diesel",    "Powernaut Diesel",
+    "Wizzowow Z99",         # Monorail
+    "Wizzowow Rocketeer",   # Maglev
+    # Trains — wagons (Toyland-only cargo)
+    "Candyfloss Hopper", "Toffee Hopper", "Cola Tanker", "Plastic Truck",
+    "Fizzy Drink Truck", "Sugar Truck",   "Sweet Van",   "Bubble Van",
+    "Toy Van", "Battery Truck",
+    # Road — buses
+    "Ploddyphut MkI Bus", "Ploddyphut MkII Bus", "Ploddyphut MkIII Bus",
+    # Road — mail trucks
+    "MightyMover Mail Truck", "Powernaught Mail Truck", "Wizzowow Mail Truck",
+    # Road — cargo trucks
+    "MightyMover Candyfloss Truck", "Powernaught Candyfloss Truck", "Wizzowow Candyfloss Truck",
+    "MightyMover Toffee Truck",     "Powernaught Toffee Truck",     "Wizzowow Toffee Truck",
+    "MightyMover Cola Truck",       "Powernaught Cola Truck",       "Wizzowow Cola Truck",
+    "MightyMover Plastic Truck",    "Powernaught Plastic Truck",    "Wizzowow Plastic Truck",
+    "MightyMover Fizzy Drink Truck","Powernaught Fizzy Drink Truck","Wizzowow Fizzy Drink Truck",
+    "MightyMover Sugar Truck",      "Powernaught Sugar Truck",      "Wizzowow Sugar Truck",
+    "MightyMover Sweet Truck",      "Powernaught Sweet Truck",      "Wizzowow Sweet Truck",
+    "MightyMover Battery Truck",    "Powernaught Battery Truck",    "Wizzowow Battery Truck",
+    "MightyMover Bubble Truck",     "Powernaught Bubble Truck",     "Wizzowow Bubble Truck",
+    "MightyMover Toy Van",          "Powernaught Toy Van",          "Wizzowow Toy Van",
+    # Ships
+    "Chugger-Chug Passenger Ferry", "Shivershake Passenger Ferry",
+    "MightyMover Cargo Ship",       "Powernaut Cargo Ship",
+    # Aircraft
+    "Ploddyphut 100", "Ploddyphut 500", "Flashbang X1", "Flashbang Wizzer",
+    "Juggerplane M1", "Powernaut Helicopter",
+    # NOTE: Guru Galaxy is Temperate/Arctic/Tropic — NOT Toyland-only
+})
 
 
 class OpenTTDWeb(WebWorld):
@@ -59,7 +99,7 @@ class OpenTTDWorld(World):
     # Pre-build with max possible config so AP can read locations at class level
     location_name_to_id: Dict[str, int] = {
         name: data.code
-        for name, data in get_location_table(mission_count=1140, shop_slots=3).items()
+        for name, data in get_location_table(mission_count=600, shop_item_count=600).items()
     }
 
     # Slot data stored during generation
@@ -73,54 +113,46 @@ class OpenTTDWorld(World):
         self._shop_prices_cache: Dict[str, int] = {}
 
     def _get_location_table(self):
-        mc, ss = self._compute_pool_size()
-        return get_location_table(mc, ss)
+        mc, shop = self._compute_pool_size()
+        return get_location_table(mc, shop)
 
     def _compute_pool_size(self) -> tuple:
-        """Dynamically compute (mission_count, shop_slots) based on player count.
+        """Dynamically compute (mission_count, shop_item_count).
 
-        Goals:
-        - Solo:    all 202 vehicles + good traps/utility always fit
-        - 8 players: each world contributes ~600 checks to the shared pool
-        - Scales smoothly; player YAML choices act as a ±multiplier on top
+        Pool size is derived automatically from:
+          - Available vehicles for the chosen landscape + active GRFs
+          - trap_count  (explicit YAML option)
+          - utility_count  (explicit YAML option)
 
-        Formula:
-            base_total  = 350  (enough for all vehicles + traps + utility solo)
-            per_player  = +50 per additional player beyond 1
-            cap         = 1 200 (avoids absurdly long sessions)
-
-        Player YAML option 'mission_count' is reinterpreted as a scale factor:
-            default (300) → ×1.0
-            higher        → proportionally more locations
-            lower         → proportionally fewer (min 250 total)
-
-        Split: 65% missions, 35% shop locations (rounded to shop_slots of 20)
+        Total items = vehicles + traps + utility.
+        Split exactly 50/50: mission_count = shop_item_count = total // 2.
+        The player never controls mission_count or shop size directly.
         """
-        # How many players are in this multiworld?
-        try:
-            player_count = len(self.multiworld.player_ids)
-        except Exception:
-            player_count = 1
+        landscape = self.options.landscape.value
+        is_toyland = (landscape == 3)
+        ih_enabled = bool(self.options.enable_iron_horse.value) and not is_toyland
 
-        # Base total locations
-        base_total = 350 + (player_count - 1) * 50
-        base_total = min(base_total, 1200)
+        # Count available vehicles for this landscape (same logic as create_items)
+        if is_toyland:
+            eligible_count = len(ALL_VEHICLES)
+        else:
+            eligible_count = sum(1 for v in ALL_VEHICLES if v not in _TOYLAND_ONLY_VEHICLES)
+        if ih_enabled:
+            eligible_count += len(IRON_HORSE_ENGINES)
 
-        # Apply player's mission_count as a relative scale
-        # The option default is 300; treat that as ×1.0
-        yaml_mc = self.options.mission_count.value
-        scale = yaml_mc / 300.0
-        total = max(250, int(base_total * scale))
+        trap_count   = self.options.trap_count.value
+        utility_count = self.options.utility_count.value
 
-        # shop_slots: always respect the player's YAML setting (default 5, range 3-10)
-        # This fixes the bug where the computed value ignored the explicit YAML option.
-        shop_slots = self.options.shop_slots.value
+        total_items = eligible_count + trap_count + utility_count
+        # Ensure even so the 50/50 split is clean
+        if total_items % 2 != 0:
+            total_items += 1
 
-        # Remaining space goes to missions (minimum 50)
-        shop_loc_count = shop_slots * 20
-        mission_count = max(50, total - shop_loc_count)
+        half = total_items // 2
+        mission_count   = max(10, min(half, 1140))
+        shop_item_count = max(5, half)
 
-        return mission_count, shop_slots
+        return mission_count, shop_item_count
 
     def generate_early(self) -> None:
         """Generate mission content before items are placed."""
@@ -128,9 +160,9 @@ class OpenTTDWorld(World):
             player_count = len(self.multiworld.player_ids)
         except Exception:
             player_count = 1
-        mc, ss = self._compute_pool_size()
-        total = mc + ss * 20
-        print(f"[OpenTTD] {player_count} player(s) → {mc} missions + {ss} shop slots = {total} total locations")
+        mc, shop = self._compute_pool_size()
+        total = mc + shop
+        print(f"[OpenTTD] {player_count} player(s) → {mc} missions + {shop} shop items = {total} total locations")
         self._generate_missions()
 
     def _generate_missions(self) -> None:
@@ -146,7 +178,7 @@ class OpenTTDWorld(World):
            on map size so the mission cannot be impossible to complete.
         """
         rng = self.random
-        mission_count, _shop_slots = self._compute_pool_size()
+        mission_count, _shop_item_count = self._compute_pool_size()
         missions = []
 
         # Difficulty multiplier — only applied to monetary / cargo amounts.
@@ -199,6 +231,10 @@ class OpenTTDWorld(World):
                     type_key = "earn monthly"
                 elif type_key.startswith("earn"):
                     type_key = "earn"
+                elif type_key.startswith("maintain") and "75" in type_key:
+                    type_key = "maintain_75"
+                elif type_key.startswith("maintain") and "90" in type_key:
+                    type_key = "maintain_90"
 
                 # "Buy a vehicle from the shop" — only once per difficulty
                 if unit == "purchase":
@@ -267,6 +303,58 @@ class OpenTTDWorld(World):
                     "cargo":       cargo,
                     "unit":        unit,
                 })
+
+            # If spacing rules prevented reaching `count`, do a relaxed second pass
+            # with no minimum spacing (MIN_SPACING_FACTOR = 1) to fill the gap.
+            remaining = count - len(generated)
+            if remaining > 0:
+                extra_attempts = remaining * 100
+                for _ in range(extra_attempts):
+                    if len(generated) >= count:
+                        break
+                    template_data = rng.choice(templates)
+                    template, amt_min, amt_max, unit = template_data
+                    if unit == "purchase":
+                        if shop_used:
+                            continue
+                        shop_used = True
+                        amount = 1
+                    else:
+                        scaled_min = max(1, int(amt_min * diff_scale)) if unit in _SCALE_UNITS else amt_min
+                        scaled_max = max(scaled_min, int(amt_max * diff_scale)) if unit in _SCALE_UNITS else amt_max
+                        amount = rng.randint(scaled_min, scaled_max)
+                        amount = self._round_to_nice(amount)
+                        amount = max(1, amount)
+                        if type_key in used and amount in used[type_key]:
+                            amount = max(1, amount + 1)
+                    cargo = rng.choice(cargo_list) if "{cargo}" in template else ""
+                    description = (
+                        template.format(amount=f"{amount:,}", cargo=cargo)
+                        if cargo else
+                        template.format(amount=f"{amount:,}")
+                    )
+                    raw_key = template.split("{amount}")[0].strip().lower()
+                    type_key = raw_key.replace("\u00a3","").replace("\xc2\xa3","").replace("£","").strip().rstrip(",").rstrip()
+                    if type_key.startswith("earn") and "month" in template.lower():
+                        type_key = "earn monthly"
+                    elif type_key.startswith("earn"):
+                        type_key = "earn"
+                    effective_type = unit if unit in {
+                        "passengers_to_town", "mail_to_town",
+                        "cargo_to_industry", "cargo_from_industry"
+                    } else type_key
+                    if type_key not in used:
+                        used[type_key] = set()
+                    used[type_key].add(amount)
+                    generated.append({
+                        "location":    f"Mission_{difficulty.capitalize()}_{len(generated)+1:03d}",
+                        "difficulty":  difficulty,
+                        "description": description,
+                        "type":        effective_type,
+                        "amount":      amount,
+                        "cargo":       cargo,
+                        "unit":        unit,
+                    })
 
             missions.extend(generated)
 
@@ -379,11 +467,16 @@ class OpenTTDWorld(World):
         type_names = {1: "train", 2: "road_vehicle", 3: "aircraft", 4: "ship"}
 
         is_toyland = (self.options.landscape.value == 3)
-        TOYLAND_ONLY_STARTERS = {
-            "Ploddyphut Choo-Choo", "Powernaut Choo-Choo", "MightyMover Choo-Choo",
-            # Ploddyphut Diesel and Powernaut Diesel are also Toyland-only in OpenTTD 15.2
-            "Ploddyphut Diesel", "Powernaut Diesel",
-        }
+        # Build exclusion set for current landscape:
+        # - Always exclude Toyland-only vehicles on non-Toyland maps
+        # - On Temperate: also exclude Arctic/Tropic-only trains
+        # - On Arctic/Tropic: also exclude Temperate-only trains
+        TOYLAND_ONLY_STARTERS = set(_TOYLAND_ONLY_VEHICLES)
+        if not is_toyland:
+            if self.options.landscape.value == 0:  # Temperate
+                TOYLAND_ONLY_STARTERS |= ARCTIC_TROPIC_ONLY_TRAINS
+            elif self.options.landscape.value in (1, 2):  # Arctic, Tropic
+                TOYLAND_ONLY_STARTERS |= TEMPERATE_ONLY_TRAINS
 
         def _pick_starter(vtype: str) -> str:
             pool = STARTING_VEHICLES[vtype]
@@ -394,81 +487,66 @@ class OpenTTDWorld(World):
                 pool = STARTING_VEHICLES[vtype]
             return self.random.choice(pool)
 
-        if start_type == 5:
-            # one_of_each: one safe starter per transport type
-            starting_vehicles = [_pick_starter(t) for t in type_names.values()]
-            starting_vehicle = starting_vehicles[0]   # primary (for slot_data compat)
-            chosen_type = "one_of_each"
-            for sv in starting_vehicles:
-                self.multiworld.push_precollected(self.create_item(sv))
+        # Random or specific type: give the player `starting_vehicle_count` vehicles.
+        # For 'random' we pick from all transport types combined.
+        # For a specific type we pick only from that type's starter pool.
+        count = max(1, self.options.starting_vehicle_count.value)
 
-        elif start_type == 6:
-            # custom: give the player N randomly chosen starting vehicles.
-            # We sample from ALL available starter pools (all four transport
-            # types) so the player gets a mix, then deduplicate.
-            count = max(1, self.options.starting_vehicle_count.value)
-            chosen_type = "custom"
+        if start_type == 0:
+            # Random: pool = all starter-safe vehicles across every transport type
+            chosen_type = "random"
             all_starters: List[str] = []
             for vtype in type_names.values():
                 pool = STARTING_VEHICLES[vtype]
                 if not is_toyland:
                     pool = [v for v in pool if v not in TOYLAND_ONLY_STARTERS]
                 all_starters.extend(pool)
-            # Remove duplicates but keep order deterministic via seeded rng
-            seen: set = set()
-            unique_starters: List[str] = []
-            for v in all_starters:
-                if v not in seen:
-                    seen.add(v)
-                    unique_starters.append(v)
-            self.random.shuffle(unique_starters)
-            # Pick up to `count` vehicles; wrap around if count > pool size
-            starting_vehicles = []
-            for i in range(count):
-                starting_vehicles.append(unique_starters[i % len(unique_starters)])
-            # Deduplicate while preserving order (no point unlocking same vehicle twice)
-            seen2: set = set()
-            starting_vehicles_deduped: List[str] = []
-            for v in starting_vehicles:
-                if v not in seen2:
-                    seen2.add(v)
-                    starting_vehicles_deduped.append(v)
-            starting_vehicles = starting_vehicles_deduped
-            starting_vehicle = starting_vehicles[0]
-            for sv in starting_vehicles:
-                self.multiworld.push_precollected(self.create_item(sv))
-
         else:
-            if start_type == 0:
-                chosen_type = self.random.choice(list(type_names.values()))
-            else:
-                chosen_type = type_names[start_type]
-            starting_vehicle = _pick_starter(chosen_type)
-            starting_vehicles = [starting_vehicle]
-            self.multiworld.push_precollected(self.create_item(starting_vehicle))
+            chosen_type = type_names[start_type]
+            all_starters = list(STARTING_VEHICLES[chosen_type])
+            if not is_toyland:
+                all_starters = [v for v in all_starters if v not in TOYLAND_ONLY_STARTERS]
+
+        # Deduplicate while preserving deterministic order, then shuffle
+        seen: set = set()
+        unique_starters: List[str] = []
+        for v in all_starters:
+            if v not in seen:
+                seen.add(v)
+                unique_starters.append(v)
+        self.random.shuffle(unique_starters)
+
+        # Pick `count` vehicles; wrap around if count > pool size
+        raw: List[str] = [unique_starters[i % len(unique_starters)] for i in range(count)]
+
+        # Deduplicate (wrapping can produce repeats if count > pool size)
+        seen2: set = set()
+        starting_vehicles = []
+        for v in raw:
+            if v not in seen2:
+                seen2.add(v)
+                starting_vehicles.append(v)
+
+        starting_vehicle = starting_vehicles[0]
+        for sv in starting_vehicles:
+            self.multiworld.push_precollected(self.create_item(sv))
 
         self._slot_data["starting_vehicle"] = starting_vehicle
         self._slot_data["starting_vehicle_type"] = chosen_type
-        # Extra starters for one_of_each (C++ client reads this list if present)
+        # Extra starters list (C++ client reads this to unlock all starting vehicles)
         self._slot_data["starting_vehicles"] = starting_vehicles
 
         # ── Reserve slots for traps and utility ──────────────────────────
         # Traps: up to 15% of total pool (minimum 0)
-        # Utility: up to 20% of total pool (minimum 10)
-        if enabled_traps:
-            # TrapIntensity (0-100) scales the trap share of the pool.
-            # intensity=100 → 25% traps; intensity=0 → ~2% (minimum 1 of each)
-            intensity = self.options.trap_intensity.value / 100.0
-            trap_fraction = 0.02 + intensity * 0.23   # 2% → 25%
-            trap_target = max(len(enabled_traps), int(total_locations * trap_fraction))
-            trap_pool = (enabled_traps * 20)[:trap_target]
+        # ── Trap pool — exact count from YAML option ─────────────────────
+        trap_target = self.options.trap_count.value
+        if trap_target > 0 and enabled_traps:
+            trap_pool = (enabled_traps * (trap_target // len(enabled_traps) + 1))[:trap_target]
         else:
             trap_pool = []
 
-        utility_target = max(10, int(total_locations * 0.20))
-        # Build the utility pool by cycling evenly through all utility types
-        # rather than repeating the list in order. This prevents any single
-        # item (e.g. Reliability Boost) from dominating the shop rotation.
+        # ── Utility pool — exact count from YAML option ───────────────────
+        utility_target = self.options.utility_count.value
         utility_pool: List[str] = []
         while len(utility_pool) < utility_target:
             batch = list(UTILITY_ITEMS)
@@ -479,31 +557,11 @@ class OpenTTDWorld(World):
         reserved = len(trap_pool) + len(utility_pool)
 
         # ── Vehicles fill remaining slots ─────────────────────────────────
-        # On non-Toyland maps, Toyland-only vehicles are excluded from the pool
-        # entirely — they cannot be unlocked on maps where they don't exist and
-        # would appear as received items that do nothing.
-        TOYLAND_ONLY_VEHICLES = {
-            "Ploddyphut Choo-Choo", "Powernaut Choo-Choo", "MightyMover Choo-Choo",
-            "Ploddyphut MkI Bus", "Ploddyphut MkII Bus", "Ploddyphut MkIII Bus",
-            "MightyMover Mail Truck", "Wizzowow Mail Truck",
-            "MightyMover Candyfloss Truck", "Powernaught Candyfloss Truck", "Wizzowow Candyfloss Truck",
-            "MightyMover Toffee Truck", "Powernaught Toffee Truck", "Wizzowow Toffee Truck",
-            "MightyMover Cola Truck", "Powernaught Cola Truck", "Wizzowow Cola Truck",
-            "MightyMover Plastic Truck", "Powernaught Plastic Truck", "Wizzowow Plastic Truck",
-            "MightyMover Fizzy Drink Truck", "Powernaught Fizzy Drink Truck", "Wizzowow Fizzy Drink Truck",
-            "MightyMover Sugar Truck", "Powernaught Sugar Truck", "Wizzowow Sugar Truck",
-            "MightyMover Sweet Truck", "Powernaught Sweet Truck", "Wizzowow Sweet Truck",
-            "MightyMover Battery Truck", "Powernaught Battery Truck", "Wizzowow Battery Truck",
-            "MightyMover Bubble Truck", "Powernaught Bubble Truck", "Wizzowow Bubble Truck",
-            "MightyMover Toy Van", "Powernaught Toy Van", "Wizzowow Toy Van",
-            "Ploddyphut 100", "Ploddyphut 500", "Flashbang X1", "Flashbang Wizzer",
-            "Guru Galaxy", "Juggerplane M1",
-            "Candyfloss Hopper", "Toffee Hopper", "Cola Tanker", "Plastic Truck",
-            "Fizzy Drink Truck", "Sugar Truck", "Sweet Van", "Bubble Van", "Toy Van", "Battery Truck",
-        }
+        # Uses the module-level _TOYLAND_ONLY_VEHICLES constant (same set as
+        # _compute_pool_size) so the vehicle count is always consistent.
         vehicle_slots = total_locations - reserved
         eligible_vehicles = ALL_VEHICLES if is_toyland else [
-            v for v in ALL_VEHICLES if v not in TOYLAND_ONLY_VEHICLES
+            v for v in ALL_VEHICLES if v not in _TOYLAND_ONLY_VEHICLES
         ]
 
         # ── Iron Horse: add engines to pool if enabled ────────────────────
@@ -514,7 +572,7 @@ class OpenTTDWorld(World):
         self._slot_data["enable_iron_horse"] = 1 if ih_enabled else 0
         if ih_enabled:
             eligible_vehicles = eligible_vehicles + IRON_HORSE_ENGINES
-        # Exclude ALL starting vehicles from the randomised pool (for one_of_each
+        # Exclude ALL starting vehicles from the randomised pool (
         # this is 4 vehicles, for other modes just 1).
         starting_set = set(starting_vehicles)
         all_vehicles_shuffled = [v for v in eligible_vehicles if v not in starting_set]
@@ -584,7 +642,7 @@ class OpenTTDWorld(World):
             4: "monthly_profit",
         }
 
-        computed_mc, computed_ss = self._compute_pool_size()
+        computed_mc, computed_shop = self._compute_pool_size()
 
         # Build item_id_to_name so the C++ client can resolve item IDs to names
         item_id_to_name = {str(data.code): name for name, data in ITEM_TABLE.items()}
@@ -599,7 +657,7 @@ class OpenTTDWorld(World):
         self._slot_data.update({
             "game_version": "15.2",
             "mission_count": computed_mc,
-            "shop_slots": computed_ss,
+            "shop_item_count": computed_shop,
             "shop_refresh_days": self.options.shop_refresh_days.value,
             "missions": self._generated_missions,
             "win_condition": win_condition_names[win_cond],
@@ -664,12 +722,15 @@ class OpenTTDWorld(World):
         })
         return self._slot_data
 
-    # Price ranges per tier: (min, max) in pounds
+    # Price ranges per tier: (min, max) in pounds — must match ShopPriceTier options
     SHOP_PRICE_RANGES = {
-        0: (10_000,      500_000),      # easy
-        1: (100_000,   5_000_000),      # normal
-        2: (1_000_000, 50_000_000),     # hard
-        3: (10_000_000, 300_000_000),   # extreme
+        0: (    10_000,     500_000),   # Tier 1: £10K – £500K
+        1: (    50_000,   1_000_000),   # Tier 2: £50K – £1M
+        2: (   100_000,   5_000_000),   # Tier 3: £100K – £5M
+        3: (   500_000,  15_000_000),   # Tier 4: £500K – £15M
+        4: ( 1_000_000,  50_000_000),   # Tier 5: £1M – £50M
+        5: ( 5_000_000, 150_000_000),   # Tier 6: £5M – £150M
+        6: (10_000_000, 500_000_000),   # Tier 7: £10M – £500M
     }
 
     def _generate_shop_prices(self) -> Dict[str, int]:
@@ -696,14 +757,17 @@ class OpenTTDWorld(World):
             price_min, price_max = self.SHOP_PRICE_RANGES[tier]
 
         rng = self.random
-        _mc, computed_ss = self._compute_pool_size()
-        shop_total = computed_ss * 20
+        _mc, computed_shop = self._compute_pool_size()
+        shop_total = computed_shop
         # Generate all prices randomly, then sort ascending so the shop
         # naturally shows affordable items first and expensive ones last.
         # This means the first shop rotation is always cheapest, later ones
         # progressively more expensive — a natural difficulty ramp.
+        import math as _math
+        log_min = _math.log10(max(1, price_min))
+        log_max = _math.log10(max(price_min + 1, price_max))
         raw_prices = [
-            self._round_to_nice(rng.randint(price_min, price_max))
+            self._round_to_nice(int(10 ** rng.uniform(log_min, log_max)))
             for _ in range(shop_total)
         ]
         raw_prices.sort()  # cheapest → most expensive

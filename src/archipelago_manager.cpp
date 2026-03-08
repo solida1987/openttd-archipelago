@@ -109,6 +109,19 @@ static void BuildCargoMap()
 		{ "copper ore",  CT_COPPER_ORE },
 		{ "water",       CT_WATER      },
 		{ "diamonds",    CT_DIAMONDS   },
+		/* Toyland-only cargos — missing from this table caused AP_FindCargoType()
+		 * to return INVALID_CARGO, making Toyland transport missions fall back
+		 * to counting ALL cargo types instead of the specific one. */
+		{ "sugar",       CT_SUGAR        },
+		{ "toys",        CT_TOYS         },
+		{ "batteries",   CT_BATTERIES    },
+		{ "sweets",      CT_CANDY        },   /* in-game name "Sweets", label CT_CANDY */
+		{ "toffee",      CT_TOFFEE       },
+		{ "cola",        CT_COLA         },
+		{ "candyfloss",  CT_COTTON_CANDY },   /* in-game name "Candyfloss", label CT_COTTON_CANDY */
+		{ "bubbles",     CT_BUBBLES      },
+		{ "plastic",     CT_PLASTIC      },
+		{ "fizzy drinks",CT_FIZZY_DRINKS },
 	};
 
 	for (auto &[name, label] : kNameLabel) {
@@ -401,13 +414,13 @@ static bool EvaluateMission(APMission &m)
 		current = (int64_t)rail_towns.size();
 	}
 
-	/* ── "maintain..." type ────────────────────────────────────────────
-	 * "Maintain 75%/90%+ station rating for {amount} months"
+	/* ── "maintain_75" / "maintain_90" type ────────────────────────────
+	 * Python emits normalized type "maintain_75" or "maintain_90".
 	 * m.amount = number of consecutive months required.
-	 * m.maintain_months_ok = counter, incremented monthly by the calendar timer
-	 *   if ALL rated stations held the threshold that month, reset to 0 otherwise.
-	 * Here we just expose the current counter as the live progress value. */
-	else if (m.type.find("maintain") != std::string::npos) {
+	 * m.maintain_months_ok = counter managed by the monthly calendar timer.
+	 * Legacy: also accept old raw template-prefix strings from saves <= beta 8. */
+	else if (m.type == "maintain_75" || m.type == "maintain_90" ||
+	         m.type.find("maintain") != std::string::npos) {
 		current = (int64_t)m.maintain_months_ok;
 	}
 
@@ -821,8 +834,16 @@ static void AP_OnItemReceived(const APItem &item)
 		}
 		AP_ShowNews("[AP] TRAP: Breakdown Wave hit!");
 	} else if (item.item_name == "Recession") {
-		c->money = c->money / 2;
-		AP_ShowNews("[AP] TRAP: Recession! Money halved.");
+		if (c->money >= 0) {
+			/* Player has positive cash: halve it */
+			c->money = c->money / 2;
+			AP_ShowNews("[AP] TRAP: Recession! Money halved.");
+		} else {
+			/* Player already in debt: add 25% of max_loan as extra debt */
+			Money penalty = (Money)((int64_t)_ap_pending_sd.max_loan / 4);
+			c->money -= penalty;
+			AP_ShowNews(fmt::format("[AP] TRAP: Recession! Extra debt: \xc2\xa3{}.", (long long)penalty));
+		}
 	} else if (item.item_name == "Maintenance Surge") {
 		/* Add a moderate fixed loan increment, capped at max_loan from slot_data
 		 * so it stays proportional to the session's economy settings. */
@@ -948,11 +969,13 @@ static void AP_OnItemReceived(const APItem &item)
 		_ap_cargo_bonus_ticks = 240;
 		AP_ShowNews("[AP] Bonus: Cargo Bonus! All cargo deliveries pay double for 60 seconds!");
 	} else if (item.item_name == "Town Growth Boost") {
-		/* Accelerate all town growth timers */
+		/* Trigger an immediate growth pulse in every town by resetting
+		 * grow_counter to 0.  The engine will schedule the next growth
+		 * tick immediately.  We deliberately do NOT halve growth_rate —
+		 * that mutation is permanent and, with 8+ copies in the pool,
+		 * would eventually freeze all towns. */
 		for (Town *t : Town::Iterate()) {
 			t->grow_counter = 0;
-			if (t->growth_rate > 0 && t->growth_rate != TOWN_GROWTH_RATE_NONE)
-				t->growth_rate = static_cast<uint16_t>(std::max(1, (int)t->growth_rate / 2));
 		}
 		AP_ShowNews("[AP] Bonus: Town Growth Boost! All towns growing faster.");
 	} else if (item.item_name == "Free Station Upgrade") {
@@ -1351,7 +1374,9 @@ void AP_SendCheckByName(const std::string &location_name)
 
 int AP_GetShopSlots()
 {
-	return AP_GetSlotData().shop_slots;
+	/* Returns the total number of shop purchase locations for this game. */
+	const APSlotData &sd = AP_GetSlotData();
+	return sd.shop_slots > 0 ? sd.shop_slots : 100;
 }
 
 int AP_GetShopRefreshDays()
@@ -1372,7 +1397,16 @@ std::string AP_GetShopLocationLabel(const std::string &location_name)
 		std::string hint = _ap_client->GetLocationHint(location_name);
 		if (!hint.empty()) return hint;
 	}
-	return location_name; /* last resort: show location ID */
+	/* Last resort: extract slot number and show "Slot #N" instead of raw ID */
+	const std::string prefix = "Shop_Purchase_";
+	if (location_name.rfind(prefix, 0) == 0) {
+		std::string num = location_name.substr(prefix.size());
+		/* Strip leading zeros */
+		size_t first_nonzero = num.find_first_not_of('0');
+		if (first_nonzero != std::string::npos) num = num.substr(first_nonzero);
+		return "Shop Slot #" + num;
+	}
+	return location_name;
 }
 
 int64_t AP_GetShopPrice(const std::string &location_name)
@@ -1394,6 +1428,27 @@ bool AP_CanAffordShopItem(const std::string &location_name)
 bool AP_IsShopLocationSent(const std::string &location_name)
 {
 	return _ap_sent_shop_locations.count(location_name) > 0;
+}
+
+std::string AP_GetSentShopStr()
+{
+	std::string out;
+	for (const std::string &loc : _ap_sent_shop_locations) {
+		if (!out.empty()) out += ',';
+		out += loc;
+	}
+	return out;
+}
+
+void AP_SetSentShopStr(const std::string &s)
+{
+	if (s.empty()) return;
+	std::string token;
+	for (char c : s) {
+		if (c == ',') { if (!token.empty()) _ap_sent_shop_locations.insert(token); token.clear(); }
+		else token += c;
+	}
+	if (!token.empty()) _ap_sent_shop_locations.insert(token);
 }
 
 void AP_DeductShopPrice(const std::string &location_name)
@@ -1426,14 +1481,12 @@ void AP_DeductShopPrice(const std::string &location_name)
 static uint32_t _ap_realtime_ticks = 0;
 
 /* -------------------------------------------------------------------------
- * Shop Refresh — calendar day timer
- * Every shop_refresh_days in-game days, cycle the visible shop slots.
- * Each refresh shifts the window of visible slots forward by shop_slots
- * positions (wrapping around the full pool of shop_slots * 20 locations).
+ * Shop page offset / day counter — kept for savegame compatibility only.
+ * Shop rotation has been removed; the full shop list is always visible.
  * ---------------------------------------------------------------------- */
 
-static int _ap_shop_day_counter  = 0;   ///< Days elapsed since last shop refresh
-static int _ap_shop_page_offset  = 0;   ///< Current page offset into the full shop list
+static int _ap_shop_day_counter  = 0;   ///< Unused — kept for savegame compat
+static int _ap_shop_page_offset  = 0;   ///< Unused — kept for savegame compat
 
 /* ── Savegame accessor functions (used by archipelago_sl.cpp) ────── */
 int  AP_GetShopPageOffset()  { return _ap_shop_page_offset; }
@@ -1610,7 +1663,13 @@ void AP_SetNamedEntityStr(const std::string &s)
 					m.named_entity.name       = AP_IndustryLabel(ind);
 					m.named_entity.tile       = ind->location.tile.base();
 					m.named_entity.cargo_slot = 0;
-					m.named_entity.cargo_type = ind->produced.empty() ? (uint8_t)0xFF : (uint8_t)ind->produced[0].cargo;
+					/* Use first VALID produced slot — slot[0] may be INVALID_CARGO,
+					 * which would trigger the 0xFF guard and silently skip this mission. */
+					uint8_t first_ct = 0xFF;
+					for (const auto &slot : ind->produced) {
+						if (IsValidCargoType(slot.cargo)) { first_ct = (uint8_t)slot.cargo; break; }
+					}
+					m.named_entity.cargo_type = first_ct;
 					AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
 				}
 			} else if (m.type == "cargo_to_industry") {
@@ -1619,7 +1678,13 @@ void AP_SetNamedEntityStr(const std::string &s)
 					m.named_entity.name       = AP_IndustryLabel(ind);
 					m.named_entity.tile       = ind->location.tile.base();
 					m.named_entity.cargo_slot = 0;
-					m.named_entity.cargo_type = ind->accepted.empty() ? (uint8_t)0xFF : (uint8_t)ind->accepted[0].cargo;
+					/* Use first VALID accepted slot — slot[0] may be INVALID_CARGO,
+					 * which would trigger the 0xFF guard and silently skip this mission. */
+					uint8_t first_ct = 0xFF;
+					for (const auto &slot : ind->accepted) {
+						if (IsValidCargoType(slot.cargo)) { first_ct = (uint8_t)slot.cargo; break; }
+					}
+					m.named_entity.cargo_type = first_ct;
 					AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
 				}
 			}
@@ -1717,7 +1782,10 @@ static void AP_AssignNamedEntities()
 			m.named_entity.name        = AP_IndustryLabel(ind);
 			m.named_entity.tile        = ind->location.tile.base();
 			m.named_entity.cargo_slot  = 0;
-			m.named_entity.cargo_type  = ind->produced.empty() ? (uint8_t)0xFF : (uint8_t)ind->produced[0].cargo;
+			/* First VALID produced slot — slot[0] may be INVALID_CARGO */
+			{ uint8_t first_ct = 0xFF;
+			  for (const auto &slot : ind->produced) { if (IsValidCargoType(slot.cargo)) { first_ct = (uint8_t)slot.cargo; break; } }
+			  m.named_entity.cargo_type = first_ct; }
 			used_inds.insert(m.named_entity.id);
 			AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
 
@@ -1729,7 +1797,10 @@ static void AP_AssignNamedEntities()
 			m.named_entity.name        = AP_IndustryLabel(ind);
 			m.named_entity.tile        = ind->location.tile.base();
 			m.named_entity.cargo_slot  = 0;
-			m.named_entity.cargo_type  = ind->accepted.empty() ? (uint8_t)0xFF : (uint8_t)ind->accepted[0].cargo;
+			/* First VALID accepted slot — slot[0] may be INVALID_CARGO */
+			{ uint8_t first_ct = 0xFF;
+			  for (const auto &slot : ind->accepted) { if (IsValidCargoType(slot.cargo)) { first_ct = (uint8_t)slot.cargo; break; } }
+			  m.named_entity.cargo_type = first_ct; }
 			used_inds.insert(m.named_entity.id);
 			AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
 		}
@@ -1761,24 +1832,35 @@ static void AP_UpdateNamedMissions()
 			if (delivered > 0) m.named_entity.cumulative += (uint64_t)delivered;
 
 		} else if (m.type == "cargo_from_industry") {
-			/* Use cargomonitor: company-specific pickups from this industry */
+			/* Use cargomonitor: company-specific pickups from this industry.
+			 * Sum ALL produced cargo slots — some industries produce multiple
+			 * cargo types (e.g. Oil Refinery produces both Goods and Oil). */
 			IndustryID iid = (IndustryID)m.named_entity.id;
 			Industry *ind = Industry::GetIfValid(iid);
 			if (ind == nullptr) { m.named_entity.cumulative = (uint64_t)m.amount; continue; }
 			if (ind->prod_level < PRODLEVEL_DEFAULT) ind->prod_level = PRODLEVEL_DEFAULT;
-			CargoMonitorID monitor = EncodeCargoIndustryMonitor(cid, ct, iid);
-			int32_t picked_up = GetPickupAmount(monitor, true);
-			if (picked_up > 0) m.named_entity.cumulative += (uint64_t)picked_up;
+			for (const auto &slot : ind->produced) {
+				if (!IsValidCargoType(slot.cargo)) continue;
+				CargoMonitorID monitor = EncodeCargoIndustryMonitor(cid, slot.cargo, iid);
+				int32_t picked_up = GetPickupAmount(monitor, true);
+				if (picked_up > 0) m.named_entity.cumulative += (uint64_t)picked_up;
+			}
 
 		} else if (m.type == "cargo_to_industry") {
-			/* Use cargomonitor: company-specific deliveries to this industry */
+			/* Use cargomonitor: company-specific deliveries to this industry.
+			 * Sum ALL accepted cargo slots — industries like Cadton Factory
+			 * accept Livestock + Grain + Steel; only counting slot 0 (Livestock)
+			 * meant Steel and Grain deliveries never registered. */
 			IndustryID iid = (IndustryID)m.named_entity.id;
 			Industry *ind = Industry::GetIfValid(iid);
 			if (ind == nullptr) { m.named_entity.cumulative = (uint64_t)m.amount; continue; }
 			if (ind->prod_level < PRODLEVEL_DEFAULT) ind->prod_level = PRODLEVEL_DEFAULT;
-			CargoMonitorID monitor = EncodeCargoIndustryMonitor(cid, ct, iid);
-			int32_t delivered = GetDeliveryAmount(monitor, true);
-			if (delivered > 0) m.named_entity.cumulative += (uint64_t)delivered;
+			for (const auto &slot : ind->accepted) {
+				if (!IsValidCargoType(slot.cargo)) continue;
+				CargoMonitorID monitor = EncodeCargoIndustryMonitor(cid, slot.cargo, iid);
+				int32_t delivered = GetDeliveryAmount(monitor, true);
+				if (delivered > 0) m.named_entity.cumulative += (uint64_t)delivered;
+			}
 		}
 	}
 }
@@ -1802,11 +1884,15 @@ static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 
 		for (APMission &m : _ap_pending_sd.missions) {
 			if (m.completed) continue;
-			if (m.type.find("maintain") == std::string::npos) continue;
+			/* Accept both normalized types (maintain_75/maintain_90) and legacy raw strings */
+			bool is_maintain = (m.type == "maintain_75" || m.type == "maintain_90" ||
+			                    m.type.find("maintain") != std::string::npos);
+			if (!is_maintain) continue;
 
-			/* Determine threshold: 75% → 191/255, 90% → 229/255 */
+			/* Determine threshold: maintain_90 → 229/255 (~90%), maintain_75 → 191/255 (~75%)
+			 * Legacy fallback: search for "90" in old raw type strings. */
 			uint8_t threshold = 191;
-			if (m.type.find("90") != std::string::npos) threshold = 229;
+			if (m.type == "maintain_90" || m.type.find("90") != std::string::npos) threshold = 229;
 
 			/* Check every rated station — ALL must pass */
 			int rated_count = 0;
@@ -1833,26 +1919,8 @@ static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 	}
 );
 
-static const IntervalTimer<TimerGameCalendar> _ap_calendar_shop_refresh(
-	{ TimerGameCalendar::DAY, TimerGameCalendar::Priority::NONE },
-	[](auto) {
-		if (!_ap_session_started) return;
-		const APSlotData &sd = AP_GetSlotData();
-		if (sd.shop_refresh_days <= 0) return;
-
-		_ap_shop_day_counter++;
-		if (_ap_shop_day_counter >= sd.shop_refresh_days) {
-			_ap_shop_day_counter = 0;
-			int total_slots = sd.shop_slots * 20;
-			if (total_slots > 0) {
-				_ap_shop_page_offset = (_ap_shop_page_offset + sd.shop_slots) % total_slots;
-				/* Mark shop window dirty so it rebuilds its list */
-				SetWindowClassesDirty(WC_ARCHIPELAGO);
-				Debug(misc, 0, "[AP] Shop refreshed — new page offset: {}", _ap_shop_page_offset);
-			}
-		}
-	}
-);
+/* Shop rotation removed — the full shop list is always visible.
+ * _ap_calendar_shop_refresh timer is no longer needed. */
 
 /* -------------------------------------------------------------------------
  * Mission evaluation — calls EvaluateMission() for all incomplete missions
@@ -1959,6 +2027,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			      _ap_pending_sd.locked_vehicles.size(), !_ap_pending_sd.locked_vehicles.empty()));
 
 			const bool has_lock_list = !_ap_pending_sd.locked_vehicles.empty();
+			static const std::string ih_prefix = "IH: ";
 			int locked_count = 0;
 			int dbg_no_avail = 0, dbg_wagon = 0, dbg_not_in_list = 0;
 			for (Engine *e : Engine::Iterate()) {
@@ -1966,10 +2035,20 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				bool is_wagon = (e->type == VEH_TRAIN &&
 				                 e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON);
 				if (is_wagon) { dbg_wagon++; continue; }
-				/* Lock everything — both vanilla and NewGRF engines.
-				 * locked_vehicles is used to know what AP CAN unlock later,
-				 * but at session start we lock all non-wagon engines regardless. */
-				(void)has_lock_list; /* suppress unused warning */
+				if (has_lock_list) {
+					std::string eng_name = GetString(STR_ENGINE_NAME,
+						PackEngineNameDParam(e->index, EngineNameContext::PurchaseList));
+					if (eng_name.empty()) eng_name = GetString(e->info.string_id);
+					/* Iron Horse engines are stored in locked_vehicles with "IH: " prefix
+					 * (matching items.py), but GetString returns the plain name (e.g.
+					 * "4-4-2 Lark").  Try both: plain name first, then prefixed. */
+					bool in_list = (_ap_pending_sd.locked_vehicles.count(eng_name) > 0) ||
+					               (_ap_pending_sd.locked_vehicles.count(ih_prefix + eng_name) > 0);
+					if (!in_list) {
+						dbg_not_in_list++;
+						continue;
+					}
+				}
 				e->company_avail.Reset(cid);
 				locked_count++;
 			}
@@ -2137,53 +2216,57 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		/* Tick down cooldowns every 250 ms */
 		if (_ap_death_cooldown_ticks > 0) _ap_death_cooldown_ticks--;
 
-		/* Fuel Shortage: re-apply speed cap every tick while active */
-		if (_ap_fuel_shortage_ticks > 0) {
-			_ap_fuel_shortage_ticks--;
-			if (_ap_session_started && _game_mode == GM_NORMAL) {
-				CompanyID cid = _local_company;
-				for (Vehicle *v : Vehicle::Iterate()) {
-					if (v->owner == cid && v->IsPrimaryVehicle()) {
-						const Engine *e = v->GetEngine();
-						if (e != nullptr) {
-							uint16_t half_speed = e->GetDisplayMaxSpeed() / 2;
-							if (v->cur_speed > half_speed) v->cur_speed = half_speed;
+		/* Timed effects only count down and apply while actually playing.
+		 * Paused game or being in a menu must not drain effect duration. */
+		if (_game_mode == GM_NORMAL) {
+			/* Fuel Shortage: re-apply speed cap every tick while active */
+			if (_ap_fuel_shortage_ticks > 0) {
+				_ap_fuel_shortage_ticks--;
+				if (_ap_session_started) {
+					CompanyID cid = _local_company;
+					for (Vehicle *v : Vehicle::Iterate()) {
+						if (v->owner == cid && v->IsPrimaryVehicle()) {
+							const Engine *e = v->GetEngine();
+							if (e != nullptr) {
+								uint16_t half_speed = e->GetDisplayMaxSpeed() / 2;
+								if (v->cur_speed > half_speed) v->cur_speed = half_speed;
+							}
 						}
 					}
 				}
 			}
-		}
 
-		/* Cargo Bonus: tick down 2x payment multiplier */
-		if (_ap_cargo_bonus_ticks > 0) _ap_cargo_bonus_ticks--;
+			/* Cargo Bonus: tick down 2x payment multiplier */
+			if (_ap_cargo_bonus_ticks > 0) _ap_cargo_bonus_ticks--;
 
-		/* Reliability Boost: re-apply max reliability every tick to counter decay */
-		if (_ap_reliability_boost_ticks > 0) {
-			_ap_reliability_boost_ticks--;
-			if (_ap_session_started && _game_mode == GM_NORMAL) {
-				CompanyID cid = _local_company;
-				for (Vehicle *v : Vehicle::Iterate()) {
-					if (v->owner == cid && v->IsPrimaryVehicle()) {
-						const Engine *e = v->GetEngine();
-						if (e != nullptr) {
-							v->reliability = e->reliability_max;
-							v->breakdown_chance = 0;
+			/* Reliability Boost: re-apply max reliability every tick to counter decay */
+			if (_ap_reliability_boost_ticks > 0) {
+				_ap_reliability_boost_ticks--;
+				if (_ap_session_started) {
+					CompanyID cid = _local_company;
+					for (Vehicle *v : Vehicle::Iterate()) {
+						if (v->owner == cid && v->IsPrimaryVehicle()) {
+							const Engine *e = v->GetEngine();
+							if (e != nullptr) {
+								v->reliability = e->reliability_max;
+								v->breakdown_chance = 0;
+							}
 						}
 					}
 				}
 			}
-		}
 
-		/* Station Boost: re-apply MAX_STATION_RATING to all player stations */
-		if (_ap_station_boost_ticks > 0) {
-			_ap_station_boost_ticks--;
-			if (_ap_session_started && _game_mode == GM_NORMAL) {
-				CompanyID cid = _local_company;
-				for (Station *st : Station::Iterate()) {
-					if (st->owner != cid) continue;
-					for (CargoType ct = 0; ct < NUM_CARGO; ct++) {
-						if (st->goods[ct].HasRating()) {
-							st->goods[ct].rating = MAX_STATION_RATING;
+			/* Station Boost: re-apply MAX_STATION_RATING to all player stations */
+			if (_ap_station_boost_ticks > 0) {
+				_ap_station_boost_ticks--;
+				if (_ap_session_started) {
+					CompanyID cid = _local_company;
+					for (Station *st : Station::Iterate()) {
+						if (st->owner != cid) continue;
+						for (CargoType ct = 0; ct < NUM_CARGO; ct++) {
+							if (st->goods[ct].HasRating()) {
+								st->goods[ct].rating = MAX_STATION_RATING;
+							}
 						}
 					}
 				}
@@ -2210,11 +2293,19 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 					if (e->type == VEH_TRAIN &&
 					    e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON) continue;
 
-					/* Lock all non-wagon engines that AP hasn't explicitly unlocked */
-					(void)has_lock_list;
-
 					/* If AP has explicitly unlocked this engine this session, leave it alone */
 					if (_ap_unlocked_engine_ids.count(e->index) > 0) continue;
+					if (has_lock_list) {
+						std::string eng_name = GetString(STR_ENGINE_NAME,
+							PackEngineNameDParam(e->index, EngineNameContext::PurchaseList));
+						if (eng_name.empty()) eng_name = GetString(e->info.string_id);
+						/* Iron Horse engines are stored in locked_vehicles with "IH: " prefix
+						 * (matching items.py), but GetString returns the plain name.
+						 * Try both: plain name first, then prefixed. */
+						bool in_list = (_ap_pending_sd.locked_vehicles.count(eng_name) > 0) ||
+						               (_ap_pending_sd.locked_vehicles.count(ih_prefix + eng_name) > 0);
+						if (!in_list) continue;
+					}
 
 					/* Otherwise suppress company_avail — do NOT clear EngineFlag::Available,
 					 * as that would cause CalendarEnginesMonthlyLoop to re-introduce

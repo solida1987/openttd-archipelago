@@ -363,6 +363,7 @@ enum APMissionsWidgets : WidgetID {
 	WAPM_FILTER_HARD,
 	WAPM_FILTER_EXTREME,
 	WAPM_SCROLLBAR,
+	WAPM_HSCROLLBAR,
 	WAPM_LIST,
 };
 
@@ -371,7 +372,7 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_missions_widgets 
 		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
 		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_ARCHIPELAGO_MISSIONS_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
 	EndContainer(),
-	NWidget(WWT_PANEL, COLOUR_BROWN),
+	NWidget(WWT_PANEL, COLOUR_BROWN), SetResize(1, 1),
 		/* Filter row */
 		NWidget(NWID_HORIZONTAL), SetPIP(2, 2, 2), SetPadding(2),
 			NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPM_FILTER_ALL),     SetStringTip(STR_ARCHIPELAGO_FILTER_ALL),     SetMinimalSize(50, 14),
@@ -380,13 +381,14 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_missions_widgets 
 			NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPM_FILTER_HARD),    SetStringTip(STR_ARCHIPELAGO_FILTER_HARD),    SetMinimalSize(50, 14),
 			NWidget(WWT_PUSHTXTBTN, COLOUR_RED,    WAPM_FILTER_EXTREME), SetStringTip(STR_ARCHIPELAGO_FILTER_EXTREME), SetMinimalSize(50, 14),
 		EndContainer(),
-		/* Mission list + scrollbar */
+		/* Mission list + vertical scrollbar */
 		NWidget(NWID_HORIZONTAL),
 			NWidget(WWT_PANEL, COLOUR_GREY, WAPM_LIST), SetMinimalSize(460, 300), SetFill(1, 1), SetResize(1, 1), SetScrollbar(WAPM_SCROLLBAR), EndContainer(),
 			NWidget(NWID_VSCROLLBAR, COLOUR_BROWN, WAPM_SCROLLBAR),
 		EndContainer(),
+		/* Horizontal scrollbar + resize box */
 		NWidget(NWID_HORIZONTAL),
-			NWidget(WWT_PANEL, COLOUR_GREY), SetFill(1, 0), EndContainer(),
+			NWidget(NWID_HSCROLLBAR, COLOUR_BROWN, WAPM_HSCROLLBAR),
 			NWidget(WWT_RESIZEBOX, COLOUR_BROWN),
 		EndContainer(),
 	EndContainer(),
@@ -414,9 +416,11 @@ static std::string AP_FormatMoneyCompact(int64_t amount)
 
 struct ArchipelagoMissionsWindow : public Window {
 	int           row_height    = 0;      /* computed in constructor from font height */
+	int           max_line_px   = 0;      /* width in pixels of the longest line */
 	std::string   filter        = "all";  /* "all","easy","medium","hard","extreme" */
 	std::vector<const APMission *> visible_missions;
-	Scrollbar *scrollbar = nullptr;
+	Scrollbar *scrollbar  = nullptr;
+	Scrollbar *hscrollbar = nullptr;
 
 	void RebuildVisibleList() {
 		visible_missions.clear();
@@ -428,16 +432,39 @@ struct ArchipelagoMissionsWindow : public Window {
 		if (this->scrollbar) {
 			this->scrollbar->SetCount((int)visible_missions.size());
 		}
+		/* Compute max line pixel width so the horizontal scrollbar range is correct */
+		max_line_px = 0;
+		for (const APMission *m : visible_missions) {
+			std::string cap_diff = m->difficulty.empty() ? "" :
+				std::string(1, (char)toupper((unsigned char)m->difficulty[0])) + m->difficulty.substr(1);
+			std::string prefix = m->completed ? "[X] " : "[ ] ";
+			std::string line = prefix + cap_diff + " - " + m->description;
+			int w = GetStringBoundingBox(line).width;
+			if (w > max_line_px) max_line_px = w;
+		}
+		UpdateHScrollbar();
 		this->SetDirty();
+	}
+
+	void UpdateHScrollbar() {
+		if (!this->hscrollbar) return;
+		NWidgetBase *nw = this->GetWidget<NWidgetBase>(WAPM_LIST);
+		int visible_w = (nw != nullptr) ? (int)nw->current_x - 8 : 460;
+		int total     = std::max(max_line_px + 16, visible_w);
+		this->hscrollbar->SetCount(total);
+		this->hscrollbar->SetCapacity(visible_w);
 	}
 
 	ArchipelagoMissionsWindow(WindowDesc &desc, WindowNumber wnum) : Window(desc) {
 		this->row_height = GetCharacterHeight(FS_NORMAL) + 3; /* +3px vertical padding */
 		this->CreateNestedTree();
-		this->scrollbar = this->GetScrollbar(WAPM_SCROLLBAR);
+		this->scrollbar  = this->GetScrollbar(WAPM_SCROLLBAR);
 		this->scrollbar->SetStepSize(1);
+		this->hscrollbar = this->GetScrollbar(WAPM_HSCROLLBAR);
+		this->hscrollbar->SetStepSize(1);
 		this->FinishInitNested(wnum);
 		this->resize.step_height = row_height;
+		this->resize.step_width  = 1;
 		RebuildVisibleList();
 	}
 
@@ -504,9 +531,11 @@ struct ArchipelagoMissionsWindow : public Window {
 
 			if (m->completed) {
 				tc = TC_DARK_GREEN; /* completed missions always dark green */
-			} else if (m->named_entity.tile != UINT32_MAX) {
-				tc = TC_WHITE; /* clickable named missions drawn in white — signals interactivity */
 			}
+			/* Named missions keep their difficulty colour — the map-pin icon in
+			 * the description is the interactivity hint, not the text colour.
+			 * Previously all named missions were forced TC_WHITE, which made them
+			 * look identical to extreme missions and confused players. */
 
 			/* Format: [X] Easy - Description  (current/target) */
 			std::string prefix = m->completed ? "[X] " : "[ ] ";
@@ -564,13 +593,15 @@ struct ArchipelagoMissionsWindow : public Window {
 			}
 			std::string line = prefix + cap_diff + " - " + desc + progress_str + nav_hint;
 
-			DrawString(r.left + 4, r.right - 4, y, line, tc);
+			int x_off = this->hscrollbar ? -this->hscrollbar->GetPosition() : 0;
+			DrawString(r.left + 4 + x_off, r.right + max_line_px, y, line, tc, SA_LEFT | SA_FORCE);
 			y += rh;
 			if (y > r.bottom) break;
 		}
 	}
 
 	void OnScrollbarScroll([[maybe_unused]] WidgetID widget) override {
+		UpdateHScrollbar();
 		this->SetDirty();
 	}
 
@@ -580,6 +611,7 @@ struct ArchipelagoMissionsWindow : public Window {
 			this->scrollbar->SetCapacity(
 			    this->GetWidget<NWidgetBase>(WAPM_LIST)->current_y / rh);
 		}
+		UpdateHScrollbar();
 	}
 
 	void UpdateWidgetSize(WidgetID widget, Dimension &size, [[maybe_unused]] const Dimension &padding,
@@ -587,6 +619,7 @@ struct ArchipelagoMissionsWindow : public Window {
 	{
 		if (widget == WAPM_LIST) {
 			resize.height = row_height;
+			resize.width = 1;
 			size.height = std::max(size.height, (uint)(row_height * 15));
 		}
 	}
@@ -611,6 +644,7 @@ void ShowArchipelagoMissionsWindow()
 enum APShopWidgets : WidgetID {
 	WAPSH_LIST,
 	WAPSH_SCROLLBAR,
+	WAPSH_HSCROLLBAR,
 	WAPSH_BTN_BUY,
 	WAPSH_BTN_CLOSE,
 };
@@ -620,7 +654,7 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_shop_widgets = {
 		NWidget(WWT_CLOSEBOX, COLOUR_CREAM),
 		NWidget(WWT_CAPTION, COLOUR_CREAM), SetStringTip(STR_ARCHIPELAGO_SHOP_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
 	EndContainer(),
-	NWidget(WWT_PANEL, COLOUR_CREAM),
+	NWidget(WWT_PANEL, COLOUR_CREAM), SetResize(1, 1),
 		NWidget(NWID_HORIZONTAL),
 			NWidget(WWT_PANEL, COLOUR_CREAM, WAPSH_LIST), SetMinimalSize(380, 200), SetFill(1, 1), SetResize(1, 1), SetScrollbar(WAPSH_SCROLLBAR), EndContainer(),
 			NWidget(NWID_VSCROLLBAR, COLOUR_CREAM, WAPSH_SCROLLBAR),
@@ -629,17 +663,20 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_shop_widgets = {
 			NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPSH_BTN_BUY),   SetStringTip(STR_ARCHIPELAGO_SHOP_BUY,   STR_EMPTY), SetMinimalSize(120, 16), SetFill(1, 0),
 			NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,  WAPSH_BTN_CLOSE), SetStringTip(STR_ARCHIPELAGO_BTN_CLOSE, STR_EMPTY), SetMinimalSize(80,  16),
 		EndContainer(),
+		/* Horizontal scrollbar + resize box */
 		NWidget(NWID_HORIZONTAL),
-			NWidget(WWT_PANEL, COLOUR_CREAM), SetFill(1, 0), EndContainer(),
+			NWidget(NWID_HSCROLLBAR, COLOUR_CREAM, WAPSH_HSCROLLBAR),
 			NWidget(WWT_RESIZEBOX, COLOUR_CREAM),
 		EndContainer(),
 	EndContainer(),
 };
 
 struct ArchipelagoShopWindow : public Window {
-	int row_height = 0;      /* computed in constructor from font height */
-	int selected   = -1;
-	Scrollbar *scrollbar = nullptr;
+	int row_height  = 0;      /* computed in constructor from font height */
+	int selected    = -1;
+	int max_line_px = 0;      /* pixel width of longest shop label */
+	Scrollbar *scrollbar  = nullptr;
+	Scrollbar *hscrollbar = nullptr;
 
 	/* Shop items: (location_name, label, price) */
 	struct ShopEntry {
@@ -652,42 +689,55 @@ struct ArchipelagoShopWindow : public Window {
 	void RebuildShopList()
 	{
 		shop_items.clear();
-		const APSlotData &sd = AP_GetSlotData();
-		int slots       = std::max(1, sd.shop_slots);
-		int total       = slots * 20;               /* full pool */
-		int page_offset = AP_GetShopPageOffset();   /* rotates every refresh */
+		int total = AP_GetShopSlots(); /* exact count from slot_data */
 
-		/* Scan the full pool (wrapping around) until we have exactly shop_slots
-		 * items, or the pool is exhausted. This ensures the shop always shows
-		 * the configured number of slots even after some items are purchased. */
-		int found = 0;
-		for (int n = 0; n < total && found < slots; n++) {
-			int idx = (page_offset + n) % total + 1; /* 1-based location index */
-			std::string loc = fmt::format("Shop_Purchase_{:04d}", idx);
-			/* Skip slots already sent to the AP server this session */
+		/* Show ALL items in the pool — no rotation, no slots cap.
+		 * Items already purchased are hidden; everything else is always visible. */
+		for (int i = 1; i <= total; i++) {
+			std::string loc = fmt::format("Shop_Purchase_{:04d}", i);
 			if (AP_IsShopLocationSent(loc)) continue;
 			std::string label = AP_GetShopLocationLabel(loc);
-			if (label.empty()) label = fmt::format("Slot #{} (loading...)", idx);
+			if (label.empty()) label = fmt::format("Item #{} (loading...)", i);
 			int64_t price = AP_GetShopPrice(loc);
 			shop_items.push_back({loc, label, price});
-			found++;
 		}
 		/* Sort ascending by price so cheapest items are always at the top. */
 		std::sort(shop_items.begin(), shop_items.end(),
 		    [](const ShopEntry &a, const ShopEntry &b) { return a.price < b.price; });
 
 		if (this->scrollbar) this->scrollbar->SetCount((int)shop_items.size());
+		/* Compute max line pixel width for horizontal scrollbar range */
+		max_line_px = 0;
+		for (const auto &entry : shop_items) {
+			std::string full = fmt::format("[{}] {} - L{}",
+			    (int)(&entry - &shop_items[0]) + 1, entry.label, (long long)entry.price);
+			int w = GetStringBoundingBox(full).width;
+			if (w > max_line_px) max_line_px = w;
+		}
+		UpdateHScrollbar();
 		this->SetDirty();
+	}
+
+	void UpdateHScrollbar() {
+		if (!this->hscrollbar) return;
+		NWidgetBase *nw = this->GetWidget<NWidgetBase>(WAPSH_LIST);
+		int visible_w = (nw != nullptr) ? (int)nw->current_x - 8 : 380;
+		int total     = std::max(max_line_px + 16, visible_w);
+		this->hscrollbar->SetCount(total);
+		this->hscrollbar->SetCapacity(visible_w);
 	}
 
 	ArchipelagoShopWindow(WindowDesc &desc, WindowNumber wnum) : Window(desc)
 	{
 		this->row_height = GetCharacterHeight(FS_NORMAL) + 3; /* +3px vertical padding */
 		this->CreateNestedTree();
-		this->scrollbar = this->GetScrollbar(WAPSH_SCROLLBAR);
+		this->scrollbar  = this->GetScrollbar(WAPSH_SCROLLBAR);
 		this->scrollbar->SetStepSize(1);
+		this->hscrollbar = this->GetScrollbar(WAPSH_HSCROLLBAR);
+		this->hscrollbar->SetStepSize(1);
 		this->FinishInitNested(wnum);
 		this->resize.step_height = row_height;
+		this->resize.step_width  = 1;
 		RebuildShopList();
 	}
 
@@ -727,7 +777,8 @@ struct ArchipelagoShopWindow : public Window {
 
 			std::string price_str = AP_FormatMoneyCompact(shop_items[i].price);
 			std::string line = fmt::format("[{}] {} — {}", i + 1, shop_items[i].label, price_str);
-			DrawString(r.left + 4, r.right - 4, y, line, tc);
+			int x_off = this->hscrollbar ? -this->hscrollbar->GetPosition() : 0;
+			DrawString(r.left + 4 + x_off, r.right + max_line_px, y, line, tc, SA_LEFT | SA_FORCE);
 			y += row_height;
 		}
 	}
@@ -766,7 +817,10 @@ struct ArchipelagoShopWindow : public Window {
 		}
 	}
 
-	void OnScrollbarScroll([[maybe_unused]] WidgetID widget) override { this->SetDirty(); }
+	void OnScrollbarScroll([[maybe_unused]] WidgetID widget) override {
+		UpdateHScrollbar();
+		this->SetDirty();
+	}
 
 	void OnResize() override
 	{
@@ -774,6 +828,7 @@ struct ArchipelagoShopWindow : public Window {
 			this->scrollbar->SetCapacity(
 			    this->GetWidget<NWidgetBase>(WAPSH_LIST)->current_y / row_height);
 		}
+		UpdateHScrollbar();
 	}
 
 	void UpdateWidgetSize(WidgetID widget, Dimension &size, [[maybe_unused]] const Dimension &padding,
@@ -781,6 +836,7 @@ struct ArchipelagoShopWindow : public Window {
 	{
 		if (widget == WAPSH_LIST) {
 			resize.height = row_height;
+			resize.width = 1;
 			size.height   = std::max(size.height, (uint)(row_height * 8));
 		}
 	}
