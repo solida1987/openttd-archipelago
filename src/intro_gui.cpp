@@ -290,6 +290,9 @@ struct SelectGameWindow : public Window {
 		 * We unconditionally hide the widget so the warning never appears. */
 		this->GetWidget<NWidgetStacked>(WID_SGI_BASESET_SELECTION)->SetDisplayedPlane(SZSP_NONE);
 
+		/* AP: activate bundled OpenGFX/OpenSFX/OpenMSX if engine is on fallback sets */
+		AP_EnsureBasesets();
+
 		bool missing_lang = _current_language->missing >= _settings_client.gui.missing_strings_threshold && !IsReleasedVersion();
 		this->GetWidget<NWidgetStacked>(WID_SGI_TRANSLATION_SELECTION)->SetDisplayedPlane(missing_lang ? 0 : SZSP_NONE);
 	}
@@ -419,7 +422,7 @@ static constexpr std::initializer_list<NWidgetPart> _nested_select_game_widgets 
 
 			/* Archipelago multiworld randomizer */
 			NWidget(NWID_VERTICAL),
-				NWidget(WWT_PUSHIMGTEXTBTN, COLOUR_ORANGE, WID_SGI_ARCHIPELAGO), SetToolbarMinimalSize(1), SetSpriteStringTip((SpriteID)714, STR_INTRO_ARCHIPELAGO, STR_INTRO_TOOLTIP_ARCHIPELAGO), SetAlignment(SA_LEFT | SA_VERT_CENTER), SetFill(1, 0),
+				NWidget(WWT_PUSHIMGTEXTBTN, COLOUR_ORANGE, WID_SGI_ARCHIPELAGO), SetToolbarMinimalSize(1), SetSpriteStringTip((SpriteID)712 /* AP: slot 712 replaced by archipelago_icons.grf */, STR_INTRO_ARCHIPELAGO, STR_INTRO_TOOLTIP_ARCHIPELAGO), SetAlignment(SA_LEFT | SA_VERT_CENTER), SetFill(1, 0),
 			EndContainer(),
 		EndContainer(),
 	EndContainer(),

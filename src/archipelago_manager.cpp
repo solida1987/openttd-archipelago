@@ -24,6 +24,9 @@
 #include <charconv>
 #include "archipelago.h"
 #include "archipelago_gui.h"
+#include "base_media_graphics.h"
+#include "base_media_sounds.h"
+#include "base_media_music.h"
 #include "engine_base.h"
 #include "engine_func.h"
 #include "engine_type.h"
@@ -443,8 +446,6 @@ static bool EvaluateMission(APMission &m)
 	return current >= m.amount;
 }
 
-/**
- * Iterate all incomplete missions and send checks for any that are now met.
 /* -------------------------------------------------------------------------
  * Stored connection credentials (for reconnect)
  * ---------------------------------------------------------------------- */
@@ -743,6 +744,7 @@ bool AP_GetCargoBonusActive() { return _ap_cargo_bonus_ticks > 0; }
 
 /* Bug B fix: reset per-connection, not global-ever */
 static bool        _ap_world_started_this_session  = false;
+static bool        _ap_named_entity_refresh_needed = false; ///< Set after Load() — defer GetString calls to first game tick
 
 /* Items received before we've entered GM_NORMAL are queued here */
 static std::vector<APItem> _ap_pending_items;
@@ -1242,10 +1244,10 @@ void AP_ConsumeWorldStart()
 	_settings_newgame.vehicle.max_roadveh              = sd.max_roadveh;
 	_settings_newgame.vehicle.max_aircraft             = sd.max_aircraft;
 	_settings_newgame.vehicle.max_ships                = sd.max_ships;
-	/* max_train_length and station_spread are uint16_t in our patched
-	 * settings_type.h — no truncation occurs. */
-	_settings_newgame.vehicle.max_train_length         = sd.max_train_length;
-	_settings_newgame.station.station_spread           = sd.station_spread;
+	/* max_train_length and station_spread: settings_type.h uses vanilla uint8_t.
+	 * AP slot_data may send up to uint16_t — clamp to 255. */
+	_settings_newgame.vehicle.max_train_length = (uint8_t)std::min((uint16_t)255, sd.max_train_length);
+	_settings_newgame.station.station_spread   = (uint8_t)std::min((uint16_t)255, sd.station_spread);
 	_settings_newgame.construction.road_stop_on_town_road       = sd.road_stop_on_town_road;
 	_settings_newgame.construction.road_stop_on_competitor_road = sd.road_stop_on_competitor_road;
 	_settings_newgame.construction.crossing_with_competitor     = sd.crossing_with_competitor;
@@ -1643,51 +1645,10 @@ void AP_SetNamedEntityStr(const std::string &s)
 			m.named_entity.id         = eid;
 			m.named_entity.cumulative = cum;
 
-			/* Re-resolve name, tile and cargo_type from the live map objects.
-			 * AP_AssignNamedEntities won't re-run for missions with id>=0+name set,
-			 * so we do it here after every load/reconnect. */
-			if (m.type == "passengers_to_town" || m.type == "mail_to_town") {
-				const Town *t = Town::GetIfValid((TownID)eid);
-				if (t != nullptr) {
-					m.named_entity.name       = AP_TownName(t);
-					m.named_entity.tile       = t->xy.base();
-					m.named_entity.tae        = (m.type == "passengers_to_town") ? TAE_PASSENGERS : TAE_MAIL;
-					m.named_entity.cargo_type = (uint8_t)((m.type == "passengers_to_town")
-					    ? AP_FindCargoType("passengers")
-					    : AP_FindCargoType("mail"));
-					AP_StrReplace(m.description, "[Town]", m.named_entity.name);
-				}
-			} else if (m.type == "cargo_from_industry") {
-				const Industry *ind = Industry::GetIfValid((IndustryID)eid);
-				if (ind != nullptr) {
-					m.named_entity.name       = AP_IndustryLabel(ind);
-					m.named_entity.tile       = ind->location.tile.base();
-					m.named_entity.cargo_slot = 0;
-					/* Use first VALID produced slot — slot[0] may be INVALID_CARGO,
-					 * which would trigger the 0xFF guard and silently skip this mission. */
-					uint8_t first_ct = 0xFF;
-					for (const auto &slot : ind->produced) {
-						if (IsValidCargoType(slot.cargo)) { first_ct = (uint8_t)slot.cargo; break; }
-					}
-					m.named_entity.cargo_type = first_ct;
-					AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
-				}
-			} else if (m.type == "cargo_to_industry") {
-				const Industry *ind = Industry::GetIfValid((IndustryID)eid);
-				if (ind != nullptr) {
-					m.named_entity.name       = AP_IndustryLabel(ind);
-					m.named_entity.tile       = ind->location.tile.base();
-					m.named_entity.cargo_slot = 0;
-					/* Use first VALID accepted slot — slot[0] may be INVALID_CARGO,
-					 * which would trigger the 0xFF guard and silently skip this mission. */
-					uint8_t first_ct = 0xFF;
-					for (const auto &slot : ind->accepted) {
-						if (IsValidCargoType(slot.cargo)) { first_ct = (uint8_t)slot.cargo; break; }
-					}
-					m.named_entity.cargo_type = first_ct;
-					AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
-				}
-			}
+			/* Name/tile/cargo resolution requires live map pointers (ind->town etc.)
+			 * which are NOT valid during chunk Load — AfterLoadGame() resolves them later.
+			 * We set a flag here and defer the GetString calls to the first game tick. */
+			_ap_named_entity_refresh_needed = true;
 			break;
 		}
 	}
@@ -1711,6 +1672,58 @@ static std::string AP_IndustryLabel(const Industry *ind)
 	std::string ind_name  = GetString(STR_INDUSTRY_NAME, ind->index);
 	std::string town_name = GetString(STR_TOWN_NAME,     ind->town->index);
 	return ind_name + " near " + town_name;
+}
+
+/**
+ * Re-resolve name/tile/cargo for all named-entity missions that have a valid
+ * eid but an empty name.  Called on first game tick after a savegame load,
+ * when AfterLoadGame() has fully resolved all pool pointers (ind->town etc.).
+ */
+static void AP_RefreshNamedEntityNames()
+{
+	for (APMission &m : _ap_pending_sd.missions) {
+		int32_t eid = m.named_entity.id;
+		if (eid < 0) continue; /* not yet assigned */
+		if (!m.named_entity.name.empty()) continue; /* already resolved */
+
+		if (m.type == "passengers_to_town" || m.type == "mail_to_town") {
+			const Town *t = Town::GetIfValid((TownID)eid);
+			if (t != nullptr) {
+				m.named_entity.name       = AP_TownName(t);
+				m.named_entity.tile       = t->xy.base();
+				m.named_entity.tae        = (m.type == "passengers_to_town") ? TAE_PASSENGERS : TAE_MAIL;
+				m.named_entity.cargo_type = (uint8_t)((m.type == "passengers_to_town")
+				    ? AP_FindCargoType("passengers")
+				    : AP_FindCargoType("mail"));
+				AP_StrReplace(m.description, "[Town]", m.named_entity.name);
+			}
+		} else if (m.type == "cargo_from_industry") {
+			const Industry *ind = Industry::GetIfValid((IndustryID)eid);
+			if (ind != nullptr && ind->town != nullptr) {
+				m.named_entity.name       = AP_IndustryLabel(ind);
+				m.named_entity.tile       = ind->location.tile.base();
+				uint8_t first_ct = 0xFF;
+				for (const auto &slot : ind->produced) {
+					if (IsValidCargoType(slot.cargo)) { first_ct = (uint8_t)slot.cargo; break; }
+				}
+				m.named_entity.cargo_type = first_ct;
+				AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
+			}
+		} else if (m.type == "cargo_to_industry") {
+			const Industry *ind = Industry::GetIfValid((IndustryID)eid);
+			if (ind != nullptr && ind->town != nullptr) {
+				m.named_entity.name       = AP_IndustryLabel(ind);
+				m.named_entity.tile       = ind->location.tile.base();
+				uint8_t first_ct = 0xFF;
+				for (const auto &slot : ind->accepted) {
+					if (IsValidCargoType(slot.cargo)) { first_ct = (uint8_t)slot.cargo; break; }
+				}
+				m.named_entity.cargo_type = first_ct;
+				AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
+			}
+		}
+	}
+	_ap_named_entity_refresh_needed = false;
 }
 
 /** Replace first occurrence of 'from' in 's' with 'to'. */
@@ -1971,6 +1984,17 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		/* Dispatch inbound AP events */
 		_ap_client->Tick();
 
+		/* Deferred named-entity name resolution: AP_SetNamedEntityStr skips
+		 * GetString calls during chunk Load (ind->town is null then).
+		 * AfterLoadGame() resolves all pointers before the first game tick,
+		 * so it is safe to call GetString here. Runs regardless of AP state. */
+		if (_ap_named_entity_refresh_needed &&
+		    _game_mode == GM_NORMAL &&
+		    _local_company < MAX_COMPANIES) {
+			AP_RefreshNamedEntityNames();
+			_ap_status_dirty.store(true);
+		}
+
 		/* First-tick session setup when we enter GM_NORMAL */
 		if (!_ap_session_started &&
 		    _game_mode == GM_NORMAL &&
@@ -2005,6 +2029,8 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 
 				/* Assign named map entities to named-destination missions */
 				AP_AssignNamedEntities();
+				/* Refresh names for missions restored from savegame (deferred from Load()) */
+				if (_ap_named_entity_refresh_needed) AP_RefreshNamedEntityNames();
 				_ap_status_dirty.store(true); /* refresh GUI to show resolved [Town]/[Industry] names */
 
 			/* AP settings: vehicle/airport expiry already disabled above (before
@@ -2022,19 +2048,14 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			 * Legacy fallback: if no locked_vehicles list, lock everything (old behaviour). */
 			_ap_unlocked_engine_ids.clear();
 
-			/* DEBUG: diagnose why locking might not work */
-			AP_OK(fmt::format("[DBG] Session lock start: locked_vehicles={} entries, has_lock_list={}",
-			      _ap_pending_sd.locked_vehicles.size(), !_ap_pending_sd.locked_vehicles.empty()));
-
 			const bool has_lock_list = !_ap_pending_sd.locked_vehicles.empty();
 			static const std::string ih_prefix = "IH: ";
 			int locked_count = 0;
-			int dbg_no_avail = 0, dbg_wagon = 0, dbg_not_in_list = 0;
 			for (Engine *e : Engine::Iterate()) {
-				if (!e->company_avail.Test(cid)) { dbg_no_avail++; continue; }
+				if (!e->company_avail.Test(cid)) { continue; }
 				bool is_wagon = (e->type == VEH_TRAIN &&
 				                 e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON);
-				if (is_wagon) { dbg_wagon++; continue; }
+				if (is_wagon) { continue; }
 				if (has_lock_list) {
 					std::string eng_name = GetString(STR_ENGINE_NAME,
 						PackEngineNameDParam(e->index, EngineNameContext::PurchaseList));
@@ -2045,15 +2066,14 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 					bool in_list = (_ap_pending_sd.locked_vehicles.count(eng_name) > 0) ||
 					               (_ap_pending_sd.locked_vehicles.count(ih_prefix + eng_name) > 0);
 					if (!in_list) {
-						dbg_not_in_list++;
 						continue;
 					}
 				}
 				e->company_avail.Reset(cid);
 				locked_count++;
 			}
-			AP_OK(fmt::format("[DBG] Lock result: {} locked / {} no_avail / {} wagon / {} not_in_list",
-			      locked_count, dbg_no_avail, dbg_wagon, dbg_not_in_list));
+			Debug(misc, 1, "[AP] Session lock complete: {} engines locked (has_lock_list={})",
+			      locked_count, has_lock_list);
 
 			/* Unlock ALL rail and road types unconditionally — ensures any
 			 * AP-randomised engine's track/road type is always buildable. */
@@ -2340,3 +2360,79 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		}
 	}
 );
+
+/* ---------------------------------------------------------------------------
+ * AP Connection Config — persist server/slot between game sessions
+ * Written to <personal_dir>/ap_connection.cfg (simple key=value format).
+ * Called by GUI on successful connect (save) and on window open (load).
+ * -------------------------------------------------------------------------- */
+
+void AP_SaveConnectionConfig()
+{
+	std::string path = _personal_dir + "ap_connection.cfg";
+	FILE *f = fopen(path.c_str(), "w");
+	if (f == nullptr) return;
+	fmt::print(f, "host={}\n", _ap_last_host);
+	fmt::print(f, "port={}\n", (unsigned)_ap_last_port);
+	fmt::print(f, "slot={}\n", _ap_last_slot);
+	fmt::print(f, "pass={}\n", _ap_last_pass);
+	fmt::print(f, "ssl={}\n", _ap_last_ssl ? 1 : 0);
+	fclose(f);
+}
+
+void AP_LoadConnectionConfig()
+{
+	std::string path = _personal_dir + "ap_connection.cfg";
+	FILE *f = fopen(path.c_str(), "r");
+	if (f == nullptr) return;
+	char line[512];
+	while (fgets(line, sizeof(line), f)) {
+		/* Strip trailing newline */
+		size_t len = strlen(line);
+		while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+		std::string s(line);
+		auto eq = s.find('=');
+		if (eq == std::string::npos) continue;
+		std::string key = s.substr(0, eq);
+		std::string val = s.substr(eq + 1);
+		if (key == "host" && !val.empty()) _ap_last_host = val;
+		else if (key == "port") { uint16_t p = 0; auto [ptr, ec] = std::from_chars(val.data(), val.data() + val.size(), p); if (ec == std::errc{} && p > 0) _ap_last_port = p; }
+		else if (key == "slot") _ap_last_slot = val;
+		else if (key == "pass") _ap_last_pass = val;
+		else if (key == "ssl") _ap_last_ssl = (val == "1");
+	}
+	fclose(f);
+}
+
+/* ---------------------------------------------------------------------------
+ * AP_EnsureBasesets — activate bundled OpenGFX/OpenSFX/OpenMSX if the engine
+ * is currently running with fallback (silent / missing-sprite) sets.
+ * Called once from intro_gui.cpp OnInit(), after FindSets() has already run.
+ * Only switches a set if (a) the current set is marked fallback AND
+ * (b) the named set is actually present on disk.
+ * The ini_set write makes the choice persist to openttd.cfg on shutdown.
+ * -------------------------------------------------------------------------- */
+void AP_EnsureBasesets()
+{
+	/* Graphics — only switch if current is fallback */
+	const GraphicsSet *gfx = BaseGraphics::GetUsedSet();
+	if (gfx == nullptr || gfx->fallback) {
+		if (BaseGraphics::SetSetByName("OpenGFX")) {
+			BaseGraphics::ini_data.name = "OpenGFX";
+		}
+	}
+	/* Sound */
+	const SoundsSet *sfx = BaseSounds::GetUsedSet();
+	if (sfx == nullptr || sfx->fallback) {
+		if (BaseSounds::SetSetByName("OpenSFX")) {
+			BaseSounds::ini_set = "OpenSFX";
+		}
+	}
+	/* Music */
+	const MusicSet *msx = BaseMusic::GetUsedSet();
+	if (msx == nullptr || msx->fallback) {
+		if (BaseMusic::SetSetByName("OpenMSX")) {
+			BaseMusic::ini_set = "OpenMSX";
+		}
+	}
+}

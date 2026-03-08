@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 :: ============================================================
 ::  OpenTTD Archipelago — GitHub Push + Release Script
-::  Beta 8
+::  Beta 9
 :: ============================================================
 set PROJECT_DIR=C:\Users\marco\OneDrive\Desktop\openttd-15.2
 set /p OTTD_VERSION=<"%PROJECT_DIR%\.version"
@@ -75,7 +75,7 @@ echo       OK.
 
 :: ── Commit ───────────────────────────────────────────────────
 echo [3/5] Committer...
-git commit -m "beta8: Engine locking, shop system, trap/buff items, WebSocket fixes, fmt/safeguard compliance"
+git commit -m "beta9: Engine locking, shop system, trap/buff items, WebSocket fixes, fmt/safeguard compliance"
 if errorlevel 1 (
     echo       Intet nyt at committe - fortsætter til push.
 )
@@ -93,13 +93,13 @@ echo       OK.
 
 :: ── Tag og push release ──────────────────────────────────────
 echo [5/5] Opretter release-tag...
-set TAG=v%OTTD_VERSION%-beta8
+set TAG=v%OTTD_VERSION%-beta9
 
 :: Slet eksisterende tag lokalt og remote hvis det findes
 git tag -d %TAG% > nul 2>&1
 git push origin :refs/tags/%TAG% > nul 2>&1
 
-git tag -a %TAG% -m "OpenTTD %OTTD_VERSION% Archipelago beta8 — Engine locking, shop system, trap/buff items, WebSocket fixes, fmt/safeguard compliance"
+git tag -a %TAG% -m "OpenTTD %OTTD_VERSION% Archipelago beta9 — Engine locking, shop system, trap/buff items, WebSocket fixes, fmt/safeguard compliance"
 git push origin %TAG%
 if errorlevel 1 (
     echo [FEJL] Tag-push fejlede!
@@ -113,8 +113,8 @@ echo.
 echo  Tag    : %TAG%
 echo  Branch : pushed til GitHub
 echo.
-echo  VIGTIGT: Kør nu Build-OpenTTD-AP.ps1 for at bygge beta8.
-echo  Versionen viser nu korrekt "beta8" i titellinjen.
+echo  VIGTIGT: Kør nu Build-OpenTTD-AP.ps1 for at bygge beta9.
+echo  Versionen viser nu korrekt "beta9" i titellinjen.
 echo.
 echo  Gaa til GitHub og opret et Release fra tagget %TAG%
 echo  og upload dist\openttd-%OTTD_VERSION%-archipelago-windows-win64.zip

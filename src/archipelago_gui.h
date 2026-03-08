@@ -29,6 +29,9 @@ extern std::atomic<bool> _ap_status_dirty;
 
 /* Accessor functions from manager */
 const APSlotData &AP_GetSlotData();
+void AP_SaveConnectionConfig();
+void AP_LoadConnectionConfig();
+void AP_EnsureBasesets();
 bool              AP_IsConnected();
 
 /* World-start handshake — called from intro_gui.cpp ONLY.

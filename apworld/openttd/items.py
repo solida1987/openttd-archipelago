@@ -542,34 +542,76 @@ STARTING_VEHICLES = {
     # Cargo trucks (goods, coal, grain, oil, etc.) require specific industries
     # to be present near a depot — not guaranteed at game start and will leave
     # the player with a vehicle they cannot use to earn money.
+    # Includes both Temp/Arc/Trop vehicles AND Toyland vehicles — filtered by
+    # landscape at world-gen time (NON_TOYLAND_STARTERS excluded on Toyland maps).
     "road_vehicle": [
+        # Temp/Arc/Trop buses
         "MPS Regal Bus",
         "Hereford Leopard Bus",
         "Foster Bus",
+        # Temp/Arc/Trop mail trucks
         "MPS Mail Truck",
         "Perry Mail Truck",
+        # Toyland buses
+        "Ploddyphut MkI Bus",
+        "Ploddyphut MkII Bus",
+        "Ploddyphut MkIII Bus",
+        # Toyland mail trucks
+        "MightyMover Mail Truck",
+        "Powernaught Mail Truck",
+        "Wizzowow Mail Truck",
     ],
-    # Aircraft: first five small/cheap planes only.
-    # Later planes are large jets requiring large airports the player cannot
-    # afford at game start. The first five are all small props that work
-    # on a basic airport from day one.
+    # Aircraft: small/cheap planes only (no large jets — require large airports).
+    # Includes Temp/Arc/Trop small props AND Toyland small props, filtered by landscape.
     "aircraft": [
+        # Temp/Arc/Trop small props
         "Sampson U52",
         "Coleman Count",
         "FFP Dart",
         "Yate Haugan",
         "Bakewell Cotswald LB-3",
+        # Toyland small props
+        "Ploddyphut 100",
+        "Ploddyphut 500",
     ],
     # Ships: passenger ferries only.
     # Oil tankers and cargo ships require specific industries adjacent to water,
     # which is not guaranteed. Passenger ferries can always operate between
     # any two coastal or river towns.
     "ship": [
+        # Temp/Arc/Trop ferries
         "MPS Passenger Ferry",
         "FFP Passenger Ferry",
+        # Toyland ferries
         "Chugger-Chug Passenger Ferry",
+        "Shivershake Passenger Ferry",
     ],
 }
+
+# Vehicles in STARTING_VEHICLES that do NOT exist on Toyland maps.
+# On Toyland, these are excluded from the starter pool (inverse of the
+# TOYLAND_ONLY_STARTERS filter used for non-Toyland maps in __init__.py).
+NON_TOYLAND_STARTERS: frozenset = frozenset({
+    # Trains — Temperate-only starters (do NOT exist on Toyland maps)
+    "Kirby Paul Tank (Steam)",
+    "Chaney 'Jubilee' (Steam)",
+    "Ginzu 'A4' (Steam)",
+    "SH '8P' (Steam)",
+    "SH/Hendry '25' (Diesel)",
+    "UU '37' (Diesel)",
+    "Floss '47' (Diesel)",
+    # Trains — Arctic/Tropic-only starters (do NOT exist on Toyland maps)
+    "Wills 2-8-0 (Steam)",
+    "MJS 250 (Diesel)",
+    # Road — Temp/Arc/Trop buses
+    "MPS Regal Bus", "Hereford Leopard Bus", "Foster Bus",
+    # Road — Temp/Arc/Trop mail trucks
+    "MPS Mail Truck", "Perry Mail Truck",
+    # Aircraft — Temp/Arc/Trop small props
+    "Sampson U52", "Coleman Count", "FFP Dart", "Yate Haugan", "Bakewell Cotswald LB-3",
+    # Ships — Temp/Arc/Trop ferries
+    "MPS Passenger Ferry", "FFP Passenger Ferry",
+})
 
 # Trains only available on Arctic or Tropic maps (NOT on Temperate).
 ARCTIC_TROPIC_ONLY_TRAINS: frozenset = frozenset({

@@ -515,7 +515,7 @@ struct OrderSettings {
 
 /** Settings related to vehicles. */
 struct VehicleSettings {
-	uint16_t max_train_length;                ///< maximum length for trains (extended for Archipelago)
+	uint8_t  max_train_length;                 ///< maximum length for trains
 	uint8_t  smoke_amount;                     ///< amount of smoke/sparks locomotives produce
 	uint8_t  train_acceleration_model;         ///< realistic acceleration for trains
 	uint8_t  roadveh_acceleration_model;       ///< realistic acceleration for road vehicles
@@ -594,7 +594,7 @@ struct StationSettings {
 	bool   serve_neutral_industries;         ///< company stations can serve industries with attached neutral stations
 	bool   distant_join_stations;            ///< allow to join non-adjacent stations
 	bool   never_expire_airports;            ///< never expire airports
-	uint16_t station_spread;                 ///< amount a station may spread (extended for Archipelago)
+	uint8_t station_spread;                  ///< amount a station may spread
 };
 
 /** Default settings for vehicles. */

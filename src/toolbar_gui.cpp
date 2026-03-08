@@ -2202,7 +2202,7 @@ static std::unique_ptr<NWidgetBase> MakeMainToolbar()
 		{WID_TN_MUSIC_SOUND,  WWT_IMGBTN,     SPR_IMG_MUSIC},
 		{WID_TN_MESSAGES,     WWT_IMGBTN,     SPR_IMG_MESSAGES},
 		{WID_TN_HELP,         WWT_IMGBTN,     SPR_IMG_QUERY},
-		{WID_TN_ARCHIPELAGO,  WWT_IMGBTN,     (SpriteID)714},   /* AP button — archipelago_icons.grf replaces sprite 714 with AP logo */
+		{WID_TN_ARCHIPELAGO,  WWT_IMGBTN,     (SpriteID)712}, /* AP: slot 712 (SPR_IMG_PLAY_MUSIC) replaced by archipelago_icons.grf; falls back to ▶ if GRF absent */
 		{WID_TN_SWITCH_BAR,   WWT_IMGBTN,     SPR_IMG_SWITCH_TOOLBAR},
 	};
 

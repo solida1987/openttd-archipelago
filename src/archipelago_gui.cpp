@@ -124,6 +124,9 @@ struct ArchipelagoConnectWindow : public Window {
 		this->querystrings[WAPGUI_EDIT_PASS]   = &pass_buf;
 		this->FinishInitNested(wnum);
 
+		/* Restore last connection settings from ap_connection.cfg */
+		AP_LoadConnectionConfig();
+
 		std::string full = _ap_last_host.empty() ? "archipelago.gg:38281"
 		                 : _ap_last_host + ":" + fmt::format("{}", _ap_last_port);
 		server_buf.text.Assign(full.c_str());
@@ -179,6 +182,7 @@ struct ArchipelagoConnectWindow : public Window {
 				}
 				_ap_last_host = host; _ap_last_port = port;
 				_ap_last_slot = slot_str; _ap_last_pass = pass_str;
+				AP_SaveConnectionConfig(); /* persist for next session */
 				_ap_last_ssl = false; /* unused — auto-detect in WorkerThread */
 				_ap_client->Connect(host, port, slot_str, pass_str, "OpenTTD", false);
 				this->SetDirty();
@@ -370,7 +374,7 @@ enum APMissionsWidgets : WidgetID {
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_missions_widgets = {
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
-		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_ARCHIPELAGO_MISSIONS_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_ARCHIPELAGO_MISSIONS_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS), SetFill(1, 0), SetResize(1, 0),
 	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_BROWN), SetResize(1, 1),
 		/* Filter row */
@@ -438,6 +442,7 @@ struct ArchipelagoMissionsWindow : public Window {
 			std::string cap_diff = m->difficulty.empty() ? "" :
 				std::string(1, (char)toupper((unsigned char)m->difficulty[0])) + m->difficulty.substr(1);
 			std::string prefix = m->completed ? "[X] " : "[ ] ";
+			{ auto lu = m->location.rfind('_'); if (lu != std::string::npos) cap_diff += " #" + m->location.substr(lu + 1); }
 			std::string line = prefix + cap_diff + " - " + m->description;
 			int w = GetStringBoundingBox(line).width;
 			if (w > max_line_px) max_line_px = w;
@@ -537,10 +542,19 @@ struct ArchipelagoMissionsWindow : public Window {
 			 * Previously all named missions were forced TC_WHITE, which made them
 			 * look identical to extreme missions and confused players. */
 
-			/* Format: [X] Easy - Description  (current/target) */
+			/* Format: [X] Easy #042 - Description  (current/target) */
 			std::string prefix = m->completed ? "[X] " : "[ ] ";
 			std::string cap_diff = m->difficulty.empty() ? "" :
 				std::string(1, (char)toupper((unsigned char)m->difficulty[0])) + m->difficulty.substr(1);
+			/* Extract mission number from location string (e.g. "Mission_Easy_042" -> "#042") */
+			std::string mission_num;
+			{
+				const std::string &loc = m->location;
+				auto last_us = loc.rfind('_');
+				if (last_us != std::string::npos && last_us + 1 < loc.size()) {
+					mission_num = " #" + loc.substr(last_us + 1);
+				}
+			}
 
 			/* Build progress string for incomplete missions.
 			 * Named missions always show progress (even 0) so the player knows
@@ -591,7 +605,7 @@ struct ArchipelagoMissionsWindow : public Window {
 			if (m->named_entity.tile != UINT32_MAX) {
 				nav_hint = " \xe2\x86\x91"; /* ↑ unicode arrow — visual cue to scroll map */
 			}
-			std::string line = prefix + cap_diff + " - " + desc + progress_str + nav_hint;
+			std::string line = prefix + cap_diff + mission_num + " - " + desc + progress_str + nav_hint;
 
 			int x_off = this->hscrollbar ? -this->hscrollbar->GetPosition() : 0;
 			DrawString(r.left + 4 + x_off, r.right + max_line_px, y, line, tc, SA_LEFT | SA_FORCE);
@@ -652,7 +666,7 @@ enum APShopWidgets : WidgetID {
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_shop_widgets = {
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_CLOSEBOX, COLOUR_CREAM),
-		NWidget(WWT_CAPTION, COLOUR_CREAM), SetStringTip(STR_ARCHIPELAGO_SHOP_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_CAPTION, COLOUR_CREAM), SetStringTip(STR_ARCHIPELAGO_SHOP_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS), SetFill(1, 0), SetResize(1, 0),
 	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_CREAM), SetResize(1, 1),
 		NWidget(NWID_HORIZONTAL),
@@ -675,6 +689,7 @@ struct ArchipelagoShopWindow : public Window {
 	int row_height  = 0;      /* computed in constructor from font height */
 	int selected    = -1;
 	int max_line_px = 0;      /* pixel width of longest shop label */
+	bool hints_all_loaded = false; /* true once no entries contain "loading..." */
 	Scrollbar *scrollbar  = nullptr;
 	Scrollbar *hscrollbar = nullptr;
 
@@ -743,7 +758,10 @@ struct ArchipelagoShopWindow : public Window {
 
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override
 	{
-		/* Refresh labels once hints arrive from server */
+		/* Once all hints are resolved, stop polling */
+		if (hints_all_loaded) return;
+
+		/* Refresh labels while any entry is still pending */
 		bool any_loading = false;
 		for (auto &entry : shop_items) {
 			if (entry.label.find("loading") != std::string::npos) {
@@ -751,7 +769,11 @@ struct ArchipelagoShopWindow : public Window {
 				break;
 			}
 		}
-		if (any_loading) RebuildShopList();
+		if (any_loading) {
+			RebuildShopList();
+		} else {
+			hints_all_loaded = true;
+		}
 	}
 
 	void OnInvalidateData([[maybe_unused]] int data = 0, [[maybe_unused]] bool gui_scope = true) override

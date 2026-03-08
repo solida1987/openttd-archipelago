@@ -17,7 +17,7 @@ from .items import (
     ITEM_TABLE, ALL_VEHICLES, TRAP_ITEMS, UTILITY_ITEMS,
     VANILLA_TRAINS, VANILLA_WAGONS, VANILLA_ROAD_VEHICLES,
     VANILLA_AIRCRAFT, VANILLA_SHIPS, STARTING_VEHICLES, IRON_HORSE_ENGINES,
-    ARCTIC_TROPIC_ONLY_TRAINS, TEMPERATE_ONLY_TRAINS,
+    ARCTIC_TROPIC_ONLY_TRAINS, TEMPERATE_ONLY_TRAINS, NON_TOYLAND_STARTERS,
     OpenTTDItemData
 )
 from .locations import (
@@ -65,6 +65,14 @@ _TOYLAND_ONLY_VEHICLES: frozenset = frozenset({
     "Juggerplane M1", "Powernaut Helicopter",
     # NOTE: Guru Galaxy is Temperate/Arctic/Tropic — NOT Toyland-only
 })
+
+# Engines (non-wagons) that exist on Temperate/Arctic/Tropic but NOT on Toyland.
+# Used to filter items.py vehicle lists when building the Toyland item pool.
+# = (ALL_TRAINS + ALL_ROAD_VEHICLES + ALL_AIRCRAFT + ALL_SHIPS) - _TOYLAND_ONLY_VEHICLES
+_NON_TOYLAND_ENGINES: frozenset = (
+    frozenset(ALL_TRAINS + ALL_ROAD_VEHICLES + ALL_AIRCRAFT + ALL_SHIPS)
+    - _TOYLAND_ONLY_VEHICLES
+)
 
 
 class OpenTTDWeb(WebWorld):
@@ -134,9 +142,13 @@ class OpenTTDWorld(World):
 
         # Count available vehicles for this landscape (same logic as create_items)
         if is_toyland:
-            eligible_count = len(ALL_VEHICLES)
+            eligible_count = sum(1 for v in ALL_VEHICLES if v not in _NON_TOYLAND_ENGINES)
         else:
             eligible_count = sum(1 for v in ALL_VEHICLES if v not in _TOYLAND_ONLY_VEHICLES)
+            if landscape == 0:   # Temperate: exclude Arctic/Tropic-only trains
+                eligible_count -= sum(1 for v in ARCTIC_TROPIC_ONLY_TRAINS if v not in _TOYLAND_ONLY_VEHICLES)
+            elif landscape in (1, 2):  # Arctic/Tropic: exclude Temperate-only trains
+                eligible_count -= sum(1 for v in TEMPERATE_ONLY_TRAINS if v not in _TOYLAND_ONLY_VEHICLES)
         if ih_enabled:
             eligible_count += len(IRON_HORSE_ENGINES)
 
@@ -314,6 +326,14 @@ class OpenTTDWorld(World):
                         break
                     template_data = rng.choice(templates)
                     template, amt_min, amt_max, unit = template_data
+                    # Compute type_key immediately so duplicate-check uses the
+                    # current template (not a stale value from the previous iteration).
+                    raw_key = template.split("{amount}")[0].strip().lower()
+                    type_key = raw_key.replace("\u00a3","").replace("\xc2\xa3","").replace("£","").strip().rstrip(",").rstrip()
+                    if type_key.startswith("earn") and "month" in template.lower():
+                        type_key = "earn monthly"
+                    elif type_key.startswith("earn"):
+                        type_key = "earn"
                     if unit == "purchase":
                         if shop_used:
                             continue
@@ -333,12 +353,6 @@ class OpenTTDWorld(World):
                         if cargo else
                         template.format(amount=f"{amount:,}")
                     )
-                    raw_key = template.split("{amount}")[0].strip().lower()
-                    type_key = raw_key.replace("\u00a3","").replace("\xc2\xa3","").replace("£","").strip().rstrip(",").rstrip()
-                    if type_key.startswith("earn") and "month" in template.lower():
-                        type_key = "earn monthly"
-                    elif type_key.startswith("earn"):
-                        type_key = "earn"
                     effective_type = unit if unit in {
                         "passengers_to_town", "mail_to_town",
                         "cargo_to_industry", "cargo_from_industry"
@@ -480,7 +494,9 @@ class OpenTTDWorld(World):
 
         def _pick_starter(vtype: str) -> str:
             pool = STARTING_VEHICLES[vtype]
-            if not is_toyland:
+            if is_toyland:
+                pool = [v for v in pool if v not in NON_TOYLAND_STARTERS]
+            else:
                 pool = [v for v in pool if v not in TOYLAND_ONLY_STARTERS]
             # Fallback: if filter emptied the pool (shouldn't happen), use full pool
             if not pool:
@@ -498,13 +514,17 @@ class OpenTTDWorld(World):
             all_starters: List[str] = []
             for vtype in type_names.values():
                 pool = STARTING_VEHICLES[vtype]
-                if not is_toyland:
+                if is_toyland:
+                    pool = [v for v in pool if v not in NON_TOYLAND_STARTERS]
+                else:
                     pool = [v for v in pool if v not in TOYLAND_ONLY_STARTERS]
                 all_starters.extend(pool)
         else:
             chosen_type = type_names[start_type]
             all_starters = list(STARTING_VEHICLES[chosen_type])
-            if not is_toyland:
+            if is_toyland:
+                all_starters = [v for v in all_starters if v not in NON_TOYLAND_STARTERS]
+            else:
                 all_starters = [v for v in all_starters if v not in TOYLAND_ONLY_STARTERS]
 
         # Deduplicate while preserving deterministic order, then shuffle
@@ -557,12 +577,20 @@ class OpenTTDWorld(World):
         reserved = len(trap_pool) + len(utility_pool)
 
         # ── Vehicles fill remaining slots ─────────────────────────────────
-        # Uses the module-level _TOYLAND_ONLY_VEHICLES constant (same set as
-        # _compute_pool_size) so the vehicle count is always consistent.
+        # Filter vehicles by landscape so only vehicles that actually exist on
+        # the chosen map enter the item pool.
         vehicle_slots = total_locations - reserved
-        eligible_vehicles = ALL_VEHICLES if is_toyland else [
-            v for v in ALL_VEHICLES if v not in _TOYLAND_ONLY_VEHICLES
-        ]
+        if is_toyland:
+            # Toyland: exclude engines that don't exist on Toyland maps
+            eligible_vehicles = [v for v in ALL_VEHICLES if v not in _NON_TOYLAND_ENGINES]
+        else:
+            eligible_vehicles = [v for v in ALL_VEHICLES if v not in _TOYLAND_ONLY_VEHICLES]
+            # Additional per-climate train filtering:
+            # Temperate players can't use Arctic/Tropic-only engines (and vice versa)
+            if self.options.landscape.value == 0:   # Temperate
+                eligible_vehicles = [v for v in eligible_vehicles if v not in ARCTIC_TROPIC_ONLY_TRAINS]
+            elif self.options.landscape.value in (1, 2):  # Arctic/Tropic
+                eligible_vehicles = [v for v in eligible_vehicles if v not in TEMPERATE_ONLY_TRAINS]
 
         # ── Iron Horse: add engines to pool if enabled ────────────────────
         # Iron Horse vehicles don't exist on Toyland maps (no Toyland GRF
@@ -579,7 +607,11 @@ class OpenTTDWorld(World):
         # Shuffle so trimming removes random vehicles rather than always the last ones
         self.random.shuffle(all_vehicles_shuffled)
         vehicle_pool = all_vehicles_shuffled[:vehicle_slots]
-        # Store for fill_slot_data (needed to build locked_vehicles list)
+        # Store for fill_slot_data:
+        # _eligible_vehicles = ALL climate-appropriate vehicles (used for locked_vehicles
+        #   so C++ locks every vehicle that could exist on this map, not just the trimmed pool).
+        # _vehicle_pool = trimmed set that actually got location slots.
+        self._eligible_vehicles = list(eligible_vehicles)
         self._vehicle_pool = vehicle_pool
         self._starting_vehicles = starting_vehicles
 
@@ -647,11 +679,16 @@ class OpenTTDWorld(World):
         # Build item_id_to_name so the C++ client can resolve item IDs to names
         item_id_to_name = {str(data.code): name for name, data in ITEM_TABLE.items()}
 
-        # locked_vehicles: every vehicle item the C++ engine-locking system should
-        # lock at session start.  Only these engines will be locked; any GRF engine
-        # NOT in this list (e.g. Iron Horse engines when enable_iron_horse=False)
-        # is left untouched and remains freely available to the player.
-        locked_vehicle_set: set = set(getattr(self, "_vehicle_pool", [])) | set(getattr(self, "_starting_vehicles", []))
+        # locked_vehicles: every vehicle the C++ engine-locking system should lock at
+        # session start.  We lock ALL climate-eligible vehicles (not just those that
+        # got a location slot), so that engines with early intro_dates (e.g. Armoured
+        # Trucks, ~1935) don't appear freely when custom_vehicle_count is small.
+        # Iron Horse engines are included only when enable_iron_horse=True (they are
+        # already in _eligible_vehicles in that case).
+        locked_vehicle_set: set = set(getattr(self, "_eligible_vehicles", []))
+        # Fallback for legacy saves that don't have _eligible_vehicles
+        if not locked_vehicle_set:
+            locked_vehicle_set = set(getattr(self, "_vehicle_pool", [])) | set(getattr(self, "_starting_vehicles", []))
         locked_vehicles_list = sorted(locked_vehicle_set)  # deterministic order
 
         self._slot_data.update({
