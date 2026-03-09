@@ -789,6 +789,8 @@ static int         _ap_fuel_shortage_ticks         = 0;     ///< >0 while fuel s
 static int         _ap_cargo_bonus_ticks           = 0;     ///< >0 while 2x cargo payment is active (240 ticks = 60s)
 static int         _ap_reliability_boost_ticks     = 0;     ///< >0 while reliability boost active (90 game-days)
 static int         _ap_station_boost_ticks         = 0;     ///< >0 while station rating boost active (30 game-days)
+static int         _ap_license_revoke_ticks        = 0;     ///< >0 while license revoke trap is active
+static int         _ap_license_revoke_type         = -1;    ///< VehicleType cast to int, -1 = inactive
 
 bool AP_GetCargoBonusActive() { return _ap_cargo_bonus_ticks > 0; }
 
@@ -988,6 +990,25 @@ static void AP_OnItemReceived(const APItem &item)
 			AP_ShowNews("[AP] TRAP: Industry Closure! (no industry found)");
 		}
 
+	} else if (item.item_name == "Vehicle License Revoke") {
+		/* Pick a random vehicle category and block it for 1-2 in-game years.
+		 * 1 in-game year ≈ 365 × 74 ticks = 27010 ticks. */
+		static const VehicleType types[]     = { VEH_TRAIN, VEH_ROAD, VEH_AIRCRAFT, VEH_SHIP };
+		static const char *const type_names[] = { "Trains", "Road Vehicles", "Aircraft", "Ships" };
+		int idx = (int)RandomRange(4);
+		_ap_license_revoke_type  = (int)types[idx];
+		_ap_license_revoke_ticks = 27010 + (int)RandomRange(27010); /* 1–2 years */
+		int years_approx = (_ap_license_revoke_ticks / 27010) + 1;
+
+		/* Immediately hide all engines of this category for the local company */
+		for (Engine *e : Engine::Iterate()) {
+			if ((int)e->type != _ap_license_revoke_type) continue;
+			e->company_hidden.Set(cid);
+		}
+		MarkWholeScreenDirty();
+		AP_ShowNews(fmt::format("[AP] TRAP: Vehicle License Revoke! {} suspended for ~{} in-game year(s)!",
+		    type_names[idx], years_approx));
+
 	/* ── UTILITY ITEMS ─────────────────────────────────── */
 	} else if (item.item_name == "Cash Injection £50,000") {
 		c->money += (Money)50000LL;
@@ -1105,6 +1126,7 @@ void AP_SendDeath(const std::string &cause)
 static void AP_OnDeathReceived(const std::string &source)
 {
 	if (!_ap_session_started) return;
+	if (!AP_GetSlotData().death_link) return; /* Death Link disabled in slot_data */
 	if (_ap_death_cooldown_ticks > 0) {
 		Debug(misc, 0, "[AP] Death from {} ignored — cooldown active", source);
 		return;
@@ -1548,20 +1570,24 @@ void AP_SetShopDayCounter(int v) { _ap_shop_day_counter = v; }
 bool AP_GetGoalSent()        { return _ap_goal_sent; }
 void AP_SetGoalSent(bool v)  { _ap_goal_sent = v; }
 
-void AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station)
+void AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station, int *license_ticks, int *license_type)
 {
-	*fuel        = _ap_fuel_shortage_ticks;
-	*cargo       = _ap_cargo_bonus_ticks;
-	*reliability = _ap_reliability_boost_ticks;
-	*station     = _ap_station_boost_ticks;
+	*fuel         = _ap_fuel_shortage_ticks;
+	*cargo        = _ap_cargo_bonus_ticks;
+	*reliability  = _ap_reliability_boost_ticks;
+	*station      = _ap_station_boost_ticks;
+	*license_ticks = _ap_license_revoke_ticks;
+	*license_type  = _ap_license_revoke_type;
 }
 
-void AP_SetEffectTimers(int fuel, int cargo, int reliability, int station)
+void AP_SetEffectTimers(int fuel, int cargo, int reliability, int station, int license_ticks, int license_type)
 {
 	_ap_fuel_shortage_ticks      = fuel;
 	_ap_cargo_bonus_ticks        = cargo;
 	_ap_reliability_boost_ticks  = reliability;
 	_ap_station_boost_ticks      = station;
+	_ap_license_revoke_ticks     = license_ticks;
+	_ap_license_revoke_type      = license_type;
 }
 
 std::string AP_GetCompletedMissionsStr()
@@ -2295,6 +2321,22 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 							}
 						}
 					}
+				}
+			}
+			/* License Revoke: tick down and restore when expired */
+			if (_ap_license_revoke_ticks > 0 && _ap_session_started) {
+				_ap_license_revoke_ticks--;
+				if (_ap_license_revoke_ticks == 0) {
+					CompanyID cid = _local_company;
+					for (Engine *e : Engine::Iterate()) {
+						if ((int)e->type != _ap_license_revoke_type) continue;
+						if (_ap_unlocked_engine_ids.count(e->index) || !_ap_engine_map_built) {
+							e->company_hidden.Reset(cid);
+						}
+					}
+					_ap_license_revoke_type = -1;
+					MarkWholeScreenDirty();
+					AP_ShowNews("[AP] Vehicle License restored! You may build that vehicle type again.");
 				}
 			}
 		}

@@ -969,7 +969,7 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				{"password",      password},
 				{"uuid",          "openttd-archipelago-01"},
 				{"version",       {{"major",0},{"minor",6},{"build",0},{"class","Version"}}},
-				{"tags",          json::array({"DeathLink"})},
+				{"tags",          json::array()},  /* Tags set via ConnectUpdate after slot_data — see Connected handler */
 				{"items_handling", 7}
 			});
 			std::lock_guard<std::mutex> lg(outbound_mutex);
@@ -1027,6 +1027,20 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			AP_OK(fmt::format("Slot data parsed: {} missions, start_year={}, vehicle='{}'",
 			      sd.mission_count, sd.start_year, sd.starting_vehicle));
 			AP_OK(fmt::format("Win condition: target={}", sd.win_condition_value));
+
+			/* Send ConnectUpdate to set correct DeathLink tag now that we know slot_data.
+			 * The initial Connect packet sends empty tags; this corrects them. */
+			{
+				json cup = json::array();
+				cup.push_back({
+					{"cmd",            "ConnectUpdate"},
+					{"tags",           sd.death_link ? json::array({"DeathLink"}) : json::array()},
+					{"items_handling", 7}
+				});
+				std::lock_guard<std::mutex> lg2(outbound_mutex);
+				outbound_queue.push_back({ cup.dump() });
+				AP_LOG(fmt::format("ConnectUpdate sent: DeathLink={}", sd.death_link ? "true" : "false"));
+			}
 
 			PushEvent({ InboundEvent::CONNECTED, {}, {}, {} });
 

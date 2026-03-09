@@ -183,7 +183,7 @@ public:
 
 	void Connect(const std::string &host, uint16_t port,
 	             const std::string &slot, const std::string &password,
-	             const std::string &game = "OpenTTD",
+	             const std::string &game = "OpenTTD-Exp",
 	             bool use_ssl = false);
 	void Disconnect();
 
