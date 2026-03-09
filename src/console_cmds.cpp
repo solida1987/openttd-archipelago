@@ -12,6 +12,7 @@
 #include "console_internal.h"
 #include "debug.h"
 #include "engine_func.h"
+#include "archipelago.h"
 #include "landscape.h"
 #include "saveload/saveload.h"
 #include "network/core/network_game_info.h"
@@ -3011,4 +3012,7 @@ void IConsoleStdLibRegister()
 	IConsole::CmdRegister("newgrf_profile",          ConNewGRFProfile,    ConHookNewGRFDeveloperTool);
 
 	IConsole::CmdRegister("dump_info",               ConDumpInfo);
+
+	/* Archipelago integration */
+	AP_RegisterConsoleCommands();
 }

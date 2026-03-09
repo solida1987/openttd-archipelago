@@ -2282,6 +2282,11 @@ STR_ARCHIPELAGO_FILTER_EXTREME                                  :{BLACK}Extreme
 STR_ARCHIPELAGO_NEWS                                            :{RAW_STRING}
 STR_ARCHIPELAGO_SHOP_CAPTION                                    :Archipelago - Shop
 STR_ARCHIPELAGO_SHOP_BUY                                        :{BLACK}Buy Selected Item
+STR_ARCHIPELAGO_GUIDE_CAPTION                                   :Archipelago - Guide & Tips
+STR_ARCHIPELAGO_BTN_GUIDE                                       :{BLACK}Guide
+STR_ARCHIPELAGO_GUIDE_TAB_COMMANDS                              :{BLACK}AP Commands
+STR_ARCHIPELAGO_GUIDE_TAB_HOTKEYS                               :{BLACK}Hotkeys
+STR_ARCHIPELAGO_GUIDE_TAB_TIPS                                  :{BLACK}Tips
 
 STR_INTRO_BASESET                                               :{BLACK}The currently selected base graphics set is missing {NUM} sprite{P "" s}. Please check for updates for the baseset.
 STR_INTRO_TRANSLATION                                           :{BLACK}This translation misses {NUM} string{P "" s}. Please help make OpenTTD better by signing up as translator. See readme.txt for details.

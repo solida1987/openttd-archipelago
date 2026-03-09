@@ -1858,7 +1858,10 @@ bool AdjustGUIZoom(bool automatic)
 void ChangeGameSpeed(bool enable_fast_forward)
 {
 	if (enable_fast_forward) {
-		_game_speed = _settings_client.gui.fast_forward_speed_limit;
+		/* Archipelago: fast-forward is always capped at 2500%.
+		 * The player's gui.fast_forward_speed_limit setting is ignored
+		 * to prevent unfair multiworld advantage. */
+		_game_speed = 2500;
 	} else {
 		_game_speed = 100;
 	}

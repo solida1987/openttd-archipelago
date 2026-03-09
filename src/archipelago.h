@@ -60,6 +60,7 @@ struct APMission {
 	bool        completed = false;
 	/* "maintain" missions: counts consecutive months ALL stations have held the required rating */
 	int32_t     maintain_months_ok = 0;
+	bool        maintain_first_month_pending = true; ///< Absorb first timer fire after reset (prevents partial-month credit)
 	/* Named entity missions: town or industry on the actual map */
 	APNamedEntity named_entity;
 };
@@ -196,6 +197,9 @@ public:
 	void SendGoal();
 	void SendScoutsForShop(); ///< Scout all shop locations to get player/game labels
 
+	/** Send a chat/command message to the AP server (e.g. "!hint item"). */
+	void SendSay(const std::string &text);
+
 	/** Send a Death Link bounce packet to the server.
 	 *  @param cause Short human-readable description, e.g. "Train crash". */
 	void SendDeath(const std::string &cause);
@@ -281,5 +285,14 @@ void UninitArchipelago();
  * Called from engine.cpp to block the vanilla date-based vehicle introduction.
  */
 bool AP_IsActive();
+
+/** Forward a text/command string to the AP server (Say packet). */
+void AP_SendSay(const std::string &text);
+
+/** Register the "ap" console command. Call once at startup. */
+void AP_RegisterConsoleCommands();
+
+/** Open the Archipelago Guide window. */
+void ShowArchipelagoGuideWindow();
 
 #endif /* ARCHIPELAGO_H */

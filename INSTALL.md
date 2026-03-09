@@ -4,7 +4,7 @@
 
 - Windows 10 or 11 (64-bit)
 - [Archipelago](https://archipelago.gg/downloads) installed (any recent version)
-- An Archipelago server to connect to (can be hosted locally or via archipelago.gg)
+- An Archipelago server to connect to (hosted locally or via archipelago.gg)
 
 ---
 
@@ -29,7 +29,7 @@ game: OpenTTD
 
 OpenTTD:
   win_condition: company_value
-  win_condition_value: 5000000
+  win_condition_company_value: 50000000
 ```
 
 See [docs/yaml_options.md](docs/yaml_options.md) for all options.
@@ -46,7 +46,7 @@ See [docs/yaml_options.md](docs/yaml_options.md) for all options.
 
 ## Step 4 — Install the game client
 
-1. Download `OpenTTD-AP-<version>-windows-x64.zip` from the [latest release](../../releases/latest)
+1. Download `openttd-archipelago-v1.0.0-win64.zip` from the [latest release](../../releases/latest)
 2. Extract to any folder — the game is fully portable, no installation needed
 3. Run `openttd.exe`
 
@@ -70,10 +70,14 @@ See [docs/yaml_options.md](docs/yaml_options.md) for all options.
 - The game uses WebSocket (port typically 38281). Make sure your firewall allows it.
 
 **Vehicles are all locked**
-- That's normal! You start with only your `starting_vehicle_type`. Unlock the rest by receiving items from the multiworld.
+- That's normal! You start with only your `starting_vehicle_type`. Unlock the rest by completing missions and receiving items from the multiworld.
 
 **Missing baseset / game won't start**
 - Make sure you extracted the full ZIP. The `baseset/` folder must be present next to `openttd.exe`.
 
 **APWorld not showing in generator**
 - Verify `openttd.apworld` is in `C:\ProgramData\Archipelago\custom_worlds\` and restart the Archipelago Launcher.
+
+**AP Commands in-game**
+- Open the console with the `` ` `` (backtick) key and type `ap !hint <item>` to send commands directly to the Archipelago server.
+- Or click the **Guide** button on the AP status window for a full command reference.

@@ -377,6 +377,14 @@ void ArchipelagoClient::SendScoutsForShop()
 	outbound_queue.push_back({ pkt.dump() });
 }
 
+void ArchipelagoClient::SendSay(const std::string &text)
+{
+	json pkt = json::array();
+	pkt.push_back({{"cmd", "Say"}, {"text", text}});
+	std::lock_guard<std::mutex> lg(outbound_mutex);
+	outbound_queue.push_back({ pkt.dump() });
+}
+
 void ArchipelagoClient::SendDeath(const std::string &cause)
 {
 	/* Death Link uses a Bounce packet with a data payload.
@@ -843,7 +851,7 @@ bool ArchipelagoClient::RecvWsFrame(int sockfd, std::string &out_text, bool &out
 	}
 	if (opcode == 0x9) {
 		/* Ping — send MASKED Pong (RFC 6455 §5.1: client->server MUST be masked) */
-		AP_LOG("Ping received — sending masked pong");
+
 		std::vector<char> ping_payload(plen);
 		if (plen > 0) RecvAll(sockfd, ping_payload.data(), (int)plen);
 
@@ -1113,6 +1121,8 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 							auto it = current_sd.item_id_to_name.find(*iid_opt);
 							if (it != current_sd.item_id_to_name.end())
 								ptext = it->second;
+							else
+								ptext = "an item"; /* Foreign game item — ID not in our map */
 						}
 						text_out += ptext;
 					} else if (ptype == "location_id" || ptype == "location_name") {
@@ -1122,6 +1132,8 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 							auto it = location_id_to_name.find(*lid_opt);
 							if (it != location_id_to_name.end())
 								ptext = it->second;
+							else
+								ptext = "a location"; /* Foreign game location — ID not in our map */
 						}
 						text_out += ptext;
 					} else if (ptype == "player_id") {

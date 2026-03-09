@@ -63,6 +63,7 @@
 
 #include "core/format.hpp"
 #include "console_func.h"
+#include "console_internal.h"
 #include "window_func.h"
 #include "station_base.h"
 #include "cargomonitor.h"
@@ -417,12 +418,12 @@ static bool EvaluateMission(APMission &m)
 		current = (int64_t)rail_towns.size();
 	}
 
-	/* ── "maintain_75" / "maintain_90" type ────────────────────────────
-	 * Python emits normalized type "maintain_75" or "maintain_90".
+	/* ── "maintain_75" type ────────────────────────────────────────────
+	 * Python emits normalized type "maintain_75".
 	 * m.amount = number of consecutive months required.
 	 * m.maintain_months_ok = counter managed by the monthly calendar timer.
 	 * Legacy: also accept old raw template-prefix strings from saves <= beta 8. */
-	else if (m.type == "maintain_75" || m.type == "maintain_90" ||
+	else if (m.type == "maintain_75" ||
 	         m.type.find("maintain") != std::string::npos) {
 		current = (int64_t)m.maintain_months_ok;
 	}
@@ -557,6 +558,55 @@ bool AP_IsActive()
 {
 	return _ap_client != nullptr &&
 	       _ap_client->GetState() == APState::AUTHENTICATED;
+}
+
+/* -------------------------------------------------------------------------
+ * AP_SendSay — forward a chat/command string to the AP server.
+ * Used by the "ap" console command so players can type AP server commands
+ * (e.g. !hint, !remaining) directly from the OpenTTD console.
+ * ---------------------------------------------------------------------- */
+
+void AP_SendSay(const std::string &text)
+{
+	if (_ap_client == nullptr) {
+		IConsolePrint(CC_ERROR, "[AP] Not connected to Archipelago server.");
+		return;
+	}
+	_ap_client->SendSay(text);
+	IConsolePrint(CC_INFO, fmt::format("[AP] Sent: {}", text).c_str());
+}
+
+/** Console command: ap <message>
+ *  Forwards the message to the Archipelago server as a Say packet.
+ *  Examples:
+ *    ap !hint "Forest of Magic"
+ *    ap !remaining
+ *    ap !getitem "Cash Injection £200,000"
+ */
+static bool ConCmdAP(std::span<std::string_view> argv)
+{
+	if (argv.size() < 2) {
+		IConsolePrint(CC_HELP, "Usage: ap <message>");
+		IConsolePrint(CC_HELP, "  Sends a message/command to the Archipelago server.");
+		IConsolePrint(CC_HELP, "  Examples:  ap !hint Wills 2-8-0");
+		IConsolePrint(CC_HELP, "             ap !remaining");
+		IConsolePrint(CC_HELP, "             ap !status");
+		return true;
+	}
+	/* Join all arguments after "ap" into one string */
+	std::string msg;
+	for (size_t i = 1; i < argv.size(); i++) {
+		if (i > 1) msg += ' ';
+		msg += std::string(argv[i]);
+	}
+	AP_SendSay(msg);
+	return true;
+}
+
+/** Registers the "ap" console command. Called once at game init. */
+void AP_RegisterConsoleCommands()
+{
+	IConsole::CmdRegister("ap", ConCmdAP);
 }
 
 /* -------------------------------------------------------------------------
@@ -1556,15 +1606,17 @@ void AP_SetCumulStats(const uint64_t *cargo_in, int num_cargo, int64_t profit_in
     _ap_stats_initialized = true;
 }
 
-/* Returns "location=N,location=N,..." for all maintain missions with N>0 */
+/* Returns "location=N:P,..." for all maintain missions.
+ * N = consecutive months OK, P = 1 if first-month guard is pending, else 0. */
 std::string AP_GetMaintainCountersStr()
 {
     std::string out;
     for (const APMission &m : _ap_pending_sd.missions) {
         if (m.type.find("maintain") == std::string::npos) continue;
-        if (m.maintain_months_ok == 0) continue;
+        if (m.maintain_months_ok == 0 && !m.maintain_first_month_pending) continue;
         if (!out.empty()) out += ',';
-        out += m.location + '=' + fmt::format("{}", m.maintain_months_ok);
+        out += m.location + '=' + fmt::format("{}:{}", m.maintain_months_ok,
+               m.maintain_first_month_pending ? 1 : 0);
     }
     return out;
 }
@@ -1572,18 +1624,33 @@ std::string AP_GetMaintainCountersStr()
 void AP_SetMaintainCountersStr(const std::string &s)
 {
     if (s.empty()) return;
-    /* Parse "loc=N,loc=N,..." */
+    /* Parse "loc=N:P,..." — P is optional for backwards compat with old saves */
     std::string token;
     auto apply = [&](const std::string &t) {
         auto eq = t.find('=');
         if (eq == std::string::npos) return;
         std::string loc = t.substr(0, eq);
+        std::string val = t.substr(eq + 1);
         int n = 0;
-        for (char c : t.substr(eq + 1)) {
-            if (c >= '0' && c <= '9') n = n * 10 + (c - '0');
+        bool pending = false;
+        auto colon = val.find(':');
+        auto parse_int = [](const std::string &str) {
+            int v = 0;
+            for (char c : str) if (c >= '0' && c <= '9') v = v * 10 + (c - '0');
+            return v;
+        };
+        if (colon != std::string::npos) {
+            n       = parse_int(val.substr(0, colon));
+            pending = (parse_int(val.substr(colon + 1)) != 0);
+        } else {
+            n = parse_int(val);
         }
         for (APMission &m : _ap_pending_sd.missions) {
-            if (m.location == loc) { m.maintain_months_ok = n; break; }
+            if (m.location == loc) {
+                m.maintain_months_ok           = n;
+                m.maintain_first_month_pending = pending;
+                break;
+            }
         }
     };
     for (char c : s) {
@@ -1897,15 +1964,13 @@ static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 
 		for (APMission &m : _ap_pending_sd.missions) {
 			if (m.completed) continue;
-			/* Accept both normalized types (maintain_75/maintain_90) and legacy raw strings */
-			bool is_maintain = (m.type == "maintain_75" || m.type == "maintain_90" ||
+			/* Accept both normalized type (maintain_75) and legacy raw strings */
+			bool is_maintain = (m.type == "maintain_75" ||
 			                    m.type.find("maintain") != std::string::npos);
 			if (!is_maintain) continue;
 
-			/* Determine threshold: maintain_90 → 229/255 (~90%), maintain_75 → 191/255 (~75%)
-			 * Legacy fallback: search for "90" in old raw type strings. */
+			/* Threshold: 191/255 ≈ 75% */
 			uint8_t threshold = 191;
-			if (m.type == "maintain_90" || m.type.find("90") != std::string::npos) threshold = 229;
 
 			/* Check every rated station — ALL must pass */
 			int rated_count = 0;
@@ -1915,20 +1980,32 @@ static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 					if (!st->goods[ct].HasRating()) continue;
 					rated_count++;
 					if (st->goods[ct].rating < threshold) {
-						/* This station failed — reset and stop checking */
+						/* This station failed — reset counter and absorb next fire */
 						m.maintain_months_ok = 0;
+						m.maintain_first_month_pending = true;
 						goto next_mission;
 					}
 				}
 			}
-			/* Only count progress if player actually has rated stations */
+			/* Only count progress if player actually has rated stations.
+			 * Guard: skip the very first timer fire after a station first
+			 * gets a rating — the station may have been rated only moments
+			 * before the month boundary, which would give a free increment.
+			 * We use a per-mission flag to absorb exactly one "first fire". */
 			if (rated_count > 0) {
-				m.maintain_months_ok++;
-				Debug(misc, 1, "[AP] Maintain mission '{}': {}/{} months OK",
-				      m.location, m.maintain_months_ok, m.amount);
+				if (m.maintain_first_month_pending) {
+					/* Absorb this fire — station was new this month */
+					m.maintain_first_month_pending = false;
+				} else {
+					m.maintain_months_ok++;
+					Debug(misc, 1, "[AP] Maintain mission '{}': {}/{} months OK",
+					      m.location, m.maintain_months_ok, m.amount);
+				}
 			}
 			next_mission:;
 		}
+		/* Refresh mission window so maintain progress is visible immediately */
+		SetWindowClassesDirty(WC_ARCHIPELAGO);
 	}
 );
 
@@ -2108,97 +2185,26 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			AP_OK(fmt::format("AP session started: {} engines locked, all railtypes/roadtypes unlocked.", locked_count));
 
 			/* Unlock all starting vehicles.
-			 * For one_of_each mode this is one per transport type.
-			 * For normal modes it is a single vehicle.
-			 *
-			 * Safety net: if a road vehicle starter carries only cargo-specific
-			 * goods (coal, grain, oil, goods, etc.) and NOT passengers or mail,
-			 * it is useless without pre-built industry routes.  Substitute with
-			 * the first available bus instead and log a warning. */
-			static const std::vector<std::string> FALLBACK_BUSES = {
-				"MPS Regal Bus", "Hereford Leopard Bus", "Foster Bus",
-				"Foster MkII Superbus", "MPS Mail Truck", "Perry Mail Truck",
-			};
-
+			 * The APWorld is responsible for ensuring only climate-compatible
+			 * vehicles appear in starting_vehicles — no fallback substitution. */
 			for (const std::string &sv : _ap_pending_sd.starting_vehicles) {
 				if (sv.empty()) continue;
-
-				/* Check if this is a road vehicle that only carries
-				 * cargo-specific goods (not passengers or mail). */
-				bool needs_fallback = false;
 				if (!_ap_engine_map_built) BuildEngineMap();
-				{
-					auto it = _ap_engine_map.find(sv);
-					if (it != _ap_engine_map.end()) {
-						const Engine *e = Engine::GetIfValid(it->second);
-						if (e != nullptr && e->type == VEH_ROAD) {
-							CargoType ct = e->GetDefaultCargoType();
-							bool is_pax  = ct != INVALID_CARGO && IsCargoInClass(ct, CargoClasses{CargoClass::Passengers});
-							bool is_mail = ct != INVALID_CARGO && IsCargoInClass(ct, CargoClasses{CargoClass::Mail});
-							if (!is_pax && !is_mail) {
-								AP_WARN(fmt::format(
-								    "Starting vehicle '{}' carries only cargo-specific goods "
-								    "(not passengers/mail) — substituting with a bus!", sv));
-								needs_fallback = true;
-							}
-						}
-					}
-				}
-
-				if (needs_fallback) {
-					bool found_fallback = false;
-					for (const std::string &bus : FALLBACK_BUSES) {
-						if (AP_UnlockEngineByName(bus)) {
-							AP_OK("Starter fallback: '" + sv + "' → '" + bus + "' (cargo truck → bus)");
-							AP_ShowNews("[AP] Starting vehicle: " + bus + " (bus fallback)");
-							found_fallback = true;
-							break;
-						}
-					}
-					if (!found_fallback) {
-						/* All buses also missing — just unlock what was requested */
-						AP_WARN("Starter fallback failed — no bus found, unlocking original: " + sv);
-						if (AP_UnlockEngineByName(sv)) {
-							AP_OK("Starting vehicle unlocked (no fallback): " + sv);
-						}
-					}
+				if (AP_UnlockEngineByName(sv)) {
+					AP_OK("Starting vehicle unlocked: " + sv);
+					AP_ShowNews("[AP] Starting vehicle: " + sv);
 				} else {
+					/* Engine not found — try rebuilding the map once (covers edge
+					 * cases where the map was built before all NewGRFs finished
+					 * loading). */
+					AP_WARN("Starting vehicle '" + sv + "' not found — rebuilding engine map and retrying");
+					_ap_engine_map_built = false;
+					BuildEngineMap();
 					if (AP_UnlockEngineByName(sv)) {
-						AP_OK("Starting vehicle unlocked: " + sv);
+						AP_OK("Starting vehicle unlocked after map rebuild: " + sv);
 						AP_ShowNews("[AP] Starting vehicle: " + sv);
 					} else {
-						/* Engine not found in map — this can happen if the engine
-						 * name in slot_data doesn't match what GetString returns.
-						 * Try rebuilding the map once (covers edge cases where the
-						 * map was built before all NewGRFs finished loading), then
-						 * fall back to the first available locomotive of any type. */
-						AP_WARN("Starting vehicle '" + sv + "' not found — rebuilding engine map and retrying");
-						_ap_engine_map_built = false;
-						BuildEngineMap();
-						if (AP_UnlockEngineByName(sv)) {
-							AP_OK("Starting vehicle unlocked after map rebuild: " + sv);
-							AP_ShowNews("[AP] Starting vehicle: " + sv);
-						} else {
-							/* Last resort: unlock the first non-wagon engine we can find */
-							AP_WARN("Starting vehicle '" + sv + "' still not found — using emergency fallback locomotive");
-							static const std::vector<std::string> LOCO_FALLBACKS = {
-								"Kirby Paul Tank (Steam)", "Wills 2-8-0 (Steam)",
-								"MJS 250 (Diesel)", "Ploddyphut Diesel",
-								"MPS Regal Bus", "Coleman Count",
-							};
-							bool loco_found = false;
-							for (const std::string &fb : LOCO_FALLBACKS) {
-								if (AP_UnlockEngineByName(fb)) {
-									AP_OK("Emergency starter fallback: '" + sv + "' → '" + fb + "'");
-									AP_ShowNews("[AP] Starting vehicle: " + fb + " (emergency fallback)");
-									loco_found = true;
-									break;
-								}
-							}
-							if (!loco_found) {
-								AP_ERR("CRITICAL: no starting vehicle could be unlocked for '" + sv + "'!");
-							}
-						}
+						AP_ERR("Starting vehicle '" + sv + "' not found in engine map!");
 					}
 				}
 			}

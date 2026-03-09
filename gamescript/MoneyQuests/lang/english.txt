@@ -1,0 +1,3 @@
+##grflangid 0x01
+STR_MQGS_NAME                    :Money Quests
+STR_MQGS_DESC                    :Deliver cargo to earn bonus cash. Optional add-on for Archipelago.

@@ -229,6 +229,7 @@ enum APStatusWidgets : WidgetID {
 	WAPST_BTN_MISSIONS,
 	WAPST_BTN_SETTINGS,
 	WAPST_BTN_SHOP,
+	WAPST_BTN_GUIDE,
 };
 
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = {
@@ -246,7 +247,8 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = 
 				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPST_BTN_SETTINGS),  SetStringTip(STR_ARCHIPELAGO_BTN_SETTINGS),  SetMinimalSize(70, 14),
 			EndContainer(),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPST_BTN_SHOP),      SetStringTip(STR_ARCHIPELAGO_BTN_SHOP),      SetMinimalSize(225, 14), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPST_BTN_SHOP),      SetStringTip(STR_ARCHIPELAGO_BTN_SHOP),      SetMinimalSize(150, 14), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WAPST_BTN_GUIDE),     SetStringTip(STR_ARCHIPELAGO_BTN_GUIDE),     SetMinimalSize(70, 14),
 			EndContainer(),
 		EndContainer(),
 	EndContainer(),
@@ -335,6 +337,9 @@ struct ArchipelagoStatusWindow : public Window {
 				break;
 			case WAPST_BTN_SHOP:
 				ShowArchipelagoShopWindow();
+				break;
+			case WAPST_BTN_GUIDE:
+				ShowArchipelagoGuideWindow();
 				break;
 		}
 	}
@@ -557,27 +562,34 @@ struct ArchipelagoMissionsWindow : public Window {
 			}
 
 			/* Build progress string for incomplete missions.
-			 * Named missions always show progress (even 0) so the player knows
-			 * the tracker is live. Other missions only show once progress > 0. */
-			bool is_named = (m->type == "passengers_to_town" || m->type == "mail_to_town" ||
-			                 m->type == "cargo_from_industry" || m->type == "cargo_to_industry");
+			 * Named missions and maintain missions always show progress (even 0)
+			 * so the player knows the tracker is live. */
+			bool is_named    = (m->type == "passengers_to_town" || m->type == "mail_to_town" ||
+			                    m->type == "cargo_from_industry" || m->type == "cargo_to_industry");
+			bool is_maintain = (m->type == "maintain_75" ||
+			                    m->type.find("maintain") != std::string::npos);
 			std::string progress_str;
-			if (!m->completed && m->amount > 0 && (m->current_value > 0 || is_named)) {
-				/* Detect money missions by unit */
-				bool is_money = (m->unit == "\xC2\xA3" || m->unit == "£" ||
-				                 m->unit.find("/month") != std::string::npos ||
-				                 m->unit.find("month") != std::string::npos);
-				if (is_money) {
-					progress_str = fmt::format("  ({}/{})",
-					    AP_FormatMoneyCompact(m->current_value),
-					    AP_FormatMoneyCompact(m->amount));
+			if (!m->completed && m->amount > 0 && (m->current_value > 0 || is_named || is_maintain)) {
+				if (is_maintain) {
+					/* Show as "X/Y months" — never as money */
+					progress_str = fmt::format("  ({}/{} months)", m->current_value, m->amount);
 				} else {
-					auto fmt_num = [](int64_t v) -> std::string {
-						if (v >= 1000000) return fmt::format("{:.1f}M", v / 1000000.0);
-						if (v >= 1000)    return fmt::format("{}k", v / 1000);
-						return fmt::format("{}", v);
-					};
-					progress_str = fmt::format("  ({}/{})", fmt_num(m->current_value), fmt_num(m->amount));
+					/* Detect money missions by unit — only £ and £/month, NOT plain "months" */
+					bool is_money = (m->unit == "\xC2\xA3" || m->unit == "\xC2\xA3/month" ||
+					                 m->unit == "£" || m->unit == "£/month" ||
+					                 m->unit.find("/month") != std::string::npos);
+					if (is_money) {
+						progress_str = fmt::format("  ({}/{})",
+						    AP_FormatMoneyCompact(m->current_value),
+						    AP_FormatMoneyCompact(m->amount));
+					} else {
+						auto fmt_num = [](int64_t v) -> std::string {
+							if (v >= 1000000) return fmt::format("{:.1f}M", v / 1000000.0);
+							if (v >= 1000)    return fmt::format("{}k", v / 1000);
+							return fmt::format("{}", v);
+						};
+						progress_str = fmt::format("  ({}/{})", fmt_num(m->current_value), fmt_num(m->amount));
+					}
 				}
 			}
 
@@ -876,3 +888,266 @@ void ShowArchipelagoShopWindow()
 }
 
 
+
+/* =========================================================================
+ * Archipelago Guide Window
+ * Reference for AP server commands, hotkeys and gameplay tips.
+ * ========================================================================= */
+
+enum ArchipelagoGuideWidgets {
+	WAPGD_CAPTION,
+	WAPGD_TAB_COMMANDS,
+	WAPGD_TAB_HOTKEYS,
+	WAPGD_TAB_TIPS,
+	WAPGD_PANEL,
+	WAPGD_SCROLLBAR,
+};
+
+static constexpr std::initializer_list<NWidgetPart> _nested_ap_guide_widgets = {
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_DARK_BLUE),
+		NWidget(WWT_CAPTION, COLOUR_DARK_BLUE, WAPGD_CAPTION), SetStringTip(STR_ARCHIPELAGO_GUIDE_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	EndContainer(),
+	/* Tab buttons */
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPGD_TAB_COMMANDS), SetStringTip(STR_ARCHIPELAGO_GUIDE_TAB_COMMANDS), SetMinimalSize(110, 16), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPGD_TAB_HOTKEYS),  SetStringTip(STR_ARCHIPELAGO_GUIDE_TAB_HOTKEYS),  SetMinimalSize(110, 16), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPGD_TAB_TIPS),     SetStringTip(STR_ARCHIPELAGO_GUIDE_TAB_TIPS),     SetMinimalSize(110, 16), SetFill(1, 0),
+	EndContainer(),
+	/* Content panel + scrollbar */
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_DARK_BLUE, WAPGD_PANEL), SetMinimalSize(330, 300), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPGD_SCROLLBAR), EndContainer(),
+		NWidget(NWID_VSCROLLBAR, COLOUR_DARK_BLUE, WAPGD_SCROLLBAR),
+	EndContainer(),
+	NWidget(WWT_RESIZEBOX, COLOUR_DARK_BLUE),
+};
+
+struct ArchipelagoGuideWindow : Window {
+	static const int LINE_H = 14;  ///< pixels per text line
+
+	int active_tab = 0;  ///< 0=commands 1=hotkeys 2=tips
+	int scroll_pos = 0;
+	int total_lines = 0;
+
+	struct GuideLine {
+		bool header;
+		std::string text;
+	};
+	std::vector<GuideLine> lines;
+
+	ArchipelagoGuideWindow(WindowDesc &desc, WindowNumber wn) : Window(desc)
+	{
+		this->InitNested(wn);
+		this->vscroll = this->GetScrollbar(WAPGD_SCROLLBAR);
+		this->_BuildLines();
+	}
+
+	Scrollbar *vscroll = nullptr;
+
+	void _BuildLines()
+	{
+		lines.clear();
+		if (active_tab == 0) _BuildCommandLines();
+		else if (active_tab == 1) _BuildHotkeyLines();
+		else _BuildTipLines();
+		total_lines = (int)lines.size();
+		if (vscroll) {
+			const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPGD_PANEL);
+			int visible = (panel ? panel->current_y : 300) / LINE_H;
+			vscroll->SetCount(total_lines);
+			vscroll->SetCapacity(visible);
+		}
+	}
+
+	void _H(const std::string &t) { lines.push_back({true,  t}); }
+	void _L(const std::string &t) { lines.push_back({false, t}); }
+
+	void _BuildCommandLines()
+	{
+		_H("=== Archipelago Server Commands ===");
+		_L("");
+		_L("Type these in the OpenTTD console (` key) using:");
+		_L("  ap <command>    e.g.  ap !hint Wills 2-8-0");
+		_L("");
+		_H("--- Information ---");
+		_L("!hint <item>      - Request a hint for an item");
+		_L("!remaining        - Show how many checks remain");
+		_L("!missing          - List unchecked locations");
+		_L("!checked          - List completed locations");
+		_L("!status           - Show connection & game status");
+		_L("!players          - List connected players");
+		_L("!countdown <sec>  - Start a countdown timer");
+		_L("");
+		_H("--- Cheats (require server permission) ---");
+		_L("!getitem <name>   - Force-receive an item");
+		_L("!collect          - Auto-collect all your items");
+		_L("!release          - Release your remaining items");
+		_L("                    to other players when you finish");
+		_L("");
+		_L("Note: Cheat commands must be enabled when the");
+		_L("Archipelago server is generated (allow_cheats).");
+		_L("");
+		_H("--- Console shortcut ---");
+		_L("ap !hint item     (sends '!hint item' to AP)");
+		_L("ap !remaining     (sends '!remaining' to AP)");
+	}
+
+	void _BuildHotkeyLines()
+	{
+		_H("=== OpenTTD Essential Hotkeys ===");
+		_L("");
+		_H("--- General ---");
+		_L("F1 / Pause        - Pause / unpause game");
+		_L("Tab (hold)        - Fast forward (release to resume)");
+		_L("Space             - Close error messages / news");
+		_L("Delete            - Close all non-sticky windows");
+		_L("~ / `             - Open console");
+		_L("F3                - Save game");
+		_L("Ctrl+S            - Take screenshot");
+		_L("");
+		_H("--- Map & View ---");
+		_L("M                 - Toggle minimap");
+		_L("Numpad +/-        - Zoom in / out");
+		_L("Arrow keys        - Scroll map");
+		_L("Shift+Arrow       - Scroll map faster");
+		_L("Z                 - Zoom to mouse pointer");
+		_L("C                 - Center on mouse pointer");
+		_L("");
+		_H("--- Building (Rail) ---");
+		_L("A                 - Toggle autorail");
+		_L("X                 - Toggle all transparency");
+		_L("Ctrl+X            - Open transparency options");
+		_L("R                 - Remove tool (while building)");
+		_L("Ctrl (hold)       - Drag to build straight tracks");
+		_L("Ctrl+Station      - Join/extend existing station");
+		_L("");
+		_H("--- Station Placement ---");
+		_L("Ctrl (hold)       - Show catchment area");
+		_L("Ctrl+drag         - Extend station coverage");
+		_L("[ / ]             - Rotate station layout");
+		_L("");
+		_H("--- Vehicles ---");
+		_L("Ctrl+Clone        - Clone with shared orders");
+		_L("Ctrl+Start        - Start all vehicles in depot");
+		_L("G (in depot)      - Go to nearest depot");
+		_L("");
+		_H("--- Orders ---");
+		_L("Ctrl+Order        - Copy orders from vehicle");
+		_L("D (in orders)     - Skip to next order now");
+		_L("Non-stop (order)  - Hold Ctrl to toggle non-stop");
+	}
+
+	void _BuildTipLines()
+	{
+		_H("=== Gameplay Tips for Archipelago ===");
+		_L("");
+		_H("--- Airports & Aircraft ---");
+		_L("NEVER send large aircraft (Darwin 300+, Dinger");
+		_L("200+, FFP Hyperdart) to a small airport.");
+		_L("They crash immediately on landing!");
+		_L("Small aircraft: Sampson, Coleman, Bakewell");
+		_L("Cotswald, Kelling K1, AirTaxi series.");
+		_L("Large airports needed for: Darwin 300, 400+,");
+		_L("Dinger 200, 1000, FFP Hyperdart, Juggerplane.");
+		_L("");
+		_H("--- Starting Strategy ---");
+		_L("Start with road vehicles — they need no");
+		_L("infrastructure and are fast to set up.");
+		_L("Use buses between towns to earn early cash.");
+		_L("Build rail when you have steady income.");
+		_L("Keep a loan buffer — traps can drain money.");
+		_L("");
+		_H("--- Archipelago Items & Traps ---");
+		_L("Breakdown Wave   - All vehicles break down");
+		_L("Recession        - Income cut for a period");
+		_L("Maintenance Surge- Running costs spike");
+		_L("Signal Failure   - All signals go red");
+		_L("Fuel Shortage    - Vehicles slow down");
+		_L("Bank Loan Forced - Extra loan forced on you");
+		_L("Industry Closure - A random industry closes");
+		_L("");
+		_H("--- Utility Items (positive) ---");
+		_L("Cash Injection   - Free money!");
+		_L("Loan Reduction   - Loan shrinks automatically");
+		_L("Cargo Bonus      - 2x cargo payment, 60 days");
+		_L("Reliability Boost- All vehicles more reliable");
+		_L("Town Growth Boost- Towns grow faster");
+		_L("Free Station     - Build a free station");
+		_L("");
+		_H("--- Missions ---");
+		_L("Easy missions:   Good starting points.");
+		_L("Hard/Extreme:    High rewards, worth doing");
+		_L("                 before you run out of checks.");
+		_L("Station Rating:  Keep a vehicle visiting the");
+		_L("                 station regularly — rating drops");
+		_L("                 if no vehicle visits for a month.");
+		_L("");
+		_H("--- Performance Tips ---");
+		_L("Fast forward is capped at 2500% — this keeps");
+		_L("the AP connection stable.");
+		_L("Large maps with many trains can slow the game.");
+		_L("128x128 to 256x256 is ideal for AP games.");
+	}
+
+	void OnPaint() override
+	{
+		/* Highlight active tab */
+		this->SetWidgetLoweredState(WAPGD_TAB_COMMANDS, active_tab == 0);
+		this->SetWidgetLoweredState(WAPGD_TAB_HOTKEYS,  active_tab == 1);
+		this->SetWidgetLoweredState(WAPGD_TAB_TIPS,     active_tab == 2);
+		this->DrawWidgets();
+	}
+
+	void DrawWidget(const Rect &r, WidgetID widget) const override
+	{
+		if (widget != WAPGD_PANEL) return;
+
+		int y = r.top + 3;
+		int x = r.left + 4;
+		int max_y = r.bottom - 2;
+		int start = vscroll ? vscroll->GetPosition() : 0;
+		int visible_lines = (r.bottom - r.top) / LINE_H + 1;
+
+		for (int i = start; i < (int)lines.size() && i < start + visible_lines; i++) {
+			if (y + LINE_H > max_y) break;
+			const auto &line = lines[i];
+			if (line.header) {
+				DrawString(x, r.right - 4, y, line.text, TC_GOLD);
+			} else {
+				DrawString(x + 4, r.right - 4, y, line.text, TC_WHITE);
+			}
+			y += LINE_H;
+		}
+	}
+
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override
+	{
+		switch (widget) {
+			case WAPGD_TAB_COMMANDS: active_tab = 0; _BuildLines(); this->SetDirty(); break;
+			case WAPGD_TAB_HOTKEYS:  active_tab = 1; _BuildLines(); this->SetDirty(); break;
+			case WAPGD_TAB_TIPS:     active_tab = 2; _BuildLines(); this->SetDirty(); break;
+		}
+	}
+
+	void OnResize() override
+	{
+		if (vscroll) {
+			const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPGD_PANEL);
+			int visible = (panel ? panel->current_y : 300) / LINE_H;
+			vscroll->SetCapacity(visible);
+		}
+	}
+
+	void OnScrollbarScroll([[maybe_unused]] WidgetID widget) override { this->SetDirty(); }
+};
+
+static WindowDesc _ap_guide_desc(
+	WDP_AUTO, {"ap_guide"}, 340, 340,
+	WC_ARCHIPELAGO_GUIDE, WC_NONE, {},
+	_nested_ap_guide_widgets
+);
+
+void ShowArchipelagoGuideWindow()
+{
+	AllocateWindowDescFront<ArchipelagoGuideWindow>(_ap_guide_desc, 0);
+}
