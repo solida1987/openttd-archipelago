@@ -1,4 +1,11 @@
-# OpenTTD Archipelago
+# OpenTTD Archipelago — Experimental
+
+> ⚠️ **EXPERIMENTAL BRANCH** — This repository is unstable by design.
+> New features, events, and ideas are tested here before being promoted to the stable release.
+> Expect bugs, incomplete features, and breaking changes between versions.
+> For the stable release, see [openttd-archipelago](https://github.com/solida1987/openttd-archipelago).
+
+---
 
 A full [Archipelago](https://archipelago.gg) multiworld randomizer integration for **OpenTTD 15.2**.
 
@@ -24,9 +31,11 @@ All 202 vanilla vehicles are locked at game start and randomized into the multiw
 
 ## Download
 
+> ⚠️ Experimental builds may be unstable. Use the [stable release](https://github.com/solida1987/openttd-archipelago) for a reliable experience.
+
 ### Play (Windows, standalone)
 
-1. Download `openttd-archipelago-v1.0.0-win64.zip` from [Releases](../../releases/latest)
+1. Download `openttd-archipelago-exp-1.0-win64.zip` from [Releases](../../releases/latest)
 2. Extract anywhere — OpenGFX is included, no separate OpenTTD install needed
 3. Download `openttd.apworld` from the same release
 4. Place `openttd.apworld` in your Archipelago `custom_worlds/` folder:
