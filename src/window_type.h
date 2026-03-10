@@ -739,6 +739,7 @@ enum WindowClass : uint16_t {
 	WC_ARCHIPELAGO,
 	WC_ARCHIPELAGO_TICKER, ///< Archipelago background ticker.
 	WC_ARCHIPELAGO_GUIDE,  ///< Archipelago guide / command reference.
+	WC_ARCHIPELAGO_COLBY,  ///< Archipelago Colby Event status window.
 
 	WC_INVALID = 0xFFFF, ///< Invalid window.
 };
