@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 :: ============================================================
 ::  OpenTTD Archipelago — GitHub Push + Release Script
-::  Beta 9
+::  v1.1.0
 :: ============================================================
 set PROJECT_DIR=C:\Users\marco\OneDrive\Desktop\openttd-15.2
 set /p OTTD_VERSION=<"%PROJECT_DIR%\.version"
@@ -11,7 +11,7 @@ if not defined OTTD_VERSION set OTTD_VERSION=15.2
 echo.
 echo ============================================================
 echo  GitHub Push + Release
-echo  Version: %OTTD_VERSION% — BETA 9
+echo  Version: %OTTD_VERSION% — v1.1.0
 echo ============================================================
 echo.
 
@@ -104,7 +104,7 @@ echo       OK.
 
 :: ── Commit ───────────────────────────────────────────────────
 echo [3/5] Committer...
-git commit -m "beta9: Mission pool system, cargo access rules, guide window, console AP commands, money quests gamescript, station rating fixes, fast-forward cap"
+git commit -m "v1.1.0: Task system, win conditions redesign (6 params + 11 difficulty presets), speed boost item, mission tier gating, active vehicle/station requirements, shop tier locking, DeathLink protocol fix, profit sign fix, save/reload staging system, Colby Event (beta), settings lockdown, Iron Horse pool filter, connect flow popup"
 if errorlevel 1 (
     echo       Intet nyt at committe - fortsætter til push.
 )
@@ -122,13 +122,13 @@ echo       OK.
 
 :: ── Tag og push release ──────────────────────────────────────
 echo [5/5] Opretter release-tag...
-set TAG=v%OTTD_VERSION%-beta9
+set TAG=v%OTTD_VERSION%-1.1.0
 
 :: Slet eksisterende tag lokalt og remote hvis det findes
 git tag -d %TAG% > nul 2>&1
 git push origin :refs/tags/%TAG% > nul 2>&1
 
-git tag -a %TAG% -m "OpenTTD %OTTD_VERSION% Archipelago beta9 — Mission pool system, cargo access rules, guide window, console AP commands, money quests gamescript, station rating fixes, fast-forward cap"
+git tag -a %TAG% -m "OpenTTD %OTTD_VERSION% Archipelago v1.1.0 — Task system, win conditions redesign, speed boost item, mission tier gating, DeathLink protocol fix, profit sign fix, save/reload staging, active vehicle/station requirements, settings lockdown"
 git push origin %TAG%
 if errorlevel 1 (
     echo [FEJL] Tag-push fejlede!
@@ -142,11 +142,11 @@ echo.
 echo  Tag    : %TAG%
 echo  Branch : pushed til GitHub
 echo.
-echo  VIGTIGT: Kør nu build_and_package.bat for at bygge beta9.
-echo  Versionen viser nu korrekt "beta9" i titellinjen.
+echo  VIGTIGT: Kør nu stable_build_and_package.bat for at bygge v1.1.0.
+echo  Versionen viser nu korrekt "1.1.0" i titellinjen.
 echo.
 echo  Gaa til GitHub og opret et Release fra tagget %TAG%
-echo  og upload dist\openttd-%OTTD_VERSION%-archipelago-windows-win64.zip
+echo  og upload dist\openttd-archipelago-v1.1.0-win64.zip
 echo ============================================================
 echo.
 pause
