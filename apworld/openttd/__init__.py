@@ -84,7 +84,7 @@ class OpenTTDWeb(WebWorld):
 
 
 class OpenTTDItem(Item):
-    game = "OpenTTD-Exp"
+    game = "OpenTTD"
 
 
 class OpenTTDWorld(World):
@@ -93,7 +93,7 @@ class OpenTTDWorld(World):
     Build transport networks using trains, road vehicles, aircraft and ships.
     All vehicles are randomized — unlock them through Archipelago checks!
     """
-    game = "OpenTTD-Exp"
+    game = "OpenTTD"
     options_dataclass = OpenTTDOptions
     options: OpenTTDOptions
     web = OpenTTDWeb()
@@ -422,7 +422,7 @@ class OpenTTDWorld(World):
         from BaseClasses import Location as APLocation
 
         class OpenTTDLocation(APLocation):
-            game = "OpenTTD-Exp"
+            game = "OpenTTD"
             _hint_text_override: str = ""
 
             @property
