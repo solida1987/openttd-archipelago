@@ -18,6 +18,7 @@
 #include <vector>
 #include <deque>
 #include <map>
+#include <cstdint>
 #include <set>
 
 /** Connection states for the Archipelago client. */
@@ -66,12 +67,29 @@ struct APMission {
 };
 
 /** Win condition type. */
-enum class APWinCondition : uint8_t {
-	COMPANY_VALUE,
-	TOWN_POPULATION,
-	VEHICLE_COUNT,
-	CARGO_DELIVERED,
-	MONTHLY_PROFIT,
+/** Win condition difficulty preset ID (mirrors Python WinDifficulty). */
+enum class APWinDifficulty : uint8_t {
+	CASUAL    = 0,
+	EASY      = 1,
+	NORMAL    = 2,
+	MEDIUM    = 3,
+	HARD      = 4,
+	VERY_HARD = 5,
+	EXTREME   = 6,
+	INSANE    = 7,
+	NUTCASE   = 8,
+	MADNESS   = 9,
+	CUSTOM    = 10,
+};
+
+/** Current progress toward all six win targets. */
+struct APWinProgress {
+	int64_t company_value    = 0;
+	int64_t town_population  = 0;
+	int64_t vehicle_count    = 0;
+	int64_t cargo_delivered  = 0;
+	int64_t monthly_profit   = 0;
+	int64_t missions         = 0;
 };
 
 /** Full configuration received from the AP server after authentication. */
@@ -83,8 +101,14 @@ struct APSlotData {
 	std::string             starting_vehicle;
 	std::string             starting_vehicle_type;
 	std::vector<std::string> starting_vehicles;   ///< all starters (>1 for one_of_each)
-	APWinCondition          win_condition        = APWinCondition::COMPANY_VALUE;
-	int64_t                 win_condition_value  = 50000000;
+	/* ── Win condition (multi-parameter) ──────────────────────────────── */
+	APWinDifficulty         win_difficulty            = APWinDifficulty::NORMAL;
+	int64_t                 win_target_company_value   = 8'000'000;
+	int64_t                 win_target_town_population = 100'000;
+	int64_t                 win_target_vehicle_count   = 30;
+	int64_t                 win_target_cargo_delivered = 120'000;
+	int64_t                 win_target_monthly_profit  = 100'000;
+	int64_t                 win_target_missions        = 35;
 	bool                    enable_traps         = true;
 	int                     start_year           = 1950;
 
@@ -147,6 +171,17 @@ struct APSlotData {
 	/* ── NewGRF options ─────────────────────────────────────────────── */
 	bool                    enable_iron_horse    = false;
 
+	/* ── Colby Event ────────────────────────────────────────────────── */
+	bool        colby_event      = false;   ///< Colby Event enabled by APWorld option
+	int         colby_start_year = 0;       ///< in-game year the event triggers (start_year + 2)
+	uint32_t    colby_town_seed  = 0;       ///< seed for deterministic town selection
+	std::string colby_cargo      = "coal";  ///< climate-appropriate cargo (e.g. "coal", "rubber")
+
+	/* ── Mission tier unlock requirements ──────────────────────────── */
+	/// How many missions of the previous tier must be completed before the next tier unlocks.
+	/// Keys: "medium", "hard", "extreme". Default 0 = always unlocked.
+	std::map<std::string, int> tier_unlock_requirements;
+
 	/** Maps item_id -> item_name, sent in slot_data by APWorld. */
 	std::map<int64_t, std::string> item_id_to_name;
 
@@ -183,7 +218,7 @@ public:
 
 	void Connect(const std::string &host, uint16_t port,
 	             const std::string &slot, const std::string &password,
-	             const std::string &game = "OpenTTD",
+	             const std::string &game = "OpenTTD-Exp",
 	             bool use_ssl = false);
 	void Disconnect();
 
@@ -233,6 +268,7 @@ private:
 
 	std::string host, slot_name, password, game_name;
 	uint16_t    port = 0;
+	double      last_death_link_time = 0.0; ///< unix timestamp of last sent/received DeathLink (for dedup)
 	bool        ws_deflate{ false };   ///< true if server accepted permessage-deflate
 	bool        use_ssl{ false };      ///< true → TLS/WSS via Schannel (Windows)
 
@@ -294,5 +330,94 @@ void AP_RegisterConsoleCommands();
 
 /** Open the Archipelago Guide window. */
 void ShowArchipelagoGuideWindow();
+
+/** Returns true if Colby Event is active and not yet completed. */
+bool AP_IsColbyActive();
+bool AP_IsColbyConfigured();
+
+/** Mission completion counters. */
+int AP_GetTierCompleted(const std::string &difficulty);
+int AP_GetTotalMissionsCompleted();
+APWinProgress AP_GetWinProgress();
+
+/** Shop slot locking: returns true if the given 0-based sorted slot is unlocked. */
+bool AP_IsShopSlotUnlocked(int slot_index);
+int  AP_GetShopSlotRequiredMissions(int slot_index);
+
+/** Tier unlock helpers. */
+int  AP_GetTierThreshold(const std::string &difficulty);
+bool AP_IsTierUnlocked(const std::string &difficulty);
+
+/** Colby Event status snapshot for the GUI. */
+struct ColbyStatus {
+	bool        enabled;
+	bool        done;
+	int         step;
+	int64_t     delivered;
+	int64_t     step_amount;
+	bool        escaped;
+	bool        popup_shown;
+	int         escape_ticks;
+	std::string town_name;
+	uint32_t    town_id         = 0xFFFFU;       ///< TownID as plain integer; 0xFFFF = invalid
+	uint32_t    source_tile     = 0xFFFFFFFFU;   ///< TileIndex as plain integer; 0xFFFFFFFF = invalid
+	std::string source_name;   ///< station name for pickup
+	std::string cargo_name;    ///< "packages"
+};
+ColbyStatus AP_GetColbyStatus();
+
+/* Fast-forward speed (controlled by Speed Boost items).
+ * Starts at 100 (normal), each Speed Boost item adds 10, capped at 300. */
+int  AP_GetFfSpeed();
+void AP_SetFfSpeed(int v);
+
+/* =========================================================================
+ * LOCAL TASK SYSTEM
+ *
+ * Tasks are purely local (never sent to AP server).
+ * Up to 5 active at once; complete/expire to make room for new ones.
+ * "Mission Check" reward counts toward the shop-unlock counter.
+ * ========================================================================= */
+
+enum class APTaskRewardType : uint8_t {
+    CASH,           ///< Give company money on completion
+    MISSION_CHECK,  ///< Count as a completed mission for shop-unlock counter
+};
+
+struct APTask {
+    int         id              = 0;
+    std::string type;                    ///< "cargo_from_industry", "passengers_to_town"
+    std::string description;
+    int64_t     amount          = 0;     ///< Target quantity
+    int64_t     current_value   = 0;     ///< Live progress (updated monthly)
+    bool        completed       = false;
+    bool        expired         = false;
+    bool        monitor_seeded  = false; ///< True once the cargo monitor has been drained on creation
+    int32_t     deadline_year   = 0;
+    uint8_t     deadline_month  = 1;
+    int32_t     removal_year    = 0;     ///< Year when this task is removed from the list (0 = not scheduled)
+    APTaskRewardType reward_type = APTaskRewardType::CASH;
+    int64_t     reward_cash     = 0;
+    int32_t     entity_id       = -1;    ///< IndustryID (cargo) or TownID (passengers)
+    uint8_t     cargo           = 0xFF;  ///< CargoType; 0xFF = not used
+    uint32_t    entity_tile     = UINT32_MAX;
+    std::string entity_name;             ///< Display name (shown in TC_WHITE in GUI)
+    std::string difficulty;              ///< "easy", "medium", "hard"
+};
+
+/** Returns a snapshot copy of the active task list (for GUI rendering). */
+std::vector<APTask> AP_GetTaskSnapshot();
+
+/** Returns how many task Mission-Check rewards have been collected this session. */
+int AP_GetTaskChecksCompleted();
+
+/** Generate/replenish tasks up to the active cap from the current map. */
+void AP_GenerateTasks();
+
+/** Saveload helpers for task state. */
+std::string AP_GetTasksStr();
+void        AP_SetTasksStr(const std::string &s);
+int         AP_GetTaskChecksCompletedSaved();
+void        AP_SetTaskChecksCompleted(int v);
 
 #endif /* ARCHIPELAGO_H */

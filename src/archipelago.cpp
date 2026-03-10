@@ -391,12 +391,12 @@ void ArchipelagoClient::SendDeath(const std::string &cause)
 	 * Protocol: {"cmd":"Bounce","data":{"type":"DeathLink","time":<unix>,"source":"<slot>","cause":"<cause>"}} */
 	double now = std::chrono::duration<double>(
 		std::chrono::system_clock::now().time_since_epoch()).count();
+	last_death_link_time = now;   /* record send time for dedup on echo-back */
 	json pkt = json::array();
 	pkt.push_back({
 		{"cmd",  "Bounce"},
 		{"tags", json::array({"DeathLink"})},
 		{"data", {
-			{"type",   "DeathLink"},
 			{"time",   now},
 			{"source", slot_name},
 			{"cause",  cause}
@@ -506,13 +506,15 @@ static APSlotData ParseSlotData(const json &msg)
 	sd.land_generator       = (uint8_t)d.value("land_generator", 1);
 
 	/* Win condition */
-	sd.win_condition_value  = d.value("win_condition_value", (int64_t)50000000);
-	std::string wc = d.value("win_condition", "company_value");
-	if      (wc == "town_population") sd.win_condition = APWinCondition::TOWN_POPULATION;
-	else if (wc == "vehicle_count")   sd.win_condition = APWinCondition::VEHICLE_COUNT;
-	else if (wc == "cargo_delivered") sd.win_condition = APWinCondition::CARGO_DELIVERED;
-	else if (wc == "monthly_profit")  sd.win_condition = APWinCondition::MONTHLY_PROFIT;
-	else                              sd.win_condition = APWinCondition::COMPANY_VALUE;
+	sd.win_target_company_value   = d.value("win_target_company_value",   (int64_t)8'000'000);
+	sd.win_target_town_population = d.value("win_target_town_population", (int64_t)100'000);
+	sd.win_target_vehicle_count   = d.value("win_target_vehicle_count",   (int64_t)30);
+	sd.win_target_cargo_delivered = d.value("win_target_cargo_delivered", (int64_t)120'000);
+	sd.win_target_monthly_profit  = d.value("win_target_monthly_profit",  (int64_t)100'000);
+	sd.win_target_missions        = d.value("win_target_missions",        (int64_t)35);
+	int diff_val = d.value("win_difficulty", 2);
+	sd.win_difficulty = (diff_val >= 0 && diff_val <= 10)
+	    ? static_cast<APWinDifficulty>(diff_val) : APWinDifficulty::NORMAL;
 
 	/* ── Game settings (Accounting) ──────────────────────────────────── */
 	sd.infinite_money            = d.value("infinite_money",       false);
@@ -562,6 +564,20 @@ static APSlotData ParseSlotData(const json &msg)
 	/* NewGRF options */
 	sd.enable_iron_horse         = (bool)d.value("enable_iron_horse", 0);
 
+	/* Colby Event */
+	sd.colby_event      = d.value("colby_event",      false);
+	sd.colby_start_year = d.value("colby_start_year",  0);
+	sd.colby_town_seed  = (uint32_t)d.value("colby_town_seed", (uint32_t)0);
+	sd.colby_cargo      = d.value("colby_cargo",       std::string("coal"));
+
+	/* Tier unlock requirements — how many of prev tier needed before next tier opens */
+	if (d.contains("tier_unlock_requirements") && d["tier_unlock_requirements"].is_object()) {
+		const auto &tu = d["tier_unlock_requirements"];
+		for (const auto &[k, v] : tu.items()) {
+			if (v.is_number_integer()) sd.tier_unlock_requirements[k] = v.get<int>();
+		}
+	}
+
 	/* Verbose log — visible in OpenTTD debug console (press ~ in game) */
 	Debug(misc, 0, "[AP] SlotData: version={} missions={} start_year={} vehicle='{}'",
 	      sd.game_version, sd.mission_count, sd.start_year, sd.starting_vehicle);
@@ -569,7 +585,7 @@ static APSlotData ParseSlotData(const json &msg)
 	      (1 << sd.map_x), (1 << sd.map_y), (int)sd.landscape,
 	      sd.world_seed, sd.enable_traps);
 	Debug(misc, 0, "[AP] SlotData: win='{}' target={}",
-	      wc, sd.win_condition_value);
+	      "win_difficulty", (int)sd.win_difficulty);
 
 	/* item_id_to_name — APWorld sends this so we can resolve item IDs to names */
 	if (d.contains("item_id_to_name") && d["item_id_to_name"].is_object()) {
@@ -969,7 +985,7 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				{"password",      password},
 				{"uuid",          "openttd-archipelago-01"},
 				{"version",       {{"major",0},{"minor",6},{"build",0},{"class","Version"}}},
-				{"tags",          json::array({"DeathLink"})},
+				{"tags",          json::array({"DeathLink"})},  /* Always include DeathLink so AP server routes Bounce packets to us. C++ guards (death_link == true) control actual behaviour. */
 				{"items_handling", 7}
 			});
 			std::lock_guard<std::mutex> lg(outbound_mutex);
@@ -990,18 +1006,41 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				 * when the Python generator produces fewer missions than the
 				 * distribution formula would predict (e.g. due to max_attempts). */
 				location_ids.clear();
-				int64_t base = 6100000;
+
+				/* Fixed per-difficulty ID blocks — MUST match locations.py exactly.
+				 * Mission_Easy_001   = 6100000, Mission_Easy_002 = 6100001, ...
+				 * Mission_Medium_001 = 6102000, Mission_Hard_001 = 6104000, ...
+				 * Mission_Extreme_001= 6106000
+				 * Shop_Purchase_0001 = 6108000
+				 * Goal_Victory       = 6110000
+				 *
+				 * Using fixed blocks means IDs are stable regardless of how many
+				 * missions were generated — no more "everything shows as Easy" in
+				 * the AP console, and !hint works correctly for all difficulties. */
+				static const std::map<std::string, int64_t> kDifficultyBase = {
+					{"easy",    6'100'000},
+					{"medium",  6'102'000},
+					{"hard",    6'104'000},
+					{"extreme", 6'106'000},
+				};
+
+				/* Per-difficulty sequential counters */
+				std::map<std::string, int64_t> diff_counter;
+				for (auto &[d, base] : kDifficultyBase) diff_counter[d] = 0;
 
 				for (const auto &mission : sd.missions) {
-					location_ids[mission.location] = base++;
+					auto it = kDifficultyBase.find(mission.difficulty);
+					if (it == kDifficultyBase.end()) continue;
+					int64_t idx = diff_counter[mission.difficulty]++;
+					location_ids[mission.location] = it->second + idx;
 				}
 
 				/* Shop locations */
-				int shop_total = sd.shop_slots; /* shop_slots now stores direct item count */
+				int shop_total = sd.shop_slots;
 				for (int i = 1; i <= shop_total; i++) {
-					location_ids[fmt::format("Shop_Purchase_{:04d}", i)] = base++;
+					location_ids[fmt::format("Shop_Purchase_{:04d}", i)] = 6'108'000 + (i - 1);
 				}
-				location_ids["Goal_Victory"] = base;
+				location_ids["Goal_Victory"] = 6'110'000;
 
 				/* Build reverse map: ID → name */
 				location_id_to_name.clear();
@@ -1026,7 +1065,7 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			has_slot_data.store(true);
 			AP_OK(fmt::format("Slot data parsed: {} missions, start_year={}, vehicle='{}'",
 			      sd.mission_count, sd.start_year, sd.starting_vehicle));
-			AP_OK(fmt::format("Win condition: target={}", sd.win_condition_value));
+			AP_OK(fmt::format("Win difficulty={} cv={} pop={} veh={} cargo={} profit={} missions={}", (int)sd.win_difficulty, sd.win_target_company_value, sd.win_target_town_population, sd.win_target_vehicle_count, sd.win_target_cargo_delivered, sd.win_target_monthly_profit, sd.win_target_missions));
 
 			PushEvent({ InboundEvent::CONNECTED, {}, {}, {} });
 
@@ -1152,16 +1191,32 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			}
 			if (!text_out.empty()) PushEvent({ InboundEvent::PRINT, text_out, {}, {} });
 
-		} else if (cmd == "Bounce") {
-			/* Death Link uses Bounce packets with data.type == "DeathLink" */
-			if (msg.contains("data") && msg["data"].is_object()) {
-				std::string dtype = msg["data"].value("type", "");
-				if (dtype == "DeathLink") {
-					std::string source = msg["data"].value("source", "unknown");
-					/* Don't receive our own deaths back */
-					if (source != slot_name) {
-						PushEvent({ InboundEvent::DEATH_RECEIVED, source, {}, {} });
+		} else if (cmd == "Bounced") {
+			/* AP server echoes Bounce packets back as "Bounced" (with 'd') to all clients
+			 * that registered the matching tag in their Connect packet.
+			 *
+			 * Official AP protocol (CommonClient.py):
+			 *   Identify DeathLink via TOP-LEVEL tags array - NOT data["type"].
+			 *   Dedup via data["time"] matching last_death_link_time - NOT source name.
+			 *   Sender sets last_death_link_time = now before sending.
+			 *   Receiver sets last_death_link_time = max(data.time, last) after receiving.
+			 *   This prevents both self-echo AND double-trigger on reconnect. */
+			bool is_deathlink = false;
+			if (msg.contains("tags") && msg["tags"].is_array()) {
+				for (const auto &t : msg["tags"]) {
+					if (t.is_string() && t.get<std::string>() == "DeathLink") {
+						is_deathlink = true;
+						break;
 					}
+				}
+			}
+			if (is_deathlink && msg.contains("data") && msg["data"].is_object()) {
+				double death_time = msg["data"].value("time", 0.0);
+				/* Time-based dedup: if times match exactly, we sent this ourselves */
+				if (death_time != last_death_link_time) {
+					last_death_link_time = std::max(death_time, last_death_link_time);
+					std::string source = msg["data"].value("source", "unknown");
+					PushEvent({ InboundEvent::DEATH_RECEIVED, source, {}, {} });
 				}
 			}
 		}
@@ -1329,12 +1384,16 @@ void ArchipelagoClient::WorkerThread()
 	AP_OK("WS connection established.");
 #endif
 
-	/* Set recv timeout AFTER handshake — 30s so the loop can poll stop_requested */
+	/* Set recv timeout AFTER handshake.
+	 * 200 ms keeps the outbound-drain loop running frequently so that
+	 * death-link packets (and other urgent sends) are not delayed by a
+	 * blocking recv.  The original 30 s value caused death packets to sit
+	 * in the queue for up to 30 s before being flushed. */
 #ifdef _WIN32
-	DWORD timeout_ms = 30000;
+	DWORD timeout_ms = 200;
 	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout_ms, sizeof(timeout_ms));
 #else
-	struct timeval tv{30, 0};
+	struct timeval tv{0, 200000};
 	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 #endif
 

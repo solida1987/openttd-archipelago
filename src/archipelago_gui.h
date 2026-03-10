@@ -17,6 +17,7 @@ void ShowArchipelagoConnectWindow();
 void ShowArchipelagoStatusWindow();
 void ShowArchipelagoMissionsWindow();
 void ShowArchipelagoShopWindow();
+void ShowArchipelagoColbyWindow();
 void AP_ShowConsole(const std::string &msg);
 
 extern std::string _ap_last_host;
@@ -33,6 +34,8 @@ void AP_SaveConnectionConfig();
 void AP_LoadConnectionConfig();
 void AP_EnsureBasesets();
 bool              AP_IsConnected();
+bool              AP_IsColbyActive();
+ColbyStatus       AP_GetColbyStatus();
 
 /* World-start handshake — called from intro_gui.cpp ONLY.
  * StartNewGameWithoutGUI must never be called from inside a timer callback. */
@@ -41,6 +44,9 @@ void     AP_SendCheckByName(const std::string &location_name);
 void     AP_SendDeath(const std::string &cause);  ///< Send Death Link event (train/road crash)
 void     AP_NotifyShopPurchased();     ///< Call when player buys any shop item (triggers shop-purchase missions)
 int      AP_GetShopSlots();
+int      AP_GetTierCompleted(const std::string &difficulty);
+int      AP_GetTierThreshold(const std::string &difficulty);
+bool     AP_IsTierUnlocked(const std::string &difficulty);
 int      AP_GetShopRefreshDays();
 int      AP_GetShopPageOffset();   ///< Current page offset for shop slot rotation
 std::string AP_GetShopLocationLabel(const std::string &location_name);
@@ -51,6 +57,10 @@ void     AP_DeductShopPrice(const std::string &location_name);
 bool     AP_ShouldStartWorld();
 void     AP_ConsumeWorldStart();   /* applies settings, clears flag */
 uint32_t AP_GetWorldSeed();        /* seed to pass to StartNewGameWithoutGUI */
+void     AP_SetPendingLoadSave();  /* signal that user wants to load a save */
+bool     AP_ShouldShowLoadDialog(); /* consumed by intro_gui to open file picker */
+bool     AP_IsWaitingForStartChoice();
+void     AP_SetWaitingForStartChoice(bool v);
 
 #endif /* ARCHIPELAGO_GUI_H */
 

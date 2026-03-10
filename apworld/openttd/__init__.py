@@ -1,6 +1,6 @@
 """
-OpenTTD Archipelago World
-Version: 1.0.0
+OpenTTD Archipelago World (Experimental)
+Version: exp-1.0
 Supports: OpenTTD 15.2
 
 A full Archipelago integration for OpenTTD.
@@ -14,17 +14,18 @@ from BaseClasses import Region, Item, ItemClassification, Tutorial, MultiWorld
 from worlds.AutoWorld import World, WebWorld
 
 from .items import (
-    ITEM_TABLE, ALL_VEHICLES, TRAP_ITEMS, UTILITY_ITEMS,
+    ITEM_TABLE, ALL_VEHICLES, TRAP_ITEMS, UTILITY_ITEMS, SPEED_BOOST_ITEMS,
     ALL_TRAINS, ALL_WAGONS, ALL_ROAD_VEHICLES, ALL_AIRCRAFT, ALL_SHIPS,
     VANILLA_TRAINS, VANILLA_WAGONS, VANILLA_ROAD_VEHICLES,
     VANILLA_AIRCRAFT, VANILLA_SHIPS, IRON_HORSE_ENGINES,
     ARCTIC_TROPIC_ONLY_TRAINS, TEMPERATE_ONLY_TRAINS,
     NON_TEMPERATE_ROAD_VEHICLES, NON_ARCTIC_ROAD_VEHICLES, NON_TROPIC_ROAD_VEHICLES,
+    VANILLA_RAIL_ENGINES,
     OpenTTDItemData
 )
 from .locations import (
     get_location_table, DIFFICULTY_DISTRIBUTION,
-    MISSION_TEMPLATES, CARGO_TYPES, CARGO_BY_LANDSCAPE
+    MISSION_TEMPLATES, PREDEFINED_MISSION_POOLS, CARGO_TYPES, CARGO_BY_LANDSCAPE
 )
 from .options import OpenTTDOptions, OPTION_GROUPS
 from .rules import set_rules
@@ -83,7 +84,7 @@ class OpenTTDWeb(WebWorld):
 
 
 class OpenTTDItem(Item):
-    game = "OpenTTD"
+    game = "OpenTTD-Exp"
 
 
 class OpenTTDWorld(World):
@@ -92,7 +93,7 @@ class OpenTTDWorld(World):
     Build transport networks using trains, road vehicles, aircraft and ships.
     All vehicles are randomized — unlock them through Archipelago checks!
     """
-    game = "OpenTTD"
+    game = "OpenTTD-Exp"
     options_dataclass = OpenTTDOptions
     options: OpenTTDOptions
     web = OpenTTDWeb()
@@ -134,12 +135,16 @@ class OpenTTDWorld(World):
         is_toyland = (landscape == 3)
         ih_enabled = bool(self.options.enable_iron_horse.value) and not is_toyland
 
-        # Count available vehicles for this landscape (same logic as create_items)
+        # Count available vehicles for this landscape (same logic as create_items).
+        # When Iron Horse is enabled, vanilla normal-rail engines are replaced by
+        # IH engines in-game, so they are excluded from the pool to avoid giving
+        # the player useless locked items. Monorail and Maglev are unaffected.
         if is_toyland:
             eligible_count = len(ALL_VEHICLES)
         else:
             eligible_count = sum(1 for v in ALL_VEHICLES if v not in _TOYLAND_ONLY_VEHICLES)
         if ih_enabled:
+            eligible_count -= len(VANILLA_RAIL_ENGINES)  # IH replaces these
             eligible_count += len(IRON_HORSE_ENGINES)
 
         trap_count   = self.options.trap_count.value
@@ -168,17 +173,96 @@ class OpenTTDWorld(World):
         self._generate_missions()
 
     def _generate_missions(self) -> None:
-        """Generate random mission content for each mission location.
+        """Generate mission content by drawing from predefined pools.
 
-        Rules enforced:
-        1. No exact duplicate (type + amount) within a difficulty level.
-        2. For numeric missions of the same type: each successive amount must
-           be at least 5x the previous one.
-        3. "Buy a vehicle from the shop" appears at most once per difficulty.
-        4. Cargo types are filtered to only those that exist on the chosen landscape.
-        5. "Service X towns" amounts are capped to a realistic maximum based
-           on map size so the mission cannot be impossible to complete.
+        Each difficulty has a pre-written pool (PREDEFINED_MISSION_POOLS) of
+        100 missions with well-spaced amounts.  The generator shuffles the pool
+        and picks the first N entries, so:
+          - No two missions in the same session share the same type+amount.
+          - Amounts within the same type are always well-spaced (designed up-front).
+          - If more missions are requested than the pool contains, the pool is
+            reused from the beginning (shuffle-wrap), still guaranteeing no
+            back-to-back duplicates.
+          - {cargo} placeholders are filled with a climate-appropriate cargo at
+            runtime, so cargo missions still feel varied across sessions.
         """
+        rng = self.random
+        mission_count, _shop_item_count = self._compute_pool_size()
+        missions: List = []
+
+        # Climate-appropriate cargo list
+        landscape = self.options.landscape.value
+        cargo_list = CARGO_BY_LANDSCAPE.get(landscape, CARGO_TYPES)
+
+        # Estimate max serviceable towns from map dimensions.
+        bits_x = self.options.map_size_x.map_bits
+        bits_y = self.options.map_size_y.map_bits
+        max_towns = min(120, max(4, (1 << (bits_x + bits_y - 8)) * 10))
+
+        for difficulty, fraction in DIFFICULTY_DISTRIBUTION.items():
+            count = max(1, int(mission_count * fraction))
+            pool = list(PREDEFINED_MISSION_POOLS[difficulty])
+
+            # Shuffle once to randomise order — gives every session a different
+            # subset when count < len(pool), and a different sequence otherwise.
+            rng.shuffle(pool)
+
+            # If we need more missions than the pool holds, cycle through the
+            # shuffled pool repeatedly (avoiding direct re-use of the same
+            # adjacent entry by re-shuffling on each wrap).
+            while len(pool) < count:
+                extra = list(PREDEFINED_MISSION_POOLS[difficulty])
+                rng.shuffle(extra)
+                pool.extend(extra)
+
+            generated = []
+            cargo_assignments: Dict[str, str] = {}  # type_key -> last cargo used
+
+            for template, amount, unit, type_key in pool[:count]:
+                # Skip "Buy from shop" if we'd generate more than 1 per difficulty
+                if unit == "purchase" and any(m["unit"] == "purchase" for m in generated):
+                    continue
+
+                # Cap town-count missions to realistic map size
+                if unit == "towns" and amount > max_towns:
+                    amount = max(2, int(max_towns * 0.7))
+
+                # Fill {cargo} placeholder — rotate through available cargos so
+                # successive cargo missions use different cargo types where possible.
+                if "{cargo}" in template:
+                    # Pick a cargo different from the last one used for this type
+                    last = cargo_assignments.get(type_key, "")
+                    available = [c for c in cargo_list if c != last]
+                    if not available:
+                        available = cargo_list
+                    cargo = rng.choice(available)
+                    cargo_assignments[type_key] = cargo
+                    description = template.format(amount=f"{amount:,}", cargo=cargo)
+                else:
+                    cargo = ""
+                    description = template.format(amount=f"{amount:,}")
+
+                # Map type_key to C++ effective type for named-destination missions
+                effective_type = unit if unit in {
+                    "passengers_to_town", "mail_to_town",
+                    "cargo_to_industry", "cargo_from_industry",
+                } else type_key
+
+                generated.append({
+                    "location":    f"Mission_{difficulty.capitalize()}_{len(generated)+1:03d}",
+                    "difficulty":  difficulty,
+                    "description": description,
+                    "type":        effective_type,
+                    "amount":      amount,
+                    "cargo":       cargo,
+                    "unit":        unit,
+                })
+
+            missions.extend(generated)
+
+        self._generated_missions = missions
+
+
         rng = self.random
         mission_count, _shop_item_count = self._compute_pool_size()
         missions = []
@@ -187,8 +271,6 @@ class OpenTTDWorld(World):
         # Vehicle counts, town counts, station counts, months, etc. are NOT scaled
         # so missions stay logically completable regardless of difficulty setting.
         _DIFFICULTY_SCALES = {0: 0.25, 1: 0.5, 2: 1.0, 3: 2.0, 4: 4.0}
-        diff_scale = _DIFFICULTY_SCALES.get(self.options.mission_difficulty.value, 1.0)
-        _SCALE_UNITS = {"£", "£/month", "units", "passengers", "tons", "passengers_to_town", "mail_to_town", "cargo_to_industry", "cargo_from_industry"}
 
         # Climate-appropriate cargo list
         landscape = self.options.landscape.value
@@ -202,15 +284,12 @@ class OpenTTDWorld(World):
         max_towns = min(120, max(4, (1 << (bits_x + bits_y - 8)) * 10))
 
         # Minimum multiplier between two missions of the same type
-        MIN_SPACING_FACTOR = 5
-
         for difficulty, fraction in DIFFICULTY_DISTRIBUTION.items():
             count = max(1, int(mission_count * fraction))
             templates = MISSION_TEMPLATES[difficulty]
 
             # Track per-type: set of used amounts, and the current max amount
             used: Dict[str, set] = {}          # type_key -> set of amounts
-            type_max: Dict[str, int] = {}       # type_key -> highest amount used so far
             shop_used = False                   # cap "Buy a vehicle from the shop" at 1
 
             generated = []
@@ -221,22 +300,7 @@ class OpenTTDWorld(World):
                 attempts += 1
 
                 template_data = rng.choice(templates)
-                template, amt_min, amt_max, unit = template_data
-
-                # Extract a stable type key from the template text
-                # Normalize type key: strip amount placeholder, lowercase, replace £ with ascii
-                # so C++ type matching (which also normalizes) can find it reliably.
-                raw_key = template.split("{amount}")[0].strip().lower()
-                type_key = raw_key.replace("\u00a3", "").replace("\xc2\xa3", "").replace("£", "").strip().rstrip(",").rstrip()
-                # map "earn  total profit" -> "earn", "earn  in one month" -> "earn monthly" etc.
-                if type_key.startswith("earn") and "month" in template.lower():
-                    type_key = "earn monthly"
-                elif type_key.startswith("earn"):
-                    type_key = "earn"
-                elif type_key.startswith("maintain") and "75" in type_key:
-                    type_key = "maintain_75"
-                elif type_key.startswith("maintain") and "90" in type_key:
-                    type_key = "maintain_90"
+                template, amount, unit, type_key = template_data
 
                 # "Buy a vehicle from the shop" — only once per difficulty
                 if unit == "purchase":
@@ -245,25 +309,8 @@ class OpenTTDWorld(World):
                     shop_used = True
                     amount = 1
                 else:
-                    # Determine the minimum allowed amount for this slot
-                    # Apply difficulty scaling to monetary/cargo units only
-                    scaled_min = max(1, int(amt_min * diff_scale)) if unit in _SCALE_UNITS else amt_min
-                    scaled_max = max(scaled_min, int(amt_max * diff_scale)) if unit in _SCALE_UNITS else amt_max
-
-                    floor = scaled_min
-                    if type_key in type_max:
-                        floor = max(floor, type_max[type_key] * MIN_SPACING_FACTOR)
-
-                    # If the floor already exceeds the template max, skip this
-                    # template entirely for this difficulty (pool exhausted)
-                    if floor > scaled_max:
-                        continue
-
-                    amount = rng.randint(floor, scaled_max)
-                    amount = self._round_to_nice(amount)
-                    amount = max(floor, amount)  # rounding must not go below floor
-
-                    # Deduplicate: if this exact amount was already used, skip
+                    amount = int(amount)
+                    # Deduplicate: if this exact (type_key, amount) was already used, skip
                     if type_key in used and amount in used[type_key]:
                         continue
 
@@ -285,8 +332,6 @@ class OpenTTDWorld(World):
                 if type_key not in used:
                     used[type_key] = set()
                 used[type_key].add(amount)
-                if unit != "purchase":
-                    type_max[type_key] = max(type_max.get(type_key, 0), amount)
 
                 # For named-destination missions (town/industry), the unit IS the
                 # canonical type identifier that C++ uses for matching.
@@ -306,41 +351,32 @@ class OpenTTDWorld(World):
                     "unit":        unit,
                 })
 
-            # If spacing rules prevented reaching `count`, do a relaxed second pass
-            # with no minimum spacing (MIN_SPACING_FACTOR = 1) to fill the gap.
+            # If pool exhausted before reaching count, reshuffle and continue picking
+            # (predefined pool — just allow re-use with different amounts is N/A,
+            # so we simply wrap around the pool allowing duplicates as last resort)
             remaining = count - len(generated)
             if remaining > 0:
-                extra_attempts = remaining * 100
+                extra_attempts = remaining * 200
                 for _ in range(extra_attempts):
                     if len(generated) >= count:
                         break
                     template_data = rng.choice(templates)
-                    template, amt_min, amt_max, unit = template_data
+                    template, amount, unit, type_key = template_data
                     if unit == "purchase":
                         if shop_used:
                             continue
                         shop_used = True
                         amount = 1
                     else:
-                        scaled_min = max(1, int(amt_min * diff_scale)) if unit in _SCALE_UNITS else amt_min
-                        scaled_max = max(scaled_min, int(amt_max * diff_scale)) if unit in _SCALE_UNITS else amt_max
-                        amount = rng.randint(scaled_min, scaled_max)
-                        amount = self._round_to_nice(amount)
-                        amount = max(1, amount)
-                        if type_key in used and amount in used[type_key]:
-                            amount = max(1, amount + 1)
+                        amount = int(amount)
+                    if "towns" in unit and amount > max_towns:
+                        continue
                     cargo = rng.choice(cargo_list) if "{cargo}" in template else ""
                     description = (
                         template.format(amount=f"{amount:,}", cargo=cargo)
                         if cargo else
                         template.format(amount=f"{amount:,}")
                     )
-                    raw_key = template.split("{amount}")[0].strip().lower()
-                    type_key = raw_key.replace("\u00a3","").replace("\xc2\xa3","").replace("£","").strip().rstrip(",").rstrip()
-                    if type_key.startswith("earn") and "month" in template.lower():
-                        type_key = "earn monthly"
-                    elif type_key.startswith("earn"):
-                        type_key = "earn"
                     effective_type = unit if unit in {
                         "passengers_to_town", "mail_to_town",
                         "cargo_to_industry", "cargo_from_industry"
@@ -386,7 +422,7 @@ class OpenTTDWorld(World):
         from BaseClasses import Location as APLocation
 
         class OpenTTDLocation(APLocation):
-            game = "OpenTTD"
+            game = "OpenTTD-Exp"
             _hint_text_override: str = ""
 
             @property
@@ -434,6 +470,7 @@ class OpenTTDWorld(World):
                 location.hint_text = f"costs £{price:,}"
             elif loc_name in mission_hints:
                 location.hint_text = mission_hints[loc_name]
+
 
             region.locations.append(location)
 
@@ -555,6 +592,8 @@ class OpenTTDWorld(World):
         utility_pool: List[str] = []
         while len(utility_pool) < utility_target:
             batch = list(UTILITY_ITEMS)
+            # Add 20 Speed Boost items (each gives +10% FF speed, 100%→300%)
+            batch += SPEED_BOOST_ITEMS
             self.random.shuffle(batch)
             utility_pool.extend(batch)
         utility_pool = utility_pool[:utility_target]
@@ -587,13 +626,44 @@ class OpenTTDWorld(World):
         # Iron Horse vehicles don't exist on Toyland maps (no Toyland GRF
         # variants). If Iron Horse is enabled but landscape is Toyland,
         # the GRF is still loaded but no IH items enter the pool.
+        # When IH is active, vanilla normal-rail engines (steam/diesel/electric)
+        # are replaced in-game by IH engines, so they are removed from the pool.
+        # Monorail and Maglev are NOT replaced by IH and remain in the pool.
         ih_enabled = bool(self.options.enable_iron_horse.value) and not is_toyland
         self._slot_data["enable_iron_horse"] = 1 if ih_enabled else 0
         if ih_enabled:
+            eligible_vehicles = [v for v in eligible_vehicles if v not in VANILLA_RAIL_ENGINES]
             eligible_vehicles = eligible_vehicles + IRON_HORSE_ENGINES
-        # Starting vehicles are given as precollected items — they do NOT need
-        # to be removed from the randomised item pool.  Leaving them in means
-        # the player can unlock duplicates through missions/shop, which is fine.
+        # ── Wagon Pool Mode ──────────────────────────────────────────────
+        wagon_mode = self.options.wagon_pool_mode.value  # 0=all 1=none 2=start_with_one
+        if wagon_mode == 1:
+            # no_wagons: remove all wagons from eligible pool; they're freely available
+            eligible_vehicles = [v for v in eligible_vehicles if v not in ALL_WAGONS]
+        elif wagon_mode == 2:
+            # start_with_one: pick one wagon per climate group, precollect it,
+            # and remove ALL wagons from the random pool
+            if is_toyland:
+                wagon_candidates = [w for w in ALL_WAGONS
+                                    if w in ("Candyfloss Hopper","Cola Tanker","Toffee Hopper",
+                                             "Sugar Truck","Sweet Van","Bubble Van",
+                                             "Toy Van","Battery Truck","Fizzy Drink Truck",
+                                             "Plastic Truck")]
+            else:
+                wagon_candidates = [w for w in ALL_WAGONS if w not in (
+                    "Candyfloss Hopper","Cola Tanker","Toffee Hopper","Sugar Truck",
+                    "Sweet Van","Bubble Van","Toy Van","Battery Truck",
+                    "Fizzy Drink Truck","Plastic Truck")]
+            if wagon_candidates:
+                self.random.shuffle(wagon_candidates)
+                self.multiworld.push_precollected(self.create_item(wagon_candidates[0]))
+            eligible_vehicles = [v for v in eligible_vehicles if v not in ALL_WAGONS]
+        # wagon_mode == 0 (all_wagons): keep wagons in pool as-is (default)
+
+        # Starting vehicles are REMOVED from the random pool — the player already
+        # has them, so they must not appear as items to unlock again.
+        _sv_set = set(starting_vehicles)
+        eligible_vehicles = [v for v in eligible_vehicles if v not in _sv_set]
+
         self.random.shuffle(eligible_vehicles)
         vehicle_pool = eligible_vehicles[:vehicle_slots]
         # Store for fill_slot_data (needed to build locked_vehicles list)
@@ -626,6 +696,7 @@ class OpenTTDWorld(World):
             "Fuel Shortage": self.options.trap_fuel_shortage.value,
             "Bank Loan Forced": self.options.trap_bank_loan.value,
             "Industry Closure": self.options.trap_industry_closure.value,
+            "Vehicle License Revoke": self.options.trap_license_revoke.value,
         }
         return [name for name, enabled in trap_map.items() if enabled]
 
@@ -641,23 +712,69 @@ class OpenTTDWorld(World):
         self.multiworld.completion_condition[self.player] = lambda state: \
             state.has("Victory", self.player)
 
+
+    def pre_fill(self) -> None:
+        """Lock all trap and utility items into mission locations before AP's main fill.
+        This guarantees traps/utility never appear in shop slots."""
+        trap_utility_names = frozenset(TRAP_ITEMS) | frozenset(UTILITY_ITEMS) | {"Speed Boost"}
+
+        trap_utility_items = [item for item in self.multiworld.itempool
+                               if item.player == self.player
+                               and item.name in trap_utility_names]
+        for item in trap_utility_items:
+            self.multiworld.itempool.remove(item)
+
+        if not trap_utility_items:
+            return
+
+        # Collect all unfilled mission locations
+        mission_locs: list = []
+        for rname in ("mission_easy", "mission_medium", "mission_hard", "mission_extreme"):
+            region = self.multiworld.get_region(rname, self.player)
+            mission_locs.extend(loc for loc in region.locations if not loc.item)
+
+        self.multiworld.random.shuffle(mission_locs)
+        self.multiworld.random.shuffle(trap_utility_items)
+
+        # Directly lock items to mission locations — no access-rule checks needed
+        # (traps/utility are unconditionally receivable)
+        for item in trap_utility_items:
+            if mission_locs:
+                loc = mission_locs.pop()
+                loc.place_locked_item(item)
+            else:
+                # Safety fallback: more traps/utility than mission slots (shouldn't happen)
+                self.multiworld.itempool.append(item)
+
     def fill_slot_data(self) -> Dict[str, Any]:
         """Data sent to the game client via the bridge."""
-        win_cond = self.options.win_condition.value
-        win_values = {
-            0: self.options.win_condition_company_value.value,
-            1: self.options.win_condition_town_population.value,
-            2: self.options.win_condition_vehicle_count.value,
-            3: self.options.win_condition_cargo_delivered.value,
-            4: self.options.win_condition_monthly_profit.value,
+        # Win difficulty presets: (company_value, town_population, vehicle_count, cargo_tons, monthly_profit, missions)
+        WIN_PRESETS = {
+            0:  (500_000,       20_000,   5,    5_000,       5_000,       10),   # Casual
+            1:  (2_000_000,     50_000,   15,   30_000,      30_000,      20),   # Easy
+            2:  (8_000_000,     100_000,  30,   120_000,     100_000,     35),   # Normal
+            3:  (25_000_000,    180_000,  50,   400_000,     300_000,     50),   # Medium
+            4:  (60_000_000,    300_000,  80,   1_200_000,   800_000,     60),   # Hard
+            5:  (120_000_000,   450_000,  120,  4_000_000,   2_000_000,   65),   # Very Hard
+            6:  (300_000_000,   650_000,  180,  12_000_000,  5_000_000,   72),   # Extreme
+            7:  (600_000_000,   900_000,  280,  40_000_000,  10_000_000,  76),   # Insane
+            8:  (1_500_000_000, 1_500_000,400,  150_000_000, 25_000_000,  80),   # Nutcase
+            9:  (5_000_000_000, 3_000_000,500,  500_000_000, 50_000_000,  80),   # Madness
+            10: None,  # Custom — use sliders
         }
-        win_condition_names = {
-            0: "company_value",
-            1: "town_population",
-            2: "vehicle_count",
-            3: "cargo_delivered",
-            4: "monthly_profit",
-        }
+        diff = self.options.win_difficulty.value
+        if diff == 10:  # Custom
+            preset = (
+                self.options.win_custom_company_value.value,
+                self.options.win_custom_town_population.value,
+                self.options.win_custom_vehicle_count.value,
+                self.options.win_custom_cargo_delivered.value,
+                self.options.win_custom_monthly_profit.value,
+                self.options.win_custom_missions_completed.value,
+            )
+        else:
+            preset = WIN_PRESETS[diff]
+        (win_cv, win_pop, win_veh, win_cargo, win_profit, win_missions) = preset
 
         computed_mc, computed_shop = self._compute_pool_size()
 
@@ -676,8 +793,18 @@ class OpenTTDWorld(World):
             "shop_item_count": computed_shop,
             "shop_refresh_days": self.options.shop_refresh_days.value,
             "missions": self._generated_missions,
-            "win_condition": win_condition_names[win_cond],
-            "win_condition_value": win_values[win_cond],
+            "tier_unlock_requirements": {
+                "medium":  self.options.mission_tier_unlock_count.value,
+                "hard":    self.options.mission_tier_unlock_count.value,
+                "extreme": self.options.mission_tier_unlock_count.value,
+            },
+            "win_target_company_value":   win_cv,
+            "win_target_town_population": win_pop,
+            "win_target_vehicle_count":   win_veh,
+            "win_target_cargo_delivered": win_cargo,
+            "win_target_monthly_profit":  win_profit,
+            "win_target_missions":        win_missions,
+            "win_difficulty":             diff,
             "enable_traps": bool(self.options.enable_traps.value),
             "start_year": self.options.start_year.value,
             "world_seed": 0,
@@ -693,6 +820,9 @@ class OpenTTDWorld(World):
                 for loc in self._get_location_table()
                 if loc.startswith("Shop_Purchase_")
                 and self.multiworld.get_location(loc, self.player).item is not None
+                # Safety guard: traps and utility items must never show in shop
+                and self.multiworld.get_location(loc, self.player).item.name
+                    not in (frozenset(TRAP_ITEMS) | frozenset(UTILITY_ITEMS))
             },
             # ── Game settings: Accounting ──────────────────────────
             "infinite_money":             bool(self.options.infinite_money.value),
@@ -729,8 +859,19 @@ class OpenTTDWorld(World):
             "industry_density":           self.options.industry_density.value,
             "allow_town_roads":           bool(self.options.allow_town_roads.value),
             "road_side":                  self.options.road_side.value,
+            # ── Wagon pool mode ────────────────────────────────────
+            "wagon_pool_mode":            self.options.wagon_pool_mode.value,
             # ── DeathLink ──────────────────────────────────────────
             "death_link":                 bool(self.options.death_link.value),
+            # ── Colby Event ─────────────────────────────────────────
+            "colby_event":        bool(self.options.colby_event.value),
+            "colby_start_year":   self.options.start_year.value + 2,
+            "colby_town_seed":    (self.multiworld.seed ^ self.player) & 0xFFFFFFFF,
+            # Colby cargo: uses CT_GOODS internally so wagons can always be refitted.
+            # Players see "Colby's Packages" in mission text — never "goods".
+            # Toyland: Colby event is disabled entirely (uses sweets as fallback).
+            "colby_cargo":        {3: "sweets"}.get(
+                                      self.options.landscape.value, "goods"),
             # ── Difficulty / balance ───────────────────────────────
             "starting_cash_bonus":        self.options.starting_cash_bonus.value,
             "starting_vehicle_count":     self.options.starting_vehicle_count.value,

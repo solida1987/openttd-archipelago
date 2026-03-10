@@ -28,59 +28,98 @@ class StartingVehicleCount(Range):
     For a specific type, all vehicles come from that type."""
     display_name = "Starting Vehicle Count"
     range_start = 1
+    range_end   = 5
+    default     = 2
+
+
+class MissionTierUnlockCount(Range):
+    """How many missions of the previous tier must be completed before the next tier unlocks.
+    Example: setting 5 means you need 5 easy missions done before any medium missions are evaluated.
+    Set to 0 to disable tier gating entirely (all tiers always available)."""
+    display_name = "Mission Tier Unlock Count"
+    range_start = 0
     range_end   = 20
-    default     = 3
+    default     = 5
 
 
-class WinCondition(Choice):
-    """What you need to do to win."""
-    display_name = "Win Condition"
-    option_company_value   = 0
-    option_town_population = 1
-    option_vehicle_count   = 2
-    option_cargo_delivered = 3
-    option_monthly_profit  = 4
-    default = 0
+class WinDifficulty(Choice):
+    """Overall win difficulty. Sets ALL six victory targets at once.
+    You must meet EVERY target simultaneously to win.
+
+    Casual:    Very forgiving — great for first-time players or short sessions.
+    Easy:      A relaxed challenge. Takes a few hours of play.
+    Normal:    The balanced default experience. Moderate effort required.
+    Medium:    Noticeably harder. Requires solid network planning.
+    Hard:      Serious challenge. Efficient routes and smart vehicle use needed.
+    Very Hard: Expert level. Requires optimised play throughout.
+    Extreme:   Near-maximum challenge. Marginal error tolerance.
+    Insane:    Almost nothing forgiven. For veteran players only.
+    Nutcase:   Maximum standard difficulty. Near-impossible on default map size.
+    Madness:   Absurd targets. Only for challenge runs with custom settings.
+    Custom:    Use the sliders below to set your own targets."""
+    display_name = "Win Difficulty"
+    option_casual    = 0
+    option_easy      = 1
+    option_normal    = 2
+    option_medium    = 3
+    option_hard      = 4
+    option_very_hard = 5
+    option_extreme   = 6
+    option_insane    = 7
+    option_nutcase   = 8
+    option_madness   = 9
+    option_custom    = 10
+    default = 2  # normal
 
 
-class WinConditionCompanyValue(Range):
-    """Target company value in pounds (win condition: company value)."""
-    display_name = "Target Company Value (£)"
-    range_start = 1_000_000
+# Custom targets (only used when WinDifficulty == custom)
+
+class WinCustomCompanyValue(Range):
+    """[Custom only] Target company value in pounds."""
+    display_name = "Custom: Target Company Value (GBP)"
+    range_start = 100_000
     range_end   = 10_000_000_000
-    default     = 50_000_000
+    default     = 8_000_000
 
 
-class WinConditionTownPopulation(Range):
-    """Target total world population across all towns combined (win condition: town population)."""
-    display_name = "Target Town Population"
-    range_start = 10_000
-    range_end   = 500_000
-    default     = 50_000
+class WinCustomTownPopulation(Range):
+    """[Custom only] Target total world population across all towns."""
+    display_name = "Custom: Target Town Population"
+    range_start = 1_000
+    range_end   = 5_000_000
+    default     = 100_000
 
 
-class WinConditionVehicleCount(Range):
-    """Target number of vehicles running simultaneously (win condition: vehicle count)."""
-    display_name = "Target Vehicle Count"
-    range_start = 10
+class WinCustomVehicleCount(Range):
+    """[Custom only] Target number of active vehicles you own simultaneously."""
+    display_name = "Custom: Target Vehicle Count"
+    range_start = 1
     range_end   = 500
-    default     = 50
+    default     = 30
 
 
-class WinConditionCargoDelivered(Range):
-    """Total tons of cargo to deliver (win condition: cargo delivered)."""
-    display_name = "Target Cargo Delivered (tons)"
-    range_start = 100_000
+class WinCustomCargoDelivered(Range):
+    """[Custom only] Total cumulative tons of cargo to deliver this session."""
+    display_name = "Custom: Target Cargo Delivered (tons)"
+    range_start = 1_000
+    range_end   = 500_000_000
+    default     = 120_000
+
+
+class WinCustomMonthlyProfit(Range):
+    """[Custom only] Monthly net profit target in pounds."""
+    display_name = "Custom: Target Monthly Profit (GBP)"
+    range_start = 1_000
     range_end   = 100_000_000
-    default     = 1_000_000
+    default     = 100_000
 
 
-class WinConditionMonthlyProfit(Range):
-    """Monthly profit target in pounds (win condition: monthly profit)."""
-    display_name = "Target Monthly Profit (£)"
-    range_start = 100_000
-    range_end   = 100_000_000
-    default     = 1_000_000
+class WinCustomMissionsCompleted(Range):
+    """[Custom only] Number of AP missions (location checks) that must be completed."""
+    display_name = "Custom: Target Missions Completed"
+    range_start = 0
+    range_end   = 500
+    default     = 35
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -255,6 +294,40 @@ class TrapBankLoan(Toggle):
 class TrapIndustryClosure(Toggle):
     """Enable 'Industry Closure' trap — a serviced industry closes."""
     display_name = "Trap: Industry Closure"
+    default = 0
+
+
+class TrapLicenseRevoke(Toggle):
+    """Enable 'Vehicle License Revoke' trap — a random vehicle category (trains/road/aircraft/ships) \
+is suspended for 1–2 in-game years. All engines of that type are hidden until the ban expires."""
+    display_name = "Trap: Vehicle License Revoke"
+    default = 0
+
+
+
+
+class ColbyEvent(Toggle):
+    """Enable the Colby Event — a multi-step smuggling storyline.
+
+    A mysterious stranger named Colby asks you to deliver cargo to his
+    town over 5 steps. After the final delivery you must choose: arrest
+    him for £10M, or let him escape?
+
+    The cargo type is chosen automatically based on your landscape."""
+    display_name = "Colby Event"
+    default = 0
+
+class WagonPoolMode(Choice):
+    """Controls whether wagons appear as unlockable items in the item pool.
+
+    - **all_wagons** (default): All wagons are in the item pool and must be unlocked.
+    - **no_wagons**: Wagons are excluded from the pool — all wagons are immediately available.
+    - **start_with_one**: One random wagon per cargo group is pre-unlocked; rest are in the pool.
+    """
+    display_name = "Wagon Pool Mode"
+    option_all_wagons     = 0
+    option_no_wagons      = 1
+    option_start_with_one = 2
     default = 0
 
 
@@ -593,12 +666,13 @@ OPTION_GROUPS = [
         UtilityCount,
         StartingVehicleType,
         StartingVehicleCount,
-        WinCondition,
-        WinConditionCompanyValue,
-        WinConditionTownPopulation,
-        WinConditionVehicleCount,
-        WinConditionCargoDelivered,
-        WinConditionMonthlyProfit,
+        WinDifficulty,
+        WinCustomCompanyValue,
+        WinCustomTownPopulation,
+        WinCustomVehicleCount,
+        WinCustomCargoDelivered,
+        WinCustomMonthlyProfit,
+        WinCustomMissionsCompleted,
     ]),
     OptionGroup("Shop", [
         ShopRefreshDays,
@@ -685,12 +759,14 @@ class OpenTTDOptions(PerGameCommonOptions):
     # Randomizer
     starting_vehicle_type:           StartingVehicleType
     starting_vehicle_count:          StartingVehicleCount
-    win_condition:                   WinCondition
-    win_condition_company_value:     WinConditionCompanyValue
-    win_condition_town_population:   WinConditionTownPopulation
-    win_condition_vehicle_count:     WinConditionVehicleCount
-    win_condition_cargo_delivered:   WinConditionCargoDelivered
-    win_condition_monthly_profit:    WinConditionMonthlyProfit
+    mission_tier_unlock_count:        MissionTierUnlockCount
+    win_difficulty:                  WinDifficulty
+    win_custom_company_value:        WinCustomCompanyValue
+    win_custom_town_population:      WinCustomTownPopulation
+    win_custom_vehicle_count:        WinCustomVehicleCount
+    win_custom_cargo_delivered:      WinCustomCargoDelivered
+    win_custom_monthly_profit:       WinCustomMonthlyProfit
+    win_custom_missions_completed:   WinCustomMissionsCompleted
     # Shop
     trap_count:                      TrapCount
     utility_count:                   UtilityCount
@@ -709,6 +785,8 @@ class OpenTTDOptions(PerGameCommonOptions):
     trap_fuel_shortage:              TrapFuelShortage
     trap_bank_loan:                  TrapBankLoan
     trap_industry_closure:           TrapIndustryClosure
+    trap_license_revoke:             TrapLicenseRevoke
+    wagon_pool_mode:                 WagonPoolMode
     # World Generation
     start_year:                      StartYear
     map_size_x:                      MapSizeX
@@ -754,3 +832,4 @@ class OpenTTDOptions(PerGameCommonOptions):
     enable_iron_horse:               EnableIronHorse
     # Death Link
     death_link:                      OpenTTDDeathLink
+    colby_event:                     ColbyEvent

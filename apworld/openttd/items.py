@@ -2,7 +2,10 @@ from enum import IntEnum
 from typing import Dict, List, NamedTuple
 from BaseClasses import ItemClassification
 
-OPENTTD_BASE_ID = 6_100_000
+# Item IDs start at 6_200_000 — intentionally SEPARATE from location IDs (6_100_000+).
+# This prevents "Unknown item (ID:...)" in AP console hints when other games
+# have our items, because AP server's item_names dict keyed by game uses these IDs.
+OPENTTD_BASE_ID = 6_200_000
 
 
 class ItemType(IntEnum):
@@ -273,7 +276,11 @@ TRAP_ITEMS: List[str] = [
     "Fuel Shortage",
     "Bank Loan Forced",
     "Industry Closure",
+    "Vehicle License Revoke",
 ]
+
+# Speed Boost items — each unlocks +10% fast-forward speed (100% → 300% over 20 items)
+SPEED_BOOST_ITEMS: List[str] = ["Speed Boost"] * 20
 
 UTILITY_ITEMS: List[str] = [
     "Cash Injection £50,000",
@@ -488,6 +495,8 @@ def _build_item_table() -> Dict[str, OpenTTDItemData]:
         add(name, ItemClassification.trap, ItemType.TRAP, "trap")
     for name in UTILITY_ITEMS:
         add(name, ItemClassification.useful, ItemType.UTILITY, "utility")
+    # Speed Boost: only ONE entry needed — C++ accumulates each copy received
+    add("Speed Boost", ItemClassification.useful, ItemType.UTILITY, "speed_boost")
 
     # Iron Horse engines — registered here so create_item() works even when
     # the option is disabled. Items only enter the *pool* when enabled (see __init__.py).
@@ -508,6 +517,23 @@ ALL_VEHICLES: List[str] = (
 # Backwards compat aliases
 VANILLA_TRAINS = ALL_TRAINS
 VANILLA_WAGONS = ALL_WAGONS
+
+# Vanilla normal-rail engines (steam/diesel/electric loco).
+# These do NOT exist in-game when Iron Horse GRF is enabled,
+# because IH replaces them. Monorail and Maglev are unaffected.
+VANILLA_RAIL_ENGINES: frozenset = frozenset({
+    # Steam
+    "Wills 2-8-0 (Steam)", "Kirby Paul Tank (Steam)", "Ginzu 'A4' (Steam)",
+    "SH '8P' (Steam)", "Chaney 'Jubilee' (Steam)",
+    # Diesel
+    "MJS 250 (Diesel)", "Ploddyphut Diesel", "Powernaut Diesel",
+    "Turner Turbo (Diesel)", "MJS 1000 (Diesel)", "SH/Hendry '25' (Diesel)",
+    "Manley-Morel DMU (Diesel)", "'Dash' (Diesel)", "Kelling 3100 (Diesel)",
+    "SH '125' (Diesel)", "Floss '47' (Diesel)", "UU '37' (Diesel)",
+    "Centennial (Diesel)", "CS 2400 (Diesel)", "CS 4000 (Diesel)",
+    # Electric
+    "SH '30' (Electric)", "SH '40' (Electric)", "'AsiaStar' (Electric)",
+})
 VANILLA_ROAD_VEHICLES = ALL_ROAD_VEHICLES
 VANILLA_AIRCRAFT = ALL_AIRCRAFT
 VANILLA_SHIPS = ALL_SHIPS

@@ -8,6 +8,7 @@
 /** @file settingentry_gui.cpp Definitions of classes for handling display of individual configuration settings. */
 
 #include "stdafx.h"
+#include "archipelago.h"
 #include "company_base.h"
 #include "company_func.h"
 #include "settingentry_gui.h"
@@ -756,182 +757,196 @@ SettingsContainer &GetSettingsTree()
 			company->Add(new SettingEntry("vehicle.servint_aircraft"));
 		}
 
-		SettingsPage *accounting = main->Add(new SettingsPage(STR_CONFIG_SETTING_ACCOUNTING));
-		{
-			accounting->Add(new SettingEntry("difficulty.infinite_money"));
-			accounting->Add(new SettingEntry("economy.inflation"));
-			accounting->Add(new SettingEntry("difficulty.initial_interest"));
-			accounting->Add(new SettingEntry("difficulty.max_loan"));
-			accounting->Add(new SettingEntry("difficulty.subsidy_multiplier"));
-			accounting->Add(new SettingEntry("difficulty.subsidy_duration"));
-			accounting->Add(new SettingEntry("economy.feeder_payment_share"));
-			accounting->Add(new SettingEntry("economy.infrastructure_maintenance"));
-			accounting->Add(new SettingEntry("difficulty.vehicle_costs"));
-			accounting->Add(new SettingEntry("difficulty.construction_cost"));
-		}
-
-		SettingsPage *vehicles = main->Add(new SettingsPage(STR_CONFIG_SETTING_VEHICLES));
-		{
-			SettingsPage *physics = vehicles->Add(new SettingsPage(STR_CONFIG_SETTING_VEHICLES_PHYSICS));
+		if (!AP_IsActive()) {
+			SettingsPage *accounting = main->Add(new SettingsPage(STR_CONFIG_SETTING_ACCOUNTING));
 			{
-				physics->Add(new SettingEntry("vehicle.train_acceleration_model"));
-				physics->Add(new SettingEntry("vehicle.train_slope_steepness"));
-				physics->Add(new SettingEntry("vehicle.wagon_speed_limits"));
-				physics->Add(new SettingEntry("vehicle.freight_trains"));
-				physics->Add(new SettingEntry("vehicle.roadveh_acceleration_model"));
-				physics->Add(new SettingEntry("vehicle.roadveh_slope_steepness"));
-				physics->Add(new SettingEntry("vehicle.smoke_amount"));
-				physics->Add(new SettingEntry("vehicle.plane_speed"));
-			}
-
-			SettingsPage *routing = vehicles->Add(new SettingsPage(STR_CONFIG_SETTING_VEHICLES_ROUTING));
-			{
-				routing->Add(new SettingEntry("vehicle.road_side"));
-				routing->Add(new SettingEntry("difficulty.line_reverse_mode"));
-				routing->Add(new SettingEntry("pf.reverse_at_signals"));
-				routing->Add(new SettingEntry("pf.forbid_90_deg"));
-			}
-
-			SettingsPage *orders = vehicles->Add(new SettingsPage(STR_CONFIG_SETTING_VEHICLES_ORDERS));
-			{
-				orders->Add(new SettingEntry("gui.new_nonstop"));
-				orders->Add(new SettingEntry("gui.quick_goto"));
-				orders->Add(new SettingEntry("gui.stop_location"));
+				accounting->Add(new SettingEntry("difficulty.infinite_money"));
+				accounting->Add(new SettingEntry("economy.inflation"));
+				accounting->Add(new SettingEntry("difficulty.initial_interest"));
+				accounting->Add(new SettingEntry("difficulty.max_loan"));
+				accounting->Add(new SettingEntry("difficulty.subsidy_multiplier"));
+				accounting->Add(new SettingEntry("difficulty.subsidy_duration"));
+				accounting->Add(new SettingEntry("economy.feeder_payment_share"));
+				accounting->Add(new SettingEntry("economy.infrastructure_maintenance"));
+				accounting->Add(new SettingEntry("difficulty.vehicle_costs"));
+				accounting->Add(new SettingEntry("difficulty.construction_cost"));
 			}
 		}
 
-		SettingsPage *limitations = main->Add(new SettingsPage(STR_CONFIG_SETTING_LIMITATIONS));
-		{
-			limitations->Add(new SettingEntry("construction.command_pause_level"));
-			limitations->Add(new SettingEntry("construction.autoslope"));
-			limitations->Add(new SettingEntry("construction.extra_dynamite"));
-			limitations->Add(new SettingEntry("construction.map_height_limit"));
-			limitations->Add(new SettingEntry("construction.max_bridge_length"));
-			limitations->Add(new SettingEntry("construction.max_bridge_height"));
-			limitations->Add(new SettingEntry("construction.max_tunnel_length"));
-			limitations->Add(new SettingEntry("station.never_expire_airports"));
-			limitations->Add(new SettingEntry("vehicle.never_expire_vehicles"));
-			limitations->Add(new SettingEntry("vehicle.max_trains"));
-			limitations->Add(new SettingEntry("vehicle.max_roadveh"));
-			limitations->Add(new SettingEntry("vehicle.max_aircraft"));
-			limitations->Add(new SettingEntry("vehicle.max_ships"));
-			limitations->Add(new SettingEntry("vehicle.max_train_length"));
-			limitations->Add(new SettingEntry("station.station_spread"));
-			limitations->Add(new SettingEntry("station.distant_join_stations"));
-			limitations->Add(new SettingEntry("station.modified_catchment"));
-			limitations->Add(new SettingEntry("construction.road_stop_on_town_road"));
-			limitations->Add(new SettingEntry("construction.road_stop_on_competitor_road"));
-			limitations->Add(new SettingEntry("construction.crossing_with_competitor"));
-			limitations->Add(new SettingEntry("vehicle.disable_elrails"));
-			limitations->Add(new SettingEntry("order.station_length_loading_penalty"));
-		}
-
-		SettingsPage *disasters = main->Add(new SettingsPage(STR_CONFIG_SETTING_ACCIDENTS));
-		{
-			disasters->Add(new SettingEntry("difficulty.disasters"));
-			disasters->Add(new SettingEntry("difficulty.economy"));
-			disasters->Add(new SettingEntry("vehicle.plane_crashes"));
-			disasters->Add(new SettingEntry("difficulty.vehicle_breakdowns"));
-			disasters->Add(new SettingEntry("order.no_servicing_if_no_breakdowns"));
-			disasters->Add(new SettingEntry("order.serviceathelipad"));
-		}
-
-		SettingsPage *genworld = main->Add(new SettingsPage(STR_CONFIG_SETTING_GENWORLD));
-		{
-			genworld->Add(new SettingEntry("game_creation.landscape"));
-			genworld->Add(new SettingEntry("game_creation.land_generator"));
-			genworld->Add(new SettingEntry("difficulty.terrain_type"));
-			genworld->Add(new SettingEntry("game_creation.tgen_smoothness"));
-			genworld->Add(new SettingEntry("game_creation.variety"));
-			genworld->Add(new SettingEntry("game_creation.snow_coverage"));
-			genworld->Add(new SettingEntry("game_creation.snow_line_height"));
-			genworld->Add(new SettingEntry("game_creation.desert_coverage"));
-			genworld->Add(new SettingEntry("game_creation.amount_of_rivers"));
-		}
-
-		SettingsPage *environment = main->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT));
-		{
-			SettingsPage *time = environment->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT_TIME));
+		if (!AP_IsActive()) {
+			SettingsPage *vehicles = main->Add(new SettingsPage(STR_CONFIG_SETTING_VEHICLES));
 			{
-				time->Add(new SettingEntry("economy.timekeeping_units"));
-				time->Add(new SettingEntry("economy.minutes_per_calendar_year"));
-				time->Add(new SettingEntry("game_creation.ending_year"));
-				time->Add(new SettingEntry("gui.pause_on_newgame"));
-				/* Archipelago: fast_forward_speed_limit is hardcoded to 2500% and hidden from settings */
-			}
+				SettingsPage *physics = vehicles->Add(new SettingsPage(STR_CONFIG_SETTING_VEHICLES_PHYSICS));
+				{
+					physics->Add(new SettingEntry("vehicle.train_acceleration_model"));
+					physics->Add(new SettingEntry("vehicle.train_slope_steepness"));
+					physics->Add(new SettingEntry("vehicle.wagon_speed_limits"));
+					physics->Add(new SettingEntry("vehicle.freight_trains"));
+					physics->Add(new SettingEntry("vehicle.roadveh_acceleration_model"));
+					physics->Add(new SettingEntry("vehicle.roadveh_slope_steepness"));
+					physics->Add(new SettingEntry("vehicle.smoke_amount"));
+					physics->Add(new SettingEntry("vehicle.plane_speed"));
+				}
 
-			SettingsPage *authorities = environment->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT_AUTHORITIES));
-			{
-				authorities->Add(new SettingEntry("difficulty.town_council_tolerance"));
-				authorities->Add(new SettingEntry("economy.bribe"));
-				authorities->Add(new SettingEntry("economy.exclusive_rights"));
-				authorities->Add(new SettingEntry("economy.fund_roads"));
-				authorities->Add(new SettingEntry("economy.fund_buildings"));
-				authorities->Add(new SettingEntry("economy.station_noise_level"));
-			}
+				SettingsPage *routing = vehicles->Add(new SettingsPage(STR_CONFIG_SETTING_VEHICLES_ROUTING));
+				{
+					routing->Add(new SettingEntry("vehicle.road_side"));
+					routing->Add(new SettingEntry("difficulty.line_reverse_mode"));
+					routing->Add(new SettingEntry("pf.reverse_at_signals"));
+					routing->Add(new SettingEntry("pf.forbid_90_deg"));
+				}
 
-			SettingsPage *towns = environment->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT_TOWNS));
-			{
-				towns->Add(new SettingEntry("economy.town_cargo_scale"));
-				towns->Add(new SettingEntry("economy.town_growth_rate"));
-				towns->Add(new SettingEntry("economy.allow_town_roads"));
-				towns->Add(new SettingEntry("economy.allow_town_level_crossings"));
-				towns->Add(new SettingEntry("economy.found_town"));
-				towns->Add(new SettingEntry("economy.place_houses"));
-				towns->Add(new SettingEntry("economy.town_layout"));
-				towns->Add(new SettingEntry("economy.larger_towns"));
-				towns->Add(new SettingEntry("economy.initial_city_size"));
-				towns->Add(new SettingEntry("economy.town_cargogen_mode"));
-			}
-
-			SettingsPage *industries = environment->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT_INDUSTRIES));
-			{
-				industries->Add(new SettingEntry("economy.industry_cargo_scale"));
-				industries->Add(new SettingEntry("difficulty.industry_density"));
-				industries->Add(new SettingEntry("construction.raw_industry_construction"));
-				industries->Add(new SettingEntry("construction.industry_platform"));
-				industries->Add(new SettingEntry("economy.multiple_industry_per_town"));
-				industries->Add(new SettingEntry("game_creation.oil_refinery_limit"));
-				industries->Add(new SettingEntry("economy.type"));
-				industries->Add(new SettingEntry("station.serve_neutral_industries"));
-			}
-
-			SettingsPage *cdist = environment->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT_CARGODIST));
-			{
-				cdist->Add(new SettingEntry("linkgraph.recalc_time"));
-				cdist->Add(new SettingEntry("linkgraph.recalc_interval"));
-				cdist->Add(new SettingEntry("linkgraph.distribution_pax"));
-				cdist->Add(new SettingEntry("linkgraph.distribution_mail"));
-				cdist->Add(new SettingEntry("linkgraph.distribution_armoured"));
-				cdist->Add(new SettingEntry("linkgraph.distribution_default"));
-				cdist->Add(new SettingEntry("linkgraph.accuracy"));
-				cdist->Add(new SettingEntry("linkgraph.demand_distance"));
-				cdist->Add(new SettingEntry("linkgraph.demand_size"));
-				cdist->Add(new SettingEntry("linkgraph.short_path_saturation"));
-			}
-
-			SettingsPage *trees = environment->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT_TREES));
-			{
-				trees->Add(new SettingEntry("game_creation.tree_placer"));
-				trees->Add(new SettingEntry("construction.extra_tree_placement"));
+				SettingsPage *orders = vehicles->Add(new SettingsPage(STR_CONFIG_SETTING_VEHICLES_ORDERS));
+				{
+					orders->Add(new SettingEntry("gui.new_nonstop"));
+					orders->Add(new SettingEntry("gui.quick_goto"));
+					orders->Add(new SettingEntry("gui.stop_location"));
+				}
 			}
 		}
 
-		SettingsPage *ai = main->Add(new SettingsPage(STR_CONFIG_SETTING_AI));
-		{
-			SettingsPage *npc = ai->Add(new SettingsPage(STR_CONFIG_SETTING_AI_NPC));
+		if (!AP_IsActive()) {
+			SettingsPage *limitations = main->Add(new SettingsPage(STR_CONFIG_SETTING_LIMITATIONS));
 			{
-				npc->Add(new SettingEntry("script.script_max_opcode_till_suspend"));
-				npc->Add(new SettingEntry("script.script_max_memory_megabytes"));
-				npc->Add(new SettingEntry("difficulty.competitor_speed"));
-				npc->Add(new SettingEntry("ai.ai_in_multiplayer"));
-				npc->Add(new SettingEntry("ai.ai_disable_veh_train"));
-				npc->Add(new SettingEntry("ai.ai_disable_veh_roadveh"));
-				npc->Add(new SettingEntry("ai.ai_disable_veh_aircraft"));
-				npc->Add(new SettingEntry("ai.ai_disable_veh_ship"));
+				limitations->Add(new SettingEntry("construction.command_pause_level"));
+				limitations->Add(new SettingEntry("construction.autoslope"));
+				limitations->Add(new SettingEntry("construction.extra_dynamite"));
+				limitations->Add(new SettingEntry("construction.map_height_limit"));
+				limitations->Add(new SettingEntry("construction.max_bridge_length"));
+				limitations->Add(new SettingEntry("construction.max_bridge_height"));
+				limitations->Add(new SettingEntry("construction.max_tunnel_length"));
+				limitations->Add(new SettingEntry("station.never_expire_airports"));
+				limitations->Add(new SettingEntry("vehicle.never_expire_vehicles"));
+				limitations->Add(new SettingEntry("vehicle.max_trains"));
+				limitations->Add(new SettingEntry("vehicle.max_roadveh"));
+				limitations->Add(new SettingEntry("vehicle.max_aircraft"));
+				limitations->Add(new SettingEntry("vehicle.max_ships"));
+				limitations->Add(new SettingEntry("vehicle.max_train_length"));
+				limitations->Add(new SettingEntry("station.station_spread"));
+				limitations->Add(new SettingEntry("station.distant_join_stations"));
+				limitations->Add(new SettingEntry("station.modified_catchment"));
+				limitations->Add(new SettingEntry("construction.road_stop_on_town_road"));
+				limitations->Add(new SettingEntry("construction.road_stop_on_competitor_road"));
+				limitations->Add(new SettingEntry("construction.crossing_with_competitor"));
+				limitations->Add(new SettingEntry("vehicle.disable_elrails"));
+				limitations->Add(new SettingEntry("order.station_length_loading_penalty"));
 			}
+		}
 
-			ai->Add(new SettingEntry("economy.give_money"));
+		if (!AP_IsActive()) {
+			SettingsPage *disasters = main->Add(new SettingsPage(STR_CONFIG_SETTING_ACCIDENTS));
+			{
+				disasters->Add(new SettingEntry("difficulty.disasters"));
+				disasters->Add(new SettingEntry("difficulty.economy"));
+				disasters->Add(new SettingEntry("vehicle.plane_crashes"));
+				disasters->Add(new SettingEntry("difficulty.vehicle_breakdowns"));
+				disasters->Add(new SettingEntry("order.no_servicing_if_no_breakdowns"));
+				disasters->Add(new SettingEntry("order.serviceathelipad"));
+			}
+		}
+
+		if (!AP_IsActive()) {
+			SettingsPage *genworld = main->Add(new SettingsPage(STR_CONFIG_SETTING_GENWORLD));
+			{
+				genworld->Add(new SettingEntry("game_creation.landscape"));
+				genworld->Add(new SettingEntry("game_creation.land_generator"));
+				genworld->Add(new SettingEntry("difficulty.terrain_type"));
+				genworld->Add(new SettingEntry("game_creation.tgen_smoothness"));
+				genworld->Add(new SettingEntry("game_creation.variety"));
+				genworld->Add(new SettingEntry("game_creation.snow_coverage"));
+				genworld->Add(new SettingEntry("game_creation.snow_line_height"));
+				genworld->Add(new SettingEntry("game_creation.desert_coverage"));
+				genworld->Add(new SettingEntry("game_creation.amount_of_rivers"));
+			}
+		}
+
+		if (!AP_IsActive()) {
+			SettingsPage *environment = main->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT));
+			{
+				SettingsPage *time = environment->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT_TIME));
+				{
+					time->Add(new SettingEntry("economy.timekeeping_units"));
+					time->Add(new SettingEntry("economy.minutes_per_calendar_year"));
+					time->Add(new SettingEntry("game_creation.ending_year"));
+					time->Add(new SettingEntry("gui.pause_on_newgame"));
+					/* Archipelago: fast_forward_speed_limit is hardcoded to 2500% and hidden from settings */
+				}
+
+				SettingsPage *authorities = environment->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT_AUTHORITIES));
+				{
+					authorities->Add(new SettingEntry("difficulty.town_council_tolerance"));
+					authorities->Add(new SettingEntry("economy.bribe"));
+					authorities->Add(new SettingEntry("economy.exclusive_rights"));
+					authorities->Add(new SettingEntry("economy.fund_roads"));
+					authorities->Add(new SettingEntry("economy.fund_buildings"));
+					authorities->Add(new SettingEntry("economy.station_noise_level"));
+				}
+
+				SettingsPage *towns = environment->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT_TOWNS));
+				{
+					towns->Add(new SettingEntry("economy.town_cargo_scale"));
+					towns->Add(new SettingEntry("economy.town_growth_rate"));
+					towns->Add(new SettingEntry("economy.allow_town_roads"));
+					towns->Add(new SettingEntry("economy.allow_town_level_crossings"));
+					towns->Add(new SettingEntry("economy.found_town"));
+					towns->Add(new SettingEntry("economy.place_houses"));
+					towns->Add(new SettingEntry("economy.town_layout"));
+					towns->Add(new SettingEntry("economy.larger_towns"));
+					towns->Add(new SettingEntry("economy.initial_city_size"));
+					towns->Add(new SettingEntry("economy.town_cargogen_mode"));
+				}
+
+				SettingsPage *industries = environment->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT_INDUSTRIES));
+				{
+					industries->Add(new SettingEntry("economy.industry_cargo_scale"));
+					industries->Add(new SettingEntry("difficulty.industry_density"));
+					industries->Add(new SettingEntry("construction.raw_industry_construction"));
+					industries->Add(new SettingEntry("construction.industry_platform"));
+					industries->Add(new SettingEntry("economy.multiple_industry_per_town"));
+					industries->Add(new SettingEntry("game_creation.oil_refinery_limit"));
+					industries->Add(new SettingEntry("economy.type"));
+					industries->Add(new SettingEntry("station.serve_neutral_industries"));
+				}
+
+				SettingsPage *cdist = environment->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT_CARGODIST));
+				{
+					cdist->Add(new SettingEntry("linkgraph.recalc_time"));
+					cdist->Add(new SettingEntry("linkgraph.recalc_interval"));
+					cdist->Add(new SettingEntry("linkgraph.distribution_pax"));
+					cdist->Add(new SettingEntry("linkgraph.distribution_mail"));
+					cdist->Add(new SettingEntry("linkgraph.distribution_armoured"));
+					cdist->Add(new SettingEntry("linkgraph.distribution_default"));
+					cdist->Add(new SettingEntry("linkgraph.accuracy"));
+					cdist->Add(new SettingEntry("linkgraph.demand_distance"));
+					cdist->Add(new SettingEntry("linkgraph.demand_size"));
+					cdist->Add(new SettingEntry("linkgraph.short_path_saturation"));
+				}
+
+				SettingsPage *trees = environment->Add(new SettingsPage(STR_CONFIG_SETTING_ENVIRONMENT_TREES));
+				{
+					trees->Add(new SettingEntry("game_creation.tree_placer"));
+					trees->Add(new SettingEntry("construction.extra_tree_placement"));
+				}
+			}
+		}
+
+		if (!AP_IsActive()) {
+			SettingsPage *ai = main->Add(new SettingsPage(STR_CONFIG_SETTING_AI));
+			{
+				SettingsPage *npc = ai->Add(new SettingsPage(STR_CONFIG_SETTING_AI_NPC));
+				{
+					npc->Add(new SettingEntry("script.script_max_opcode_till_suspend"));
+					npc->Add(new SettingEntry("script.script_max_memory_megabytes"));
+					npc->Add(new SettingEntry("difficulty.competitor_speed"));
+					npc->Add(new SettingEntry("ai.ai_in_multiplayer"));
+					npc->Add(new SettingEntry("ai.ai_disable_veh_train"));
+					npc->Add(new SettingEntry("ai.ai_disable_veh_roadveh"));
+					npc->Add(new SettingEntry("ai.ai_disable_veh_aircraft"));
+					npc->Add(new SettingEntry("ai.ai_disable_veh_ship"));
+				}
+
+				ai->Add(new SettingEntry("economy.give_money"));
+			}
 		}
 
 		SettingsPage *network = main->Add(new SettingsPage(STR_CONFIG_SETTING_NETWORK));
