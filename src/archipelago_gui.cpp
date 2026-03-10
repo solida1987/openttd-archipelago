@@ -86,14 +86,20 @@ struct ArchipelagoConnectWindow : public Window {
 	APState  last_state  = APState::DISCONNECTED;
 	bool     last_has_sd = false;
 
-	static std::string WinCondName(APWinCondition wc) {
-		switch (wc) {
-			case APWinCondition::COMPANY_VALUE:   return "Company Value";
-			case APWinCondition::TOWN_POPULATION: return "Town Population";
-			case APWinCondition::VEHICLE_COUNT:   return "Vehicle Count";
-			case APWinCondition::CARGO_DELIVERED: return "Cargo Delivered";
-			case APWinCondition::MONTHLY_PROFIT:  return "Monthly Profit";
-			default:                              return "Unknown";
+	static std::string WinDiffName(APWinDifficulty d) {
+		switch (d) {
+			case APWinDifficulty::CASUAL:    return "Casual";
+			case APWinDifficulty::EASY:      return "Easy";
+			case APWinDifficulty::NORMAL:    return "Normal";
+			case APWinDifficulty::MEDIUM:    return "Medium";
+			case APWinDifficulty::HARD:      return "Hard";
+			case APWinDifficulty::VERY_HARD: return "Very Hard";
+			case APWinDifficulty::EXTREME:   return "Extreme";
+			case APWinDifficulty::INSANE:    return "Insane";
+			case APWinDifficulty::NUTCASE:   return "Nutcase";
+			case APWinDifficulty::MADNESS:   return "Madness";
+			case APWinDifficulty::CUSTOM:    return "Custom";
+			default:                         return "?";
 		}
 	}
 
@@ -112,7 +118,7 @@ struct ArchipelagoConnectWindow : public Window {
 	static std::string SlotInfoStr(bool has_sd) {
 		if (!has_sd || _ap_client == nullptr) return "";
 		APSlotData sd = _ap_client->GetSlotData();
-		return "Win: " + WinCondName(sd.win_condition) +
+		return "Difficulty: " + WinDiffName(sd.win_difficulty) +
 		       "  Missions: " + fmt::format("{}", sd.missions.size()) +
 		       "  Start: " + sd.starting_vehicle;
 	}
@@ -227,6 +233,12 @@ void ShowArchipelagoConnectWindow()
 enum APStatusWidgets : WidgetID {
 	WAPST_STATUS_LINE,
 	WAPST_GOAL_LINE,
+	WAPST_WIN_CV,    ///< Company Value progress line
+	WAPST_WIN_POP,   ///< Town Population progress line
+	WAPST_WIN_VEH,   ///< Vehicle Count progress line
+	WAPST_WIN_CARGO, ///< Cargo Delivered progress line
+	WAPST_WIN_PROF,  ///< Monthly Profit progress line
+	WAPST_WIN_MISS,  ///< Missions Completed progress line
 	WAPST_BTN_RECONNECT,
 	WAPST_BTN_MISSIONS,
 	WAPST_BTN_SETTINGS,
@@ -242,19 +254,26 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = 
 	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_DARK_GREEN),
 		NWidget(NWID_VERTICAL), SetPIP(2, 2, 2), SetPadding(4),
-			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_STATUS_LINE), SetMinimalSize(220, 12), SetFill(1, 0), SetStringTip(STR_EMPTY),
-			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_GOAL_LINE),   SetMinimalSize(220, 12), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_STATUS_LINE), SetMinimalSize(340, 12), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_GOAL_LINE),   SetMinimalSize(340, 12), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			/* 6 win condition progress lines */
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_WIN_CV),    SetMinimalSize(240, 11), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_WIN_POP),   SetMinimalSize(340, 11), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_WIN_VEH),   SetMinimalSize(340, 11), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_WIN_CARGO), SetMinimalSize(340, 11), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_WIN_PROF),  SetMinimalSize(340, 11), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_WIN_MISS),  SetMinimalSize(340, 11), SetFill(1, 0), SetStringTip(STR_EMPTY),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPST_BTN_RECONNECT), SetStringTip(STR_ARCHIPELAGO_BTN_RECONNECT), SetMinimalSize(70, 14),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPST_BTN_MISSIONS),  SetStringTip(STR_ARCHIPELAGO_BTN_MISSIONS),  SetMinimalSize(70, 14),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPST_BTN_SETTINGS),  SetStringTip(STR_ARCHIPELAGO_BTN_SETTINGS),  SetMinimalSize(70, 14),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPST_BTN_RECONNECT), SetStringTip(STR_ARCHIPELAGO_BTN_RECONNECT), SetMinimalSize(80, 14),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPST_BTN_MISSIONS),  SetStringTip(STR_ARCHIPELAGO_BTN_MISSIONS),  SetMinimalSize(80, 14),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPST_BTN_SETTINGS),  SetStringTip(STR_ARCHIPELAGO_BTN_SETTINGS),  SetMinimalSize(80, 14),
 			EndContainer(),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPST_BTN_SHOP),      SetStringTip(STR_ARCHIPELAGO_BTN_SHOP),      SetMinimalSize(150, 14), SetFill(1, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WAPST_BTN_GUIDE),     SetStringTip(STR_ARCHIPELAGO_BTN_GUIDE),     SetMinimalSize(70, 14),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPST_BTN_SHOP),      SetStringTip(STR_ARCHIPELAGO_BTN_SHOP),      SetMinimalSize(170, 14), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WAPST_BTN_GUIDE),     SetStringTip(STR_ARCHIPELAGO_BTN_GUIDE),     SetMinimalSize(80, 14),
 			EndContainer(),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPST_BTN_COLBY),     SetStringTip(STR_ARCHIPELAGO_BTN_COLBY),     SetMinimalSize(220, 14), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPST_BTN_COLBY),     SetStringTip(STR_ARCHIPELAGO_BTN_COLBY),     SetMinimalSize(280, 14), SetFill(1, 0),
 			EndContainer(),
 		EndContainer(),
 	EndContainer(),
@@ -284,15 +303,12 @@ struct ArchipelagoStatusWindow : public Window {
 	static std::string GoalLine() {
 		if (_ap_client == nullptr || !_ap_client->HasSlotData()) return "No slot data";
 		const APSlotData &sd = AP_GetSlotData();
-		const char *wc = "?";
-		switch (sd.win_condition) {
-			case APWinCondition::COMPANY_VALUE:   wc = "Company Value"; break;
-			case APWinCondition::TOWN_POPULATION: wc = "Population";    break;
-			case APWinCondition::VEHICLE_COUNT:   wc = "Vehicles";      break;
-			case APWinCondition::CARGO_DELIVERED: wc = "Cargo";         break;
-			case APWinCondition::MONTHLY_PROFIT:  wc = "Profit";        break;
-		}
-		return fmt::format("Goal: {} >= {}", wc, sd.win_condition_value);
+		// brief one-liner: difficulty name
+		std::string diff_names[] = {"Casual","Easy","Normal","Medium","Hard",
+		    "Very Hard","Extreme","Insane","Nutcase","Madness","Custom"};
+		int di = (int)sd.win_difficulty;
+		std::string dn = (di >= 0 && di <= 10) ? diff_names[di] : "?";
+		return "Goal: " + dn + "  (click Guide for details)";
 	}
 
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override {
@@ -316,7 +332,87 @@ struct ArchipelagoStatusWindow : public Window {
 			case WAPST_GOAL_LINE:
 				DrawString(r.left, r.right, r.top, GoalLine(), TC_GOLD);
 				break;
+
+			case WAPST_WIN_CV:
+			case WAPST_WIN_POP:
+			case WAPST_WIN_VEH:
+			case WAPST_WIN_CARGO:
+			case WAPST_WIN_PROF:
+			case WAPST_WIN_MISS:
+				if (_ap_client != nullptr && _ap_client->HasSlotData()) {
+					DrawWinLine(r, widget);
+				}
+				break;
 		}
+	}
+
+	/** Format a number with dot separators: 1234567 -> "1.234.567" */
+	static std::string FmtNum(int64_t v) {
+		if (v < 0) return "-" + FmtNum(-v);
+		std::string s = fmt::format("{}", v);
+		int ins = (int)s.size() - 3;
+		while (ins > 0) { s.insert(ins, "."); ins -= 3; }
+		return s;
+	}
+
+	/** Abbreviate large numbers: 1234567 -> "1.23M", 50000000000 -> "50B" */
+	static std::string FmtShort(int64_t v) {
+		if (v < 0) return "-" + FmtShort(-v);
+		if (v >= 1'000'000'000LL) {
+			double d = v / 1'000'000'000.0;
+			if (d >= 100.0) return fmt::format("{:.0f}B", d);
+			if (d >= 10.0)  return fmt::format("{:.1f}B", d);
+			return fmt::format("{:.2f}B", d);
+		}
+		if (v >= 1'000'000LL) {
+			double d = v / 1'000'000.0;
+			if (d >= 100.0) return fmt::format("{:.0f}M", d);
+			if (d >= 10.0)  return fmt::format("{:.1f}M", d);
+			return fmt::format("{:.2f}M", d);
+		}
+		if (v >= 1'000LL) {
+			double d = v / 1'000.0;
+			if (d >= 100.0) return fmt::format("{:.0f}k", d);
+			if (d >= 10.0)  return fmt::format("{:.1f}k", d);
+			return fmt::format("{:.2f}k", d);
+		}
+		return fmt::format("{}", v);
+	}
+
+	/** Draw one win-condition line as a single left-aligned string.
+	 *  Format:  "Label        cur / tgt   (XX%)  [OK]"
+	 *  Numbers are abbreviated (M/B/k) so everything fits on one line. */
+	static void DrawWinLine(const Rect &r, WidgetID widget) {
+		const APSlotData &sd   = AP_GetSlotData();
+		APWinProgress     prog = AP_GetWinProgress();
+		int64_t cur = 0, tgt = 1;
+		const char *label = "";
+		switch (widget) {
+			case WAPST_WIN_CV:
+				cur = prog.company_value;   tgt = sd.win_target_company_value;   label = "Company Val"; break;
+			case WAPST_WIN_POP:
+				cur = prog.town_population; tgt = sd.win_target_town_population; label = "World Pop  "; break;
+			case WAPST_WIN_VEH:
+				cur = prog.vehicle_count;   tgt = sd.win_target_vehicle_count;   label = "Vehicles   "; break;
+			case WAPST_WIN_CARGO:
+				cur = prog.cargo_delivered; tgt = sd.win_target_cargo_delivered; label = "Cargo (t)  "; break;
+			case WAPST_WIN_PROF:
+				cur = prog.monthly_profit;  tgt = sd.win_target_monthly_profit;  label = "Mo. Profit "; break;
+			case WAPST_WIN_MISS:
+				cur = prog.missions;        tgt = sd.win_target_missions;        label = "Missions   "; break;
+			default: return;
+		}
+		bool done = (cur >= tgt);
+		int64_t pct = (tgt > 0) ? std::min<int64_t>(100LL, cur * 100LL / tgt) : 100LL;
+		TextColour col = done ? TC_LIGHT_BLUE : TC_WHITE;
+
+		std::string line = fmt::format("{}  {} / {}   ({}%){}",
+		    label,
+		    FmtShort(cur),
+		    FmtShort(tgt),
+		    pct,
+		    done ? "  [OK]" : "");
+		DrawString(r.left, r.right, r.top, line, col);
 	}
 
 	void OnPaint() override {
@@ -738,11 +834,15 @@ struct ArchipelagoMissionsWindow : public Window {
 						} else {
 							int64_t pct = (t.amount > 0)
 							    ? std::min<int64_t>(100LL, t.current_value * 100LL / t.amount) : 0;
-							/* Cargo unit label from CargoSpec (e.g. "tons", "bags", "litres") */
+							/* Unit suffix: passengers have no unit, freight shows "t" */
 							std::string unit_str;
 							if (IsValidCargoType((CargoType)t.cargo)) {
 								const CargoSpec *cs = CargoSpec::Get((CargoType)t.cargo);
-								if (cs) unit_str = " " + GetString(cs->units_volume);
+								if (cs && cs->classes.Test(CargoClass::Passengers)) {
+									unit_str = ""; /* passengers: no unit suffix */
+								} else {
+									unit_str = " t"; /* freight */
+								}
 							}
 							line_c += fmt::format("{} / {}{}  ({}%)", t.current_value, t.amount, unit_str, pct);
 							line_c += fmt::format("   -   By {}", t.deadline_year);

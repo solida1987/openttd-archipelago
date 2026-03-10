@@ -506,13 +506,15 @@ static APSlotData ParseSlotData(const json &msg)
 	sd.land_generator       = (uint8_t)d.value("land_generator", 1);
 
 	/* Win condition */
-	sd.win_condition_value  = d.value("win_condition_value", (int64_t)50000000);
-	std::string wc = d.value("win_condition", "company_value");
-	if      (wc == "town_population") sd.win_condition = APWinCondition::TOWN_POPULATION;
-	else if (wc == "vehicle_count")   sd.win_condition = APWinCondition::VEHICLE_COUNT;
-	else if (wc == "cargo_delivered") sd.win_condition = APWinCondition::CARGO_DELIVERED;
-	else if (wc == "monthly_profit")  sd.win_condition = APWinCondition::MONTHLY_PROFIT;
-	else                              sd.win_condition = APWinCondition::COMPANY_VALUE;
+	sd.win_target_company_value   = d.value("win_target_company_value",   (int64_t)8'000'000);
+	sd.win_target_town_population = d.value("win_target_town_population", (int64_t)100'000);
+	sd.win_target_vehicle_count   = d.value("win_target_vehicle_count",   (int64_t)30);
+	sd.win_target_cargo_delivered = d.value("win_target_cargo_delivered", (int64_t)120'000);
+	sd.win_target_monthly_profit  = d.value("win_target_monthly_profit",  (int64_t)100'000);
+	sd.win_target_missions        = d.value("win_target_missions",        (int64_t)35);
+	int diff_val = d.value("win_difficulty", 2);
+	sd.win_difficulty = (diff_val >= 0 && diff_val <= 10)
+	    ? static_cast<APWinDifficulty>(diff_val) : APWinDifficulty::NORMAL;
 
 	/* ── Game settings (Accounting) ──────────────────────────────────── */
 	sd.infinite_money            = d.value("infinite_money",       false);
@@ -583,7 +585,7 @@ static APSlotData ParseSlotData(const json &msg)
 	      (1 << sd.map_x), (1 << sd.map_y), (int)sd.landscape,
 	      sd.world_seed, sd.enable_traps);
 	Debug(misc, 0, "[AP] SlotData: win='{}' target={}",
-	      wc, sd.win_condition_value);
+	      "win_difficulty", (int)sd.win_difficulty);
 
 	/* item_id_to_name — APWorld sends this so we can resolve item IDs to names */
 	if (d.contains("item_id_to_name") && d["item_id_to_name"].is_object()) {
@@ -983,7 +985,7 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				{"password",      password},
 				{"uuid",          "openttd-archipelago-01"},
 				{"version",       {{"major",0},{"minor",6},{"build",0},{"class","Version"}}},
-				{"tags",          json::array()},  /* Tags set via ConnectUpdate after slot_data — see Connected handler */
+				{"tags",          json::array({"DeathLink"})},  /* Always include DeathLink so AP server routes Bounce packets to us. C++ guards (death_link == true) control actual behaviour. */
 				{"items_handling", 7}
 			});
 			std::lock_guard<std::mutex> lg(outbound_mutex);
@@ -1063,20 +1065,7 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			has_slot_data.store(true);
 			AP_OK(fmt::format("Slot data parsed: {} missions, start_year={}, vehicle='{}'",
 			      sd.mission_count, sd.start_year, sd.starting_vehicle));
-			AP_OK(fmt::format("Win condition: target={}", sd.win_condition_value));
-
-			/* Send ConnectUpdate to set correct DeathLink tag now that we know slot_data.
-			 * The initial Connect packet sends empty tags; this corrects them. */
-			{
-				json cup = json::array();
-				cup.push_back({
-					{"cmd",  "ConnectUpdate"},
-					{"tags", sd.death_link ? json::array({"DeathLink"}) : json::array()}
-				});
-				std::lock_guard<std::mutex> lg2(outbound_mutex);
-				outbound_queue.push_back({ cup.dump() });
-				AP_LOG(fmt::format("ConnectUpdate sent: DeathLink={}", sd.death_link ? "true" : "false"));
-			}
+			AP_OK(fmt::format("Win difficulty={} cv={} pop={} veh={} cargo={} profit={} missions={}", (int)sd.win_difficulty, sd.win_target_company_value, sd.win_target_town_population, sd.win_target_vehicle_count, sd.win_target_cargo_delivered, sd.win_target_monthly_profit, sd.win_target_missions));
 
 			PushEvent({ InboundEvent::CONNECTED, {}, {}, {} });
 
@@ -1202,8 +1191,9 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			}
 			if (!text_out.empty()) PushEvent({ InboundEvent::PRINT, text_out, {}, {} });
 
-		} else if (cmd == "Bounce") {
-			/* Death Link uses Bounce packets with data.type == "DeathLink" */
+		} else if (cmd == "Bounced") {
+			/* AP server echoes Bounce packets back as "Bounced" (with 'd') to all clients
+			 * that registered the matching tag in their Connect packet. */
 			if (msg.contains("data") && msg["data"].is_object()) {
 				std::string dtype = msg["data"].value("type", "");
 				if (dtype == "DeathLink") {

@@ -67,12 +67,29 @@ struct APMission {
 };
 
 /** Win condition type. */
-enum class APWinCondition : uint8_t {
-	COMPANY_VALUE,
-	TOWN_POPULATION,
-	VEHICLE_COUNT,
-	CARGO_DELIVERED,
-	MONTHLY_PROFIT,
+/** Win condition difficulty preset ID (mirrors Python WinDifficulty). */
+enum class APWinDifficulty : uint8_t {
+	CASUAL    = 0,
+	EASY      = 1,
+	NORMAL    = 2,
+	MEDIUM    = 3,
+	HARD      = 4,
+	VERY_HARD = 5,
+	EXTREME   = 6,
+	INSANE    = 7,
+	NUTCASE   = 8,
+	MADNESS   = 9,
+	CUSTOM    = 10,
+};
+
+/** Current progress toward all six win targets. */
+struct APWinProgress {
+	int64_t company_value    = 0;
+	int64_t town_population  = 0;
+	int64_t vehicle_count    = 0;
+	int64_t cargo_delivered  = 0;
+	int64_t monthly_profit   = 0;
+	int64_t missions         = 0;
 };
 
 /** Full configuration received from the AP server after authentication. */
@@ -84,8 +101,14 @@ struct APSlotData {
 	std::string             starting_vehicle;
 	std::string             starting_vehicle_type;
 	std::vector<std::string> starting_vehicles;   ///< all starters (>1 for one_of_each)
-	APWinCondition          win_condition        = APWinCondition::COMPANY_VALUE;
-	int64_t                 win_condition_value  = 50000000;
+	/* ── Win condition (multi-parameter) ──────────────────────────────── */
+	APWinDifficulty         win_difficulty            = APWinDifficulty::NORMAL;
+	int64_t                 win_target_company_value   = 8'000'000;
+	int64_t                 win_target_town_population = 100'000;
+	int64_t                 win_target_vehicle_count   = 30;
+	int64_t                 win_target_cargo_delivered = 120'000;
+	int64_t                 win_target_monthly_profit  = 100'000;
+	int64_t                 win_target_missions        = 35;
 	bool                    enable_traps         = true;
 	int                     start_year           = 1950;
 
@@ -314,6 +337,7 @@ bool AP_IsColbyConfigured();
 /** Mission completion counters. */
 int AP_GetTierCompleted(const std::string &difficulty);
 int AP_GetTotalMissionsCompleted();
+APWinProgress AP_GetWinProgress();
 
 /** Shop slot locking: returns true if the given 0-based sorted slot is unlocked. */
 bool AP_IsShopSlotUnlocked(int slot_index);

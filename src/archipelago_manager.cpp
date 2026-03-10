@@ -887,8 +887,10 @@ static int         _ap_colby_escape_ticks   = 0;
 static bool        _ap_colby_done           = false;
 static constexpr int64_t COLBY_STEP_AMOUNT  = 200;
 static constexpr int     COLBY_ESCAPE_TICKS = 6000;
-static SignID      _ap_colby_source_sign    = SignID::Invalid();
-static TileIndex   _ap_colby_source_tile    = INVALID_TILE;
+static SignID      _ap_colby_source_sign     = SignID::Invalid();
+static TileIndex   _ap_colby_source_tile     = INVALID_TILE;
+static StationID   _ap_colby_source_station  = StationID::Invalid();
+static IndustryID  _ap_colby_source_industry = IndustryID::Invalid();
 
 static int         _ap_ff_speed             = 100; ///< Current fast-forward cap in % (100=normal, max 300)
 
@@ -986,15 +988,31 @@ static void AP_ColbyCleanupSource()
 	if (Sign *si = Sign::GetIfValid(_ap_colby_source_sign); si != nullptr) {
 		delete si;
 	}
-	_ap_colby_source_sign = SignID::Invalid();
-	_ap_colby_source_tile = INVALID_TILE;
+	/* Remove any injected package cargo from the industry's produced slot */
+	if (Industry *ind = Industry::GetIfValid(_ap_colby_source_industry); ind != nullptr) {
+		CargoType ct = AP_GetColbyPackageCargo();
+		for (auto &slot : ind->produced) {
+			if (slot.cargo == ct) {
+				slot.cargo   = INVALID_CARGO;
+				slot.waiting = 0;
+				slot.history[THIS_MONTH].production = 0;
+				break;
+			}
+		}
+	}
+	_ap_colby_source_sign     = SignID::Invalid();
+	_ap_colby_source_tile     = INVALID_TILE;
+	_ap_colby_source_station  = StationID::Invalid();
+	_ap_colby_source_industry = IndustryID::Invalid();
 }
 
 /**
  * Spawn the cargo source for the current step:
- *  - Find a station 200-400 manhattan tiles from Colby's town.
- *  - Inject COLBY_STEP_AMOUNT * 2 packages directly into that station.
- *  - Place a sign "★ Colby's Stash ★" on the station tile.
+ *  - Find a nearby industry that does NOT produce CT_COLBY_PACKAGE.
+ *  - Add a temporary extra produced slot (or inject into waiting) with COLBY_STEP_AMOUNT*2 packages.
+ *  - Place a sign "★ Colby's Stash ★" at the industry tile.
+ *  Player builds a station over the industry to collect the packages.
+ *  Packages are CargoClass::Express so any goods van / truck can carry them.
  */
 static void AP_ColbySpawnSource()
 {
@@ -1007,39 +1025,97 @@ static void AP_ColbySpawnSource()
 
 	TileIndex center = town->xy;
 
-	/* Search for a station at an appropriate distance from the target town */
-	Station *best_st = nullptr;
-	uint best_dist = UINT_MAX;
+	/* ── 1. Find a suitable industry ───────────────────────────────────────
+	 * Prefer industries within 50–300 tiles that don't already produce packages.
+	 * Fall back progressively if nothing is found. */
+	Industry *best_ind = nullptr;
+	uint best_dist     = UINT_MAX;
 
 	auto try_range = [&](uint lo, uint hi) {
-		for (Station *st : Station::Iterate()) {
-			uint d = DistanceManhattan(center, st->xy);
-			if (d >= lo && d <= hi && d < best_dist) {
-				best_st = st;
-				best_dist = d;
+		for (Industry *ind : Industry::Iterate()) {
+			uint d = DistanceManhattan(center, ind->location.tile);
+			if (d < lo || d > hi || d >= best_dist) continue;
+			/* Skip if this industry already produces packages */
+			bool has_pkg = false;
+			for (const auto &slot : ind->produced) {
+				if (IsValidCargoType(slot.cargo) && slot.cargo == ct) { has_pkg = true; break; }
 			}
+			if (has_pkg) continue;
+			best_ind  = ind;
+			best_dist = d;
 		}
 	};
 
-	try_range(200, 400);
-	if (best_st == nullptr) try_range(100, 600);
-	if (best_st == nullptr) try_range(50,  1000);
+	try_range(50,  300);
+	if (best_ind == nullptr) try_range(20, 600);
+	if (best_ind == nullptr) try_range(0,  2000);
 
-	if (best_st == nullptr) {
-		AP_ShowNews(fmt::format("[AP] Colby Event: No station found to place packages for step {}/5. Build more stations!", _ap_colby_step));
+	if (best_ind == nullptr) {
+		AP_ShowNews(fmt::format("[AP] Colby Event: No industry found near {} for step {}/5. "
+			"The packages will appear at a random map location.", _ap_colby_target_name, _ap_colby_step));
+		/* Last-resort: place a sign in the middle of the map and skip injection */
+		TileIndex fallback = center;
+		if (Sign::CanAllocateItem()) {
+			int px = (int)(TileX(fallback) * TILE_SIZE + TILE_SIZE / 2);
+			int py = (int)(TileY(fallback) * TILE_SIZE + TILE_SIZE / 2);
+			int pz = (int)(TileHeight(fallback) * TILE_HEIGHT);
+			Sign *si = new Sign(OWNER_DEITY, px, py, pz, "\xe2\x98\x85 Colby's Stash \xe2\x98\x85");
+			si->UpdateVirtCoord();
+			_ap_colby_source_sign = si->index;
+			_ap_colby_source_tile = fallback;
+		}
 		return;
 	}
 
-	_ap_colby_source_tile = best_st->xy;
+	/* ── 2. Inject packages into the industry's produced list ──────────────
+	 * Find an existing empty produced slot and temporarily use it for packages.
+	 * If no empty slot, use the first non-package slot and remember the original cargo
+	 * so we can restore it when the step completes. */
+	_ap_colby_source_industry = best_ind->index;
+	_ap_colby_source_tile     = best_ind->location.tile;
 
-	/* Inject packages into the station cargo list */
-	uint16_t amount = (uint16_t)std::min((int64_t)COLBY_STEP_AMOUNT * 2, (int64_t)UINT16_MAX);
-	Source src{best_st->index, SourceType::Industry};
-	CargoPacket *cp = new CargoPacket(best_st->index, amount, src);
-	best_st->goods[ct].GetOrCreateData().cargo.Append(cp, StationID::Invalid());
-	best_st->goods[ct].status.Set(GoodsEntry::State::Rating);
+	uint16_t inject_amount = (uint16_t)std::min((int64_t)COLBY_STEP_AMOUNT * 2, (int64_t)UINT16_MAX);
 
-	/* Place sign at the source station tile */
+	/* Try to find an unused produced slot */
+	bool injected = false;
+	for (auto &slot : best_ind->produced) {
+		if (!IsValidCargoType(slot.cargo)) {
+			/* Empty slot — borrow it temporarily */
+			slot.cargo   = ct;
+			slot.waiting = inject_amount;
+			slot.history[THIS_MONTH].production = inject_amount;
+			injected = true;
+			break;
+		}
+	}
+
+	if (!injected) {
+		/* All produced slots are used — inject directly into the first non-package slot
+		 * by adding to its waiting count without changing cargo type */
+		for (auto &slot : best_ind->produced) {
+			if (IsValidCargoType(slot.cargo) && slot.cargo != ct) {
+				/* We can't change the cargo type; instead log a warning and use station fallback */
+				break;
+			}
+		}
+		/* Station injection fallback: find or use any station near the industry */
+		Station *fallback_st = nullptr;
+		uint fallback_dist   = UINT_MAX;
+		for (Station *st : Station::Iterate()) {
+			uint d = DistanceManhattan(best_ind->location.tile, st->xy);
+			if (d < 50 && d < fallback_dist) { fallback_st = st; fallback_dist = d; }
+		}
+		if (fallback_st != nullptr) {
+			Source src{fallback_st->index, SourceType::Industry};
+			CargoPacket *cp = new CargoPacket(fallback_st->index, inject_amount, src);
+			fallback_st->goods[ct].GetOrCreateData().cargo.Append(cp, StationID::Invalid());
+			fallback_st->goods[ct].status.Set(GoodsEntry::State::Rating);
+			_ap_colby_source_station = fallback_st->index;
+			_ap_colby_source_tile    = fallback_st->xy;
+		}
+	}
+
+	/* ── 3. Place sign at the industry tile ─────────────────────────────── */
 	if (Sign::CanAllocateItem()) {
 		int px = (int)(TileX(_ap_colby_source_tile) * TILE_SIZE + TILE_SIZE / 2);
 		int py = (int)(TileY(_ap_colby_source_tile) * TILE_SIZE + TILE_SIZE / 2);
@@ -1049,26 +1125,26 @@ static void AP_ColbySpawnSource()
 		_ap_colby_source_sign = si->index;
 	}
 
-	AP_ShowNews(fmt::format("[AP] Step {}/5: Load {} packages from station near {} and deliver to {}!",
-		_ap_colby_step, COLBY_STEP_AMOUNT, best_st->GetCachedName(), _ap_colby_target_name));
+	/* ── 4. News announcement ───────────────────────────────────────────── */
+	const IndustrySpec *spec = GetIndustrySpec(best_ind->type);
+	std::string ind_name = (spec != nullptr) ? GetString(spec->name) : "an industry";
+	AP_ShowNews(fmt::format("[AP] Step {}/5: Build a station over {} near {} "
+		"to collect {} packages, then deliver to {}!",
+		_ap_colby_step, ind_name, _ap_colby_target_name,
+		COLBY_STEP_AMOUNT, _ap_colby_target_name));
 
-	/* Force destination stations near the target town to accept packages.
-	 * Without this, station placement dialog won't show "Accepts: Packages"
-	 * and auto-unload won't work unless player uses "Unload all" order.
-	 * We set always_accepted on every station within 64 tiles of the town. */
-	if (_ap_colby_target_town != (TownID)UINT16_MAX) {
-		const Town *target_t = Town::GetIfValid(_ap_colby_target_town);
-		if (target_t != nullptr) {
-			for (Station *dest_st : Station::Iterate()) {
-				if (dest_st->town == nullptr) continue;
-				if (dest_st->town->index != _ap_colby_target_town) continue;
-				/* Mark this station as always accepting packages */
-				dest_st->always_accepted |= (1ULL << ct);
-				dest_st->goods[ct].status.Set(GoodsEntry::State::Rating);
-			}
+	/* ── 5. Force destination stations to accept packages ───────────────── */
+	const Town *target_t = Town::GetIfValid(_ap_colby_target_town);
+	if (target_t != nullptr) {
+		for (Station *dest_st : Station::Iterate()) {
+			if (dest_st->town == nullptr) continue;
+			if (dest_st->town->index != _ap_colby_target_town) continue;
+			dest_st->always_accepted |= (1ULL << ct);
+			dest_st->goods[ct].status.Set(GoodsEntry::State::Rating);
 		}
 	}
 }
+
 
 /** Announce the current active step via news. */
 static void AP_ColbyAnnounceStep()
@@ -1303,10 +1379,12 @@ ColbyStatus AP_GetColbyStatus() {
 	s.town_id       = (uint32_t)_ap_colby_target_town.base();
 	s.source_tile   = (uint32_t)_ap_colby_source_tile.base();
 	s.cargo_name    = _ap_colby_cargo_name.empty() ? "packages" : _ap_colby_cargo_name;
-	/* Stash station name from tile */
-	if (_ap_colby_source_tile != INVALID_TILE) {
-		const Station *st = Station::GetByTile(_ap_colby_source_tile);
-		if (st != nullptr) s.source_name = std::string(st->GetCachedName());
+	/* Source name: prefer industry, fall back to station */
+	if (const Industry *ind = Industry::GetIfValid(_ap_colby_source_industry); ind != nullptr) {
+		const IndustrySpec *spec = GetIndustrySpec(ind->type);
+		s.source_name = (spec != nullptr) ? GetString(spec->name) : "industry";
+	} else if (const Station *st = Station::GetIfValid(_ap_colby_source_station); st != nullptr) {
+		s.source_name = std::string(st->GetCachedName());
 	}
 	return s;
 }
@@ -1321,8 +1399,8 @@ static void AP_AssignNamedEntities();
 static void AP_OnSlotData(const APSlotData &sd)
 {
 	AP_OK("[CALLBACK] AP_OnSlotData called on main thread!");
-	Debug(misc, 1, "[AP] Slot data received. {} missions, win={} target={}, start_year={}",
-	      sd.missions.size(), (int)sd.win_condition, sd.win_condition_value, sd.start_year);
+	Debug(misc, 1, "[AP] Slot data received. {} missions, diff={}, start_year={}",
+	      sd.missions.size(), (int)sd.win_difficulty, sd.start_year);
 
 	_ap_pending_sd      = sd;
 	_ap_session_started = false; /* reset so first-tick setup runs again */
@@ -1742,49 +1820,43 @@ void EnsureHandlersRegistered()
  * Win-condition check
  * ---------------------------------------------------------------------- */
 
+APWinProgress AP_GetWinProgress()
+{
+	APWinProgress p;
+	CompanyID cid = _local_company;
+	if (cid >= MAX_COMPANIES) return p;
+	const Company *c = Company::GetIfValid(cid);
+	if (c == nullptr) return p;
+
+	p.company_value   = (int64_t)c->old_economy[0].company_value;
+	p.town_population = (int64_t)GetWorldPopulation();
+
+	int vcount = 0;
+	for (const Vehicle *v : Vehicle::Iterate())
+		if (v->owner == cid && v->IsPrimaryVehicle()) vcount++;
+	p.vehicle_count = vcount;
+
+	uint64_t total_cargo = 0;
+	for (uint i = 0; i < NUM_CARGO; i++)
+		total_cargo += AP_GetTotalCargo((CargoType)i);
+	p.cargo_delivered = (int64_t)total_cargo;
+
+	int64_t net = (int64_t)(c->cur_economy.income + c->cur_economy.expenses);
+	p.monthly_profit  = net > 0 ? net : 0;
+
+	p.missions = (int64_t)AP_GetTotalMissionsCompleted();
+	return p;
+}
+
 static bool CheckWinCondition(const APSlotData &sd)
 {
-	CompanyID cid = _local_company;
-	if (cid >= MAX_COMPANIES) return false;
-	const Company *c = Company::GetIfValid(cid);
-	if (c == nullptr) return false;
-
-	int64_t current = 0;
-	switch (sd.win_condition) {
-		case APWinCondition::COMPANY_VALUE:
-			current = (int64_t)c->old_economy[0].company_value;
-			break;
-		case APWinCondition::MONTHLY_PROFIT: {
-			int64_t net = (int64_t)(c->cur_economy.income + c->cur_economy.expenses);
-			current = net > 0 ? net : 0;
-			break;
-		}
-		case APWinCondition::VEHICLE_COUNT: {
-			int count = 0;
-			for (const Vehicle *v : Vehicle::Iterate())
-				if (v->owner == cid && v->IsPrimaryVehicle()) count++;
-			current = count;
-			break;
-		}
-		case APWinCondition::TOWN_POPULATION:
-			/* Sum population of all towns on the map */
-			current = (int64_t)GetWorldPopulation();
-			break;
-		case APWinCondition::CARGO_DELIVERED: {
-			/* Sum all cumulative cargo delivered across all types this session.
-			 * Uses the same accumulator as mission evaluation — NOT old_economy[0]
-			 * which only covers one quarter. */
-			uint64_t total = 0;
-			for (uint i = 0; i < NUM_CARGO; i++)
-				total += AP_GetTotalCargo((CargoType)i);
-			current = (int64_t)total;
-			break;
-		}
-		default:
-			current = (int64_t)c->old_economy[0].company_value;
-			break;
-	}
-	return current >= sd.win_condition_value;
+	APWinProgress p = AP_GetWinProgress();
+	return p.company_value   >= sd.win_target_company_value
+	    && p.town_population >= sd.win_target_town_population
+	    && p.vehicle_count   >= sd.win_target_vehicle_count
+	    && p.cargo_delivered >= sd.win_target_cargo_delivered
+	    && p.monthly_profit  >= sd.win_target_monthly_profit
+	    && p.missions        >= sd.win_target_missions;
 }
 
 /* -------------------------------------------------------------------------
