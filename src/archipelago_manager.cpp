@@ -65,8 +65,16 @@
 #include "console_func.h"
 #include "console_internal.h"
 #include "window_func.h"
+#include "gui.h"
 #include "station_base.h"
+#include "textbuf_gui.h"
+#include "map_func.h"
+#include "tile_map.h"
 #include "cargomonitor.h"
+#include "currency.h"
+#include "signs_base.h"
+#include "economy_func.h"
+#include "cargopacket.h"
 #include "newgrf_config.h"
 #include "fileio_func.h"
 #include "safeguards.h"
@@ -166,6 +174,11 @@ static std::set<std::string> _ap_sent_shop_locations; ///< Shop locations alread
 static uint32_t _ap_snap_cargo[NUM_CARGO]       = {};
 static Money    _ap_snap_profit                 = 0;
 
+/* ── Local Task System — declared early so AP_InitSessionStats can reset them ── */
+static std::vector<APTask> _ap_tasks;
+static int _ap_task_next_id          = 1;    ///< Auto-increment ID for new tasks
+static int _ap_task_checks_completed = 0;    ///< Mission-check rewards collected; adds to shop counter
+
 static void AP_InitSessionStats()
 {
 	for (CargoType i = 0; i < NUM_CARGO; i++) { _ap_cumul_cargo[i] = 0; _ap_snap_cargo[i] = 0; }
@@ -174,6 +187,10 @@ static void AP_InitSessionStats()
 	_ap_stats_initialized = false;
 	_ap_shop_purchased    = false;
 	_ap_sent_shop_locations.clear();
+	/* Reset task state for new session */
+	_ap_tasks.clear();
+	_ap_task_next_id          = 1;
+	_ap_task_checks_completed = 0;
 	if (!_ap_cargo_map_built) BuildCargoMap();
 }
 
@@ -191,7 +208,7 @@ static void AP_UpdateSessionStats()
 		/* Take initial snapshot so the first "change" doesn't double-count */
 		for (CargoType i = 0; i < NUM_CARGO; i++)
 			_ap_snap_cargo[i] = c->old_economy[0].delivered_cargo[i];
-		_ap_snap_profit       = c->old_economy[0].income - c->old_economy[0].expenses;
+		_ap_snap_profit       = c->old_economy[0].income + c->old_economy[0].expenses;
 		_ap_stats_initialized = true;
 		return;
 	}
@@ -205,7 +222,7 @@ static void AP_UpdateSessionStats()
 		}
 	}
 	if (!refreshed) {
-		Money new_p = c->old_economy[0].income - c->old_economy[0].expenses;
+		Money new_p = c->old_economy[0].income + c->old_economy[0].expenses;
 		if (new_p != _ap_snap_profit) refreshed = true;
 	}
 
@@ -214,8 +231,8 @@ static void AP_UpdateSessionStats()
 			_ap_cumul_cargo[i] += c->old_economy[0].delivered_cargo[i];
 			_ap_snap_cargo[i]   = c->old_economy[0].delivered_cargo[i];
 		}
-		Money period_profit = c->old_economy[0].income - c->old_economy[0].expenses;
-		_ap_cumul_profit += period_profit;
+		Money period_profit = c->old_economy[0].income + c->old_economy[0].expenses;
+		if (period_profit > 0) _ap_cumul_profit += period_profit;  /* only add profitable periods; losses don't reduce progress */
 		_ap_snap_profit   = period_profit;
 		Debug(misc, 1, "[AP] Economy period snapped. Cumulative profit: £{}", (int64_t)_ap_cumul_profit);
 	}
@@ -238,8 +255,10 @@ static uint64_t AP_GetTotalCargo(CargoType ct)
 static Money AP_GetTotalProfit()
 {
 	const Company *c = Company::GetIfValid(_local_company);
-	Money cur = (c != nullptr) ? Money(c->cur_economy.income - c->cur_economy.expenses) : Money(0);
-	return _ap_cumul_profit + cur;
+	Money cur_raw = (c != nullptr) ? Money(c->cur_economy.income + c->cur_economy.expenses) : Money(0);
+	Money cur = cur_raw > 0 ? cur_raw : Money(0);  /* don't count current period if it's a loss */
+	Money total = _ap_cumul_profit + cur;
+	return total > 0 ? total : Money(0);
 }
 
 /* -------------------------------------------------------------------------
@@ -267,31 +286,66 @@ static int AP_CountServicedTowns()
 /**
  * Count real stations (not waypoints) owned by local company.
  */
-static int AP_CountStations()
+/**
+ * Count real stations (not waypoints) owned by local company.
+ *
+ * @param filter_facility  If true, only count stations with the given facility.
+ * @param facility         Required facility (only used when filter_facility=true).
+ * @param require_active   If true, only count stations that have received cargo.
+ *
+ * A station is "active" if at least one cargo type has EVER been delivered
+ * to it for final delivery (GoodsEntry::State::EverAccepted).
+ */
+static int AP_CountStations(bool filter_facility = false, StationFacility facility = StationFacility::Train, bool require_active = false)
 {
 	CompanyID cid = _local_company;
 	int count = 0;
 	for (const Station *st : Station::Iterate()) {
-		if (st->owner == cid) count++;
+		if (st->owner != cid) continue;
+		if (filter_facility && !st->facilities.Test(facility)) continue;
+		if (require_active) {
+			bool any_delivered = false;
+			for (CargoType ct = 0; ct < NUM_CARGO; ct++) {
+				if (st->goods[ct].status.Test(GoodsEntry::State::EverAccepted)) {
+					any_delivered = true;
+					break;
+				}
+			}
+			if (!any_delivered) continue;
+		}
+		count++;
 	}
 	return count;
 }
 
 /**
- * Count primary vehicles of a given type owned by local company.
- * type == VEH_INVALID means all types.
+ * Count active primary vehicles of a given type owned by local company.
+ *
+ * A vehicle is "active" if:
+ *  1. It is a primary vehicle (not a wagon/trailer)
+ *  2. Its calendar age >= 30 days (has been running for at least ~1 month)
+ *  3. It has earned money (profit_this_year > 0 OR profit_last_year > 0),
+ *     meaning it has completed at least one cargo delivery.
+ *
+ * @param type  Vehicle type filter. VEH_INVALID = all types.
  */
-static int AP_CountVehicles(VehicleType type)
+static int AP_CountActiveVehicles(VehicleType type)
 {
 	CompanyID cid = _local_company;
 	int count = 0;
 	for (const Vehicle *v : Vehicle::Iterate()) {
-		if (v->owner == cid && v->IsPrimaryVehicle()) {
-			if (type == VEH_INVALID || v->type == type) count++;
-		}
+		if (v->owner != cid) continue;
+		if (!v->IsPrimaryVehicle()) continue;
+		if (type != VEH_INVALID && v->type != type) continue;
+		/* Must have been around for at least 30 calendar days */
+		if (v->age.base() < 30) continue;
+		/* Must have made at least one delivery (earned money) */
+		if (v->profit_this_year <= 0 && v->profit_last_year <= 0) continue;
+		count++;
 	}
 	return count;
 }
+
 
 /**
  * Determine vehicle type to count based on mission unit field.
@@ -357,8 +411,11 @@ static bool EvaluateMission(APMission &m)
 	 * Also handle legacy UTF-8 £ keys for old saves. */
 	else if (m.type == "earn monthly" ||
 	         m.unit == "\xC2\xA3/month" || m.unit == "£/month") {
-		/* Monthly: income – expenses of last completed period */
-		current = (int64_t)(c->old_economy[0].income - c->old_economy[0].expenses);
+		/* Monthly: use the LIVE current period income + expenses (expenses is negative in OpenTTD).
+		 * Using cur_economy means it resets at each period start and tracks
+		 * only THIS month's running profit — never counts losses as progress. */
+		int64_t monthly_net = (int64_t)(c->cur_economy.income + c->cur_economy.expenses);
+		current = monthly_net > 0 ? monthly_net : 0;
 	}
 	else if (m.type == "earn" ||
 	         m.type == "earn \xC2\xA3" ||
@@ -368,29 +425,64 @@ static bool EvaluateMission(APMission &m)
 	}
 
 	/* ── "have" type ───────────────────────────────────────────────────
-	 * "Have {amount} vehicles/trains/aircraft/road vehicles running simultaneously" */
-	else if (m.type == "have") {
-		VehicleType vtype = AP_VehicleTypeFromUnit(m.unit);
-		current = (int64_t)AP_CountVehicles(vtype);
+	 * "Have {amount} active trains/road vehicles/ships/aircraft/vehicles"
+	 * Only counts vehicles that have been running ≥30 days AND made a delivery.
+	 * Handles both old "have" key and direct type_key strings from the pool. */
+	else if (m.type == "have" ||
+	         m.type == "trains" || m.type == "road vehicles" ||
+	         m.type == "ships"  || m.type == "aircraft" || m.type == "vehicles") {
+		/* For direct type_key strings, derive VehicleType from type itself */
+		VehicleType vtype = VEH_INVALID;
+		if      (m.type == "trains")        vtype = VEH_TRAIN;
+		else if (m.type == "road vehicles") vtype = VEH_ROAD;
+		else if (m.type == "ships")         vtype = VEH_SHIP;
+		else if (m.type == "aircraft")      vtype = VEH_AIRCRAFT;
+		else /* "have" legacy: derive from unit field */
+			vtype = AP_VehicleTypeFromUnit(m.unit);
+		current = (int64_t)AP_CountActiveVehicles(vtype);
 	}
 
 	/* ── "service" type ────────────────────────────────────────────────
 	 * "Service {amount} different towns" */
+	else if (m.type == "service towns") {
+		current = (int64_t)AP_CountServicedTowns();
+	}
+	/* legacy key emitted by older APWorld versions */
 	else if (m.type == "service") {
 		current = (int64_t)AP_CountServicedTowns();
 	}
 
-	/* ── "build" type ──────────────────────────────────────────────────
-	 * "Build {amount} stations" */
+	/* ── "build" / station-type missions ───────────────────────────────
+	 * "Build {amount} active train stations / bus stops / harbours / airports"
+	 * Only counts stations that have received at least one delivery. */
+	else if (m.type == "build stations") {
+		current = (int64_t)AP_CountStations(false, StationFacility::Train, true);
+	}
+	else if (m.type == "train stations") {
+		current = (int64_t)AP_CountStations(true, StationFacility::Train, true);
+	}
+	else if (m.type == "bus stops") {
+		current = (int64_t)AP_CountStations(true, StationFacility::BusStop, true);
+	}
+	else if (m.type == "truck stops") {
+		current = (int64_t)AP_CountStations(true, StationFacility::TruckStop, true);
+	}
+	else if (m.type == "harbours") {
+		current = (int64_t)AP_CountStations(true, StationFacility::Dock, true);
+	}
+	else if (m.type == "airports") {
+		current = (int64_t)AP_CountStations(true, StationFacility::Airport, true);
+	}
+	/* legacy generic "build" key */
 	else if (m.type == "build") {
-		current = (int64_t)AP_CountStations();
+		current = (int64_t)AP_CountStations(false, StationFacility::Train, true);
 	}
 
-	/* ── "deliver" type ────────────────────────────────────────────────
+	/* ── "deliver" / "deliver goods" / "deliver to station" types ──────
 	 * "Deliver {amount} tons of {cargo} to one station"
 	 * "Deliver {amount} tons of goods in one year"
 	 * Approximated by cumulative cargo of that type. */
-	else if (m.type == "deliver") {
+	else if (m.type == "deliver" || m.type == "deliver goods" || m.type == "deliver to station") {
 		CargoType ct = AP_FindCargoType(m.cargo);
 		if (IsValidCargoType(ct)) {
 			current = (int64_t)AP_GetTotalCargo(ct);
@@ -402,11 +494,9 @@ static bool EvaluateMission(APMission &m)
 		}
 	}
 
-	/* ── "connect" type ────────────────────────────────────────────────
-	 * "Connect {amount} cities with rail"
-	 * Approximated by towns with at least one rail station. */
-	else if (m.type == "connect") {
-		/* Count towns that have at least one station with train facilities */
+	/* ── "connect" / "cities" types ────────────────────────────────────
+	 * "Connect {amount} cities with rail" */
+	else if (m.type == "connect" || m.type == "cities") {
 		CompanyID cid = _local_company;
 		std::set<const Town *> rail_towns;
 		for (const Station *st : Station::Iterate()) {
@@ -416,6 +506,23 @@ static bool EvaluateMission(APMission &m)
 			}
 		}
 		current = (int64_t)rail_towns.size();
+	}
+
+	/* ── "passengers" / "transport cargo" types ────────────────────────
+	 * Pool emits type_key "passengers" and "transport cargo" directly. */
+	else if (m.type == "passengers") {
+		CargoType ct = AP_FindCargoType("passengers");
+		if (IsValidCargoType(ct)) current = (int64_t)AP_GetTotalCargo(ct);
+	}
+	else if (m.type == "transport cargo") {
+		CargoType ct = AP_FindCargoType(m.cargo);
+		if (IsValidCargoType(ct)) {
+			current = (int64_t)AP_GetTotalCargo(ct);
+		} else {
+			uint64_t total = 0;
+			for (CargoType i = 0; i < NUM_CARGO; i++) total += AP_GetTotalCargo(i);
+			current = (int64_t)total;
+		}
 	}
 
 	/* ── "maintain_75" type ────────────────────────────────────────────
@@ -435,7 +542,7 @@ static bool EvaluateMission(APMission &m)
 	}
 
 	/* ── named-destination missions ────────────────────────────────────
-	 * Progress is accumulated monthly by AP_UpdateNamedMissions(). */
+	 * Progress is accumulated in real-time (every 250 ms) by AP_UpdateNamedMissions(). */
 	else if (m.type == "passengers_to_town" || m.type == "mail_to_town" ||
 	         m.type == "cargo_from_industry" || m.type == "cargo_to_industry") {
 		current = (int64_t)m.named_entity.cumulative;
@@ -762,6 +869,371 @@ static bool AP_UnlockEngineByName(const std::string &name)
  * In-game news/chat notification
  * ---------------------------------------------------------------------- */
 
+/* =========================================================================
+ * Colby Event — globals and constants (must be before any function that uses them)
+ * ====================================================================== */
+static bool        _ap_colby_enabled        = false;
+static int         _ap_colby_start_year     = 0;
+static uint32_t    _ap_colby_town_seed      = 0;
+static TownID      _ap_colby_target_town    = (TownID)UINT16_MAX;
+static std::string _ap_colby_target_name;
+static std::string _ap_colby_cargo_name;
+static CargoType   _ap_colby_cargo_type     = INVALID_CARGO;
+static int         _ap_colby_step           = 0;
+static int64_t     _ap_colby_step_delivered = 0;
+static bool        _ap_colby_popup_shown    = false;
+static bool        _ap_colby_escaped        = false;
+static int         _ap_colby_escape_ticks   = 0;
+static bool        _ap_colby_done           = false;
+static constexpr int64_t COLBY_STEP_AMOUNT  = 200;
+static constexpr int     COLBY_ESCAPE_TICKS = 6000;
+static SignID      _ap_colby_source_sign    = SignID::Invalid();
+static TileIndex   _ap_colby_source_tile    = INVALID_TILE;
+
+static int         _ap_ff_speed             = 100; ///< Current fast-forward cap in % (100=normal, max 300)
+
+/* =========================================================================
+ * Colby Event — forward declarations for callbacks
+ * ====================================================================== */
+static void AP_ColbyShowFinalQuery();
+static void AP_ColbyShowEscapeQuery();
+static std::string AP_TownName(const Town *t); ///< forward decl — defined near AP_GetSlotData
+static void AP_ShowNews(const std::string &text); ///< forward decl — defined after saveload globals
+
+/* =========================================================================
+ * Colby Event — popup callbacks (called by query window on main thread)
+ * ====================================================================== */
+
+/** Popup A callback: Arrest (true) or Let Escape (false). */
+static void AP_ColbyArrestCallback(Window *, bool arrest)
+{
+	if (arrest) {
+		/* Arrest Colby — £10M reward */
+		CompanyID cid = _local_company;
+		Company *c = Company::GetIfValid(cid);
+		if (c != nullptr) c->money += (Money)10000000LL;
+		AP_ShowNews("[AP] Colby arrested! £10,000,000 reward deposited into your account!");
+		AP_ShowNews(fmt::format("[AP] The town of {} is now free of Colby's influence.", _ap_colby_target_name));
+	} else {
+		/* Let Colby escape — start countdown to second popup */
+		_ap_colby_escaped     = true;
+		_ap_colby_escape_ticks = COLBY_ESCAPE_TICKS;
+		AP_ShowNews(fmt::format("[AP] Colby slips away into the night from {}... but he won't get far.", _ap_colby_target_name));
+	}
+	_ap_colby_done = true;
+}
+
+/** Popup B callback (second popup — only shown if player let Colby escape).
+ *  true = Imprison, false = Sacrifice to Elder Gods. */
+static void AP_ColbyEscapeCallback(Window *, bool imprison)
+{
+	if (imprison) {
+		AP_ShowNews("[AP] Colby has been handed over to the authorities. Justice is served.");
+	} else {
+		/* Sacrifice — £2M + all-town growth burst */
+		CompanyID cid = _local_company;
+		Company *c = Company::GetIfValid(cid);
+		if (c != nullptr) c->money += (Money)2000000LL;
+		for (Town *t : Town::Iterate()) {
+			t->grow_counter = 0; /* immediate growth pulse in every town */
+		}
+		AP_ShowNews("[AP] Colby sacrificed to the Elder Gods! +£2,000,000 and all towns are growing rapidly!");
+	}
+	/* _ap_colby_done was already true from popup A callback */
+}
+
+/* =========================================================================
+ * Colby Event — core logic
+ * ====================================================================== */
+
+/** Show the final arrest/escape query (popup A). */
+static void AP_ColbyShowFinalQuery()
+{
+	if (_ap_colby_popup_shown) return;
+	_ap_colby_popup_shown = true;
+	ShowQuery(
+		GetEncodedString(STR_AP_COLBY_ARREST_CAPTION),
+		GetEncodedString(STR_AP_COLBY_ARREST_QUERY),
+		nullptr,
+		AP_ColbyArrestCallback,
+		true
+	);
+}
+
+/** Show the second popup (popup B — Colby re-captured). */
+static void AP_ColbyShowEscapeQuery()
+{
+	ShowQuery(
+		GetEncodedString(STR_AP_COLBY_ESCAPE_CAPTION),
+		GetEncodedString(STR_AP_COLBY_ESCAPE_QUERY),
+		nullptr,
+		AP_ColbyEscapeCallback,
+		true
+	);
+}
+
+/** Get the runtime CargoType slot for CT_COLBY_PACKAGE (cached after first call). */
+static CargoType AP_GetColbyPackageCargo()
+{
+	static CargoType ct = INVALID_CARGO;
+	if (ct == INVALID_CARGO) ct = GetCargoTypeByLabel(CT_COLBY_PACKAGE);
+	return ct;
+}
+
+/** Remove the source sign from the previous step. */
+static void AP_ColbyCleanupSource()
+{
+	if (Sign *si = Sign::GetIfValid(_ap_colby_source_sign); si != nullptr) {
+		delete si;
+	}
+	_ap_colby_source_sign = SignID::Invalid();
+	_ap_colby_source_tile = INVALID_TILE;
+}
+
+/**
+ * Spawn the cargo source for the current step:
+ *  - Find a station 200-400 manhattan tiles from Colby's town.
+ *  - Inject COLBY_STEP_AMOUNT * 2 packages directly into that station.
+ *  - Place a sign "★ Colby's Stash ★" on the station tile.
+ */
+static void AP_ColbySpawnSource()
+{
+	if (_ap_colby_target_town == (TownID)UINT16_MAX) return;
+	const Town *town = Town::GetIfValid(_ap_colby_target_town);
+	if (town == nullptr) return;
+
+	CargoType ct = AP_GetColbyPackageCargo();
+	if (ct == INVALID_CARGO) return;
+
+	TileIndex center = town->xy;
+
+	/* Search for a station at an appropriate distance from the target town */
+	Station *best_st = nullptr;
+	uint best_dist = UINT_MAX;
+
+	auto try_range = [&](uint lo, uint hi) {
+		for (Station *st : Station::Iterate()) {
+			uint d = DistanceManhattan(center, st->xy);
+			if (d >= lo && d <= hi && d < best_dist) {
+				best_st = st;
+				best_dist = d;
+			}
+		}
+	};
+
+	try_range(200, 400);
+	if (best_st == nullptr) try_range(100, 600);
+	if (best_st == nullptr) try_range(50,  1000);
+
+	if (best_st == nullptr) {
+		AP_ShowNews(fmt::format("[AP] Colby Event: No station found to place packages for step {}/5. Build more stations!", _ap_colby_step));
+		return;
+	}
+
+	_ap_colby_source_tile = best_st->xy;
+
+	/* Inject packages into the station cargo list */
+	uint16_t amount = (uint16_t)std::min((int64_t)COLBY_STEP_AMOUNT * 2, (int64_t)UINT16_MAX);
+	Source src{best_st->index, SourceType::Industry};
+	CargoPacket *cp = new CargoPacket(best_st->index, amount, src);
+	best_st->goods[ct].GetOrCreateData().cargo.Append(cp, StationID::Invalid());
+	best_st->goods[ct].status.Set(GoodsEntry::State::Rating);
+
+	/* Place sign at the source station tile */
+	if (Sign::CanAllocateItem()) {
+		int px = (int)(TileX(_ap_colby_source_tile) * TILE_SIZE + TILE_SIZE / 2);
+		int py = (int)(TileY(_ap_colby_source_tile) * TILE_SIZE + TILE_SIZE / 2);
+		int pz = (int)(TileHeight(_ap_colby_source_tile) * TILE_HEIGHT);
+		Sign *si = new Sign(OWNER_DEITY, px, py, pz, "\xe2\x98\x85 Colby's Stash \xe2\x98\x85");
+		si->UpdateVirtCoord();
+		_ap_colby_source_sign = si->index;
+	}
+
+	AP_ShowNews(fmt::format("[AP] Step {}/5: Load {} packages from station near {} and deliver to {}!",
+		_ap_colby_step, COLBY_STEP_AMOUNT, best_st->GetCachedName(), _ap_colby_target_name));
+
+	/* Force destination stations near the target town to accept packages.
+	 * Without this, station placement dialog won't show "Accepts: Packages"
+	 * and auto-unload won't work unless player uses "Unload all" order.
+	 * We set always_accepted on every station within 64 tiles of the town. */
+	if (_ap_colby_target_town != (TownID)UINT16_MAX) {
+		const Town *target_t = Town::GetIfValid(_ap_colby_target_town);
+		if (target_t != nullptr) {
+			for (Station *dest_st : Station::Iterate()) {
+				if (dest_st->town == nullptr) continue;
+				if (dest_st->town->index != _ap_colby_target_town) continue;
+				/* Mark this station as always accepting packages */
+				dest_st->always_accepted |= (1ULL << ct);
+				dest_st->goods[ct].status.Set(GoodsEntry::State::Rating);
+			}
+		}
+	}
+}
+
+/** Announce the current active step via news. */
+static void AP_ColbyAnnounceStep()
+{
+	AP_ShowNews(fmt::format("[AP] Colby Event [Step {}/5]: Deliver {} packages to {}!",
+		_ap_colby_step, COLBY_STEP_AMOUNT, _ap_colby_target_name));
+}
+
+/** Start cargomonitor for the current step (consume any stale deliveries). */
+static void AP_ColbyBeginStepMonitor()
+{
+	if (_ap_colby_target_town == (TownID)UINT16_MAX) return;
+	CargoType ct = AP_GetColbyPackageCargo();
+	if (ct == INVALID_CARGO) return;
+	CompanyID cid = _local_company;
+	if (cid >= MAX_COMPANIES) return;
+	/* First call registers the monitor and resets the counter — intentional. */
+	CargoMonitorID monitor = EncodeCargoTownMonitor(cid, ct, _ap_colby_target_town);
+	GetDeliveryAmount(monitor, true); /* discard — start fresh from this point */
+	_ap_colby_step_delivered = 0;
+}
+
+/** Initialise Colby Event at session start (called once from first-tick setup).
+ *  Selects target town deterministically from colby_town_seed. */
+static void AP_ColbyInit()
+{
+	if (!_ap_colby_enabled) return;
+
+	/* Always use CT_COLBY_PACKAGE — no slot_data cargo resolution needed */
+	_ap_colby_cargo_type = AP_GetColbyPackageCargo();
+	_ap_colby_cargo_name = "packages";
+
+	if (_ap_colby_step != 0) {
+		/* Loaded from savegame — re-register cargomonitor if a step is active. */
+		if (_ap_colby_step >= 1 && _ap_colby_step <= 5 &&
+		    _ap_colby_target_town != (TownID)UINT16_MAX) {
+			CompanyID cid = _local_company;
+			if (cid < MAX_COMPANIES && _ap_colby_cargo_type != INVALID_CARGO) {
+				CargoMonitorID monitor = EncodeCargoTownMonitor(cid, _ap_colby_cargo_type, _ap_colby_target_town);
+				GetDeliveryAmount(monitor, true); /* register monitor, discard stale amount */
+			}
+			const Town *t = Town::GetIfValid(_ap_colby_target_town);
+			if (t != nullptr) _ap_colby_target_name = AP_TownName(t);
+			/* Re-spawn the source sign so the player can find the pick-up point after loading */
+			AP_ColbySpawnSource();
+			AP_OK(fmt::format("[Colby] Resumed from save: step={} delivered={} target={}",
+				_ap_colby_step, _ap_colby_step_delivered, _ap_colby_target_name));
+		}
+		return;
+	}
+
+	/* Fresh session — pick Colby's town deterministically. */
+	/* Collect all towns and sort by TownID for determinism */
+	std::vector<const Town *> towns;
+	for (const Town *t : Town::Iterate()) towns.push_back(t);
+	if (towns.empty()) {
+		AP_WARN("[Colby] No towns on map — event cannot start.");
+		_ap_colby_enabled = false;
+		return;
+	}
+	std::sort(towns.begin(), towns.end(), [](const Town *a, const Town *b) {
+		return a->index < b->index;
+	});
+
+	/* xorshift32 seeded from colby_town_seed */
+	uint32_t seed = (_ap_colby_town_seed != 0) ? _ap_colby_town_seed : 0xDEADBEEFu;
+	auto xr = [&]() -> uint32_t {
+		seed ^= seed << 13u;
+		seed ^= seed >> 17u;
+		seed ^= seed << 5u;
+		return seed;
+	};
+
+	size_t idx            = xr() % towns.size();
+	_ap_colby_target_town = towns[idx]->index;
+	_ap_colby_target_name = AP_TownName(towns[idx]);
+
+	AP_OK(fmt::format("[Colby] Event initialised. Target town: {} (ID {}) | Cargo: Packages | Triggers year: {}",
+		_ap_colby_target_name, (int)_ap_colby_target_town.base(),
+		_ap_colby_start_year));
+}
+
+/** Called every ~5 s from the polling loop.
+ *  Drives event progression: waiting → active steps → final popup. */
+static void AP_ColbyTick()
+{
+	if (!_ap_colby_enabled || _ap_colby_done) return;
+	if (_ap_colby_target_town == (TownID)UINT16_MAX) return;
+
+	const int cur_year = (int)TimerGameCalendar::year.base();
+
+	/* Step 0 — waiting for start year */
+	if (_ap_colby_step == 0) {
+		if (cur_year < _ap_colby_start_year) return;
+		/* Time to start! */
+		_ap_colby_step = 1;
+		AP_ColbyBeginStepMonitor();
+		AP_ColbySpawnSource();
+		AP_ShowNews(fmt::format("[AP] A mysterious stranger named Colby has arrived in {}. "
+			"He claims to need urgent deliveries...", _ap_colby_target_name));
+		AP_ColbyAnnounceStep();
+		return;
+	}
+
+	/* Steps 1-5 — track deliveries */
+	if (_ap_colby_step >= 1 && _ap_colby_step <= 5) {
+		CompanyID cid = _local_company;
+		CargoType ct = AP_GetColbyPackageCargo();
+		if (cid >= MAX_COMPANIES || ct == INVALID_CARGO) return;
+		if (!Town::IsValidID(_ap_colby_target_town)) return;
+
+		CargoMonitorID monitor = EncodeCargoTownMonitor(cid, ct, _ap_colby_target_town);
+		int32_t delta = GetDeliveryAmount(monitor, true); /* consume increment, keep monitoring */
+		if (delta > 0) _ap_colby_step_delivered += (int64_t)delta;
+
+		if (_ap_colby_step_delivered >= COLBY_STEP_AMOUNT) {
+			int prev_step = _ap_colby_step;
+			_ap_colby_step_delivered = 0;
+			_ap_colby_step++;
+
+			AP_ColbyCleanupSource(); /* remove sign from previous step */
+
+			if (_ap_colby_step > 5) {
+				/* All 5 steps complete — show final popup */
+				AP_ShowNews(fmt::format("[AP] Colby thanks you for the last delivery to {}. "
+					"But something feels off...", _ap_colby_target_name));
+				AP_ColbyShowFinalQuery();
+			} else {
+				AP_ShowNews(fmt::format("[AP] Step {}/5 complete! Colby nods approvingly.", prev_step));
+				AP_ColbyBeginStepMonitor(); /* reset monitor baseline for new step */
+				AP_ColbySpawnSource();      /* place new source sign and inject packages */
+				AP_ColbyAnnounceStep();
+			}
+		}
+		return;
+	}
+}
+
+/** Accessor: write Colby state to output variables (for saveload). */
+void AP_GetColbyState(int *step, int64_t *delivered, int *target_town,
+                      bool *escaped, int *escape_ticks, bool *done, bool *popup_shown)
+{
+	*step         = _ap_colby_step;
+	*delivered    = _ap_colby_step_delivered;
+	*target_town  = (int)_ap_colby_target_town.base();
+	*escaped      = _ap_colby_escaped;
+	*escape_ticks = _ap_colby_escape_ticks;
+	*done         = _ap_colby_done;
+	*popup_shown  = _ap_colby_popup_shown;
+}
+
+/** Accessor: restore Colby state from saveload. */
+void AP_SetColbyState(int step, int64_t delivered, int target_town,
+                      bool escaped, int escape_ticks, bool done, bool popup_shown)
+{
+	_ap_colby_step           = step;
+	_ap_colby_step_delivered = delivered;
+	_ap_colby_target_town    = (TownID)target_town;
+	_ap_colby_escaped        = escaped;
+	_ap_colby_escape_ticks   = escape_ticks;
+	_ap_colby_done           = done;
+	_ap_colby_popup_shown    = popup_shown;
+}
+
+
 static void AP_ShowNews(const std::string &text)
 {
 	IConsolePrint(CC_INFO, "[AP] " + text);
@@ -792,6 +1264,12 @@ static int         _ap_station_boost_ticks         = 0;     ///< >0 while statio
 static int         _ap_license_revoke_ticks        = 0;     ///< >0 while license revoke trap is active
 static int         _ap_license_revoke_type         = -1;    ///< VehicleType cast to int, -1 = inactive
 
+/* Mission tier completion counters — incremented when a check is sent for that tier */
+static int         _ap_easy_completed              = 0;     ///< Easy missions completed this session
+static int         _ap_medium_completed            = 0;     ///< Medium missions completed this session
+static int         _ap_hard_completed              = 0;     ///< Hard missions completed this session
+static int         _ap_extreme_completed           = 0;     ///< Extreme missions completed this session
+
 bool AP_GetCargoBonusActive() { return _ap_cargo_bonus_ticks > 0; }
 
 /* Bug B fix: reset per-connection, not global-ever */
@@ -808,6 +1286,30 @@ std::atomic<bool> _ap_status_dirty{ false };
 const APSlotData &AP_GetSlotData() { return _ap_pending_sd; }
 bool              AP_IsConnected()  { return _ap_client != nullptr &&
                                      _ap_client->GetState() == APState::AUTHENTICATED; }
+bool              AP_IsColbyActive()     { return _ap_colby_enabled && !_ap_colby_done && _ap_colby_step >= 1; }
+bool              AP_IsColbyConfigured() { return _ap_colby_enabled; }
+
+ColbyStatus AP_GetColbyStatus() {
+	ColbyStatus s;
+	s.enabled       = _ap_colby_enabled;
+	s.done          = _ap_colby_done;
+	s.step          = _ap_colby_step;
+	s.delivered     = _ap_colby_step_delivered;
+	s.step_amount   = COLBY_STEP_AMOUNT;
+	s.escaped       = _ap_colby_escaped;
+	s.popup_shown   = _ap_colby_popup_shown;
+	s.escape_ticks  = _ap_colby_escape_ticks;
+	s.town_name     = _ap_colby_target_name;
+	s.town_id       = (uint32_t)_ap_colby_target_town.base();
+	s.source_tile   = (uint32_t)_ap_colby_source_tile.base();
+	s.cargo_name    = _ap_colby_cargo_name.empty() ? "packages" : _ap_colby_cargo_name;
+	/* Stash station name from tile */
+	if (_ap_colby_source_tile != INVALID_TILE) {
+		const Station *st = Station::GetByTile(_ap_colby_source_tile);
+		if (st != nullptr) s.source_name = std::string(st->GetCachedName());
+	}
+	return s;
+}
 
 /* -------------------------------------------------------------------------
  * Callbacks
@@ -827,6 +1329,9 @@ static void AP_OnSlotData(const APSlotData &sd)
 	_ap_goal_sent       = false;
 	_ap_engine_map_built = false; /* rebuild map for new session */
 	_ap_cargo_map_built  = false; /* rebuild cargo map for new session */
+	/* Reset fast-forward speed to 100% (no speedup) for new session */
+	_ap_ff_speed = 100;
+	_settings_client.gui.fast_forward_speed_limit = 100;
 	_ap_status_dirty.store(true);
 
 	/* Only auto-start world if we're on the main menu and haven't started yet */
@@ -1068,6 +1573,15 @@ static void AP_OnItemReceived(const APItem &item)
 		/* Legacy names */
 		c->money += (Money)100000LL;
 		AP_ShowNews("[AP] Bonus: +£100,000!");
+	} else if (item.item_name == "Speed Boost") {
+		/* Increase fast-forward cap by 10%, up to a maximum of 300% */
+		if (_ap_ff_speed < 300) {
+			_ap_ff_speed = std::min(_ap_ff_speed + 10, 300);
+			_settings_client.gui.fast_forward_speed_limit = (uint16_t)_ap_ff_speed;
+			AP_ShowNews(fmt::format("[AP] Speed Boost! Fast forward now {}% speed.", _ap_ff_speed));
+		} else {
+			AP_ShowNews("[AP] Speed Boost received (already at max 300%).");
+		}
 	} else {
 		AP_WARN("Unknown item: '" + item.item_name + "' — not handled");
 	}
@@ -1240,9 +1754,11 @@ static bool CheckWinCondition(const APSlotData &sd)
 		case APWinCondition::COMPANY_VALUE:
 			current = (int64_t)c->old_economy[0].company_value;
 			break;
-		case APWinCondition::MONTHLY_PROFIT:
-			current = (int64_t)c->old_economy[0].income - (int64_t)c->old_economy[0].expenses;
+		case APWinCondition::MONTHLY_PROFIT: {
+			int64_t net = (int64_t)(c->cur_economy.income + c->cur_economy.expenses);
+			current = net > 0 ? net : 0;
 			break;
+		}
 		case APWinCondition::VEHICLE_COUNT: {
 			int count = 0;
 			for (const Vehicle *v : Vehicle::Iterate())
@@ -1443,7 +1959,472 @@ void AP_SendCheckByName(const std::string &location_name)
 	if (location_name.rfind("Shop_Purchase_", 0) == 0) {
 		_ap_sent_shop_locations.insert(location_name);
 	}
+	/* Track mission tier completion counts for tier gating */
+	if      (location_name.rfind("Mission_Easy_",    0) == 0) _ap_easy_completed++;
+	else if (location_name.rfind("Mission_Medium_",  0) == 0) _ap_medium_completed++;
+	else if (location_name.rfind("Mission_Hard_",    0) == 0) _ap_hard_completed++;
+	else if (location_name.rfind("Mission_Extreme_", 0) == 0) _ap_extreme_completed++;
 	_ap_client->SendCheckByName(location_name);
+}
+
+/** Returns how many missions of a given difficulty prefix have been completed. */
+int AP_GetTierCompleted(const std::string &difficulty)
+{
+	if (difficulty == "easy")    return _ap_easy_completed;
+	if (difficulty == "medium")  return _ap_medium_completed;
+	if (difficulty == "hard")    return _ap_hard_completed;
+	if (difficulty == "extreme") return _ap_extreme_completed;
+	return 0;
+}
+
+/** Returns total missions completed across all difficulties, plus task Mission-Check rewards. */
+int AP_GetTotalMissionsCompleted()
+{
+	return _ap_easy_completed + _ap_medium_completed + _ap_hard_completed + _ap_extreme_completed
+	       + _ap_task_checks_completed;
+}
+
+/**
+ * Shop tier locking: first SHOP_FREE_SLOTS items are always unlocked.
+ * After that every SHOP_TIER_SIZE more items require SHOP_TIER_SIZE more
+ * completed missions.
+ *
+ * Rule:
+ *   slot_index 0..4  → always unlocked (first 5 items free)
+ *   slot_index 5..9  → unlocked after 5  total missions completed
+ *   slot_index 10..14→ unlocked after 10 total missions completed
+ *   etc.
+ *
+ * @param slot_index  0-based position in the price-sorted shop list.
+ */
+static constexpr int SHOP_FREE_SLOTS  = 5;
+static constexpr int SHOP_TIER_SIZE   = 5;
+
+bool AP_IsShopSlotUnlocked(int slot_index)
+{
+	if (slot_index < SHOP_FREE_SLOTS) return true;
+	int tier             = (slot_index - SHOP_FREE_SLOTS) / SHOP_TIER_SIZE + 1;
+	int missions_needed  = tier * SHOP_TIER_SIZE;
+	return AP_GetTotalMissionsCompleted() >= missions_needed;
+}
+
+int AP_GetShopSlotRequiredMissions(int slot_index)
+{
+	if (slot_index < SHOP_FREE_SLOTS) return 0;
+	int tier = (slot_index - SHOP_FREE_SLOTS) / SHOP_TIER_SIZE + 1;
+	return tier * SHOP_TIER_SIZE;
+}
+
+/** Returns the unlock threshold for a difficulty tier (0 = no gate). */
+int AP_GetTierThreshold(const std::string &difficulty)
+{
+	const APSlotData &sd = AP_GetSlotData();
+	auto it = sd.tier_unlock_requirements.find(difficulty);
+	if (it != sd.tier_unlock_requirements.end()) return it->second;
+	return 0;
+}
+
+/** Returns true if the given difficulty tier is currently unlocked. */
+bool AP_IsTierUnlocked(const std::string &difficulty)
+{
+	if (difficulty == "easy")    return true;
+	if (difficulty == "medium")  return _ap_easy_completed   >= AP_GetTierThreshold("medium");
+	if (difficulty == "hard")    return _ap_medium_completed >= AP_GetTierThreshold("hard");
+	if (difficulty == "extreme") return _ap_hard_completed  >= AP_GetTierThreshold("extreme");
+	return true;
+}
+
+/* =========================================================================
+ * LOCAL TASK SYSTEM
+ * ========================================================================= */
+
+/* Forward declarations needed by task system */
+static std::string AP_IndustryLabel(const Industry *ind);
+
+/** Compact money string for task descriptions and news messages. */
+static std::string AP_FormatMoneyCompact_Task(int64_t amount)
+{
+	const CurrencySpec &cs = GetCurrency();
+	int64_t scaled = amount * cs.rate;
+	std::string num;
+	if (scaled >= 1000000) num = fmt::format("{:.0f}M", scaled / 1000000.0);
+	else if (scaled >= 1000) num = fmt::format("{}k", scaled / 1000);
+	else num = fmt::format("{}", scaled);
+	if (cs.symbol_pos == 0) return cs.prefix + num + cs.suffix;
+	return num + cs.suffix;
+}
+
+static constexpr int AP_TASK_MAX_ACTIVE = 5;
+
+/** Accessors for GUI and saveload. */
+std::vector<APTask> AP_GetTaskSnapshot()        { return _ap_tasks; }
+int AP_GetTaskChecksCompleted()                  { return _ap_task_checks_completed; }
+int AP_GetTaskChecksCompletedSaved()             { return _ap_task_checks_completed; }
+void AP_SetTaskChecksCompleted(int v)            { _ap_task_checks_completed = v; }
+
+/** Serialize active tasks to a packed string for saveload.
+ *  Format: semicolon-separated records, each field comma-separated:
+ *  id,type,amount,current,completed,expired,seeded,deadline_year,rtype,rcash,eid,cargo,etile,diff
+ *  (entity_name is re-derived on load from eid)
+ */
+std::string AP_GetTasksStr()
+{
+	std::string out;
+	for (const APTask &t : _ap_tasks) {
+		if (!out.empty()) out += ';';
+		out += fmt::format("{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+		    t.id, t.type, t.amount, t.current_value,
+		    (int)t.completed, (int)t.expired, (int)t.monitor_seeded,
+		    t.deadline_year, (int)t.reward_type, t.reward_cash,
+		    t.entity_id, (int)t.cargo, t.entity_tile, t.difficulty);
+	}
+	return out;
+}
+
+void AP_SetTasksStr(const std::string &s)
+{
+	_ap_tasks.clear();
+	if (s.empty()) return;
+
+	/* Split by ';' */
+	auto split = [](const std::string &str, char delim) -> std::vector<std::string> {
+		std::vector<std::string> v;
+		std::string tok;
+		for (char c : str) {
+			if (c == delim) { v.push_back(tok); tok.clear(); }
+			else tok += c;
+		}
+		if (!tok.empty()) v.push_back(tok);
+		return v;
+	};
+
+	auto parse_i64 = [](const std::string &s2, int64_t def = 0) -> int64_t {
+		int64_t r = def;
+		std::from_chars(s2.data(), s2.data() + s2.size(), r);
+		return r;
+	};
+	auto parse_int = [](const std::string &s2, int def = 0) -> int {
+		int r = def;
+		std::from_chars(s2.data(), s2.data() + s2.size(), r);
+		return r;
+	};
+
+	for (const std::string &rec : split(s, ';')) {
+		auto f = split(rec, ',');
+		if (f.size() < 14) continue;
+		APTask t;
+		t.id              = parse_int(f[0]);
+		t.type            = f[1];
+		t.amount          = parse_i64(f[2]);
+		t.current_value   = parse_i64(f[3]);
+		t.completed       = parse_int(f[4]) != 0;
+		t.expired         = parse_int(f[5]) != 0;
+		t.monitor_seeded  = parse_int(f[6]) != 0;
+		t.deadline_year   = parse_int(f[7]);
+		t.reward_type     = (APTaskRewardType)parse_int(f[8]);
+		t.reward_cash     = parse_i64(f[9]);
+		t.entity_id       = parse_int(f[10]);
+		t.cargo           = (uint8_t)parse_int(f[11]);
+		t.entity_tile     = (uint32_t)parse_i64(f[12]);
+		t.difficulty      = f[13];
+		/* entity_name and description re-derived on first game tick via AP_RefreshTaskNames */
+		_ap_tasks.push_back(std::move(t));
+	}
+
+	/* Keep next_id above max of loaded ids */
+	for (const APTask &t : _ap_tasks)
+		if (t.id >= _ap_task_next_id) _ap_task_next_id = t.id + 1;
+}
+
+/** Re-derive entity names + descriptions for tasks loaded from savegame. */
+static void AP_RefreshTaskNames()
+{
+	for (APTask &t : _ap_tasks) {
+		if (!t.entity_name.empty()) continue; /* already set */
+		if (t.entity_id < 0) continue;
+
+		if (t.type == "cargo_from_industry") {
+			const Industry *ind = Industry::GetIfValid((IndustryID)t.entity_id);
+			if (ind && ind->town) {
+				t.entity_name = AP_IndustryLabel(ind);
+				/* Build cargo name */
+				std::string cargo_n = "cargo";
+				if (IsValidCargoType((CargoType)t.cargo)) {
+					const CargoSpec *cs = CargoSpec::Get((CargoType)t.cargo);
+					if (cs) cargo_n = GetString(cs->name);
+				}
+				if (t.reward_type == APTaskRewardType::MISSION_CHECK)
+					t.description = fmt::format("Pick up {} t of {} from {} [REWARD: Mission Check]", t.amount, cargo_n, t.entity_name);
+				else
+					t.description = fmt::format("Pick up {} t of {} from {} [Reward: +{}]",
+					    t.amount, cargo_n, t.entity_name, AP_FormatMoneyCompact_Task(t.reward_cash));
+			}
+		} else if (t.type == "passengers_to_town") {
+			const Town *town = Town::GetIfValid((TownID)t.entity_id);
+			if (town) {
+				t.entity_name = GetString(STR_TOWN_NAME, town->index);
+				if (t.reward_type == APTaskRewardType::MISSION_CHECK)
+					t.description = fmt::format("Deliver {} passengers to {} [REWARD: Mission Check]", t.amount, t.entity_name);
+				else
+					t.description = fmt::format("Deliver {} passengers to {} [Reward: +{}]",
+					    t.amount, t.entity_name, AP_FormatMoneyCompact_Task(t.reward_cash));
+			}
+		}
+	}
+}
+
+/** Seed (drain stale data from) the cargo monitor for a task.
+ *  Called once per task after creation so progress only counts from task start. */
+static void AP_SeedTaskMonitor(const APTask &t)
+{
+	CompanyID cid = _local_company;
+	if (!Company::IsValidID(cid)) return;
+
+	if (t.type == "cargo_from_industry" && t.entity_id >= 0 && IsValidCargoType((CargoType)t.cargo)) {
+		IndustryID iid = (IndustryID)t.entity_id;
+		CargoMonitorID mon = EncodeCargoIndustryMonitor(cid, (CargoType)t.cargo, iid);
+		GetPickupAmount(mon, true); /* discard — start fresh */
+	} else if (t.type == "passengers_to_town" && t.entity_id >= 0) {
+		CargoType ct = AP_FindCargoType("passengers");
+		if (!IsValidCargoType(ct)) return;
+		TownID tid = (TownID)t.entity_id;
+		CargoMonitorID mon = EncodeCargoTownMonitor(cid, ct, tid);
+		GetDeliveryAmount(mon, true); /* discard */
+	}
+}
+
+/** Try to generate one new task from the current map.
+ *  Returns false if no valid candidate could be found. */
+static bool AP_TryMakeTask(APTask &out)
+{
+	CompanyID cid = _local_company;
+	if (!Company::IsValidID(cid)) return false;
+
+	/* Build sets of entity IDs already in active tasks (avoid duplicates) */
+	std::set<int32_t> used_ids;
+	for (const APTask &t : _ap_tasks)
+		if (!t.completed && !t.expired) used_ids.insert(t.entity_id);
+
+	/* Collect valid producing industries */
+	std::vector<const Industry *> prod_inds;
+	for (const Industry *ind : Industry::Iterate()) {
+		if (ind->location.tile == INVALID_TILE) continue;
+		if (used_ids.count((int32_t)ind->index.base())) continue;
+		for (const auto &slot : ind->produced)
+			if (IsValidCargoType(slot.cargo)) { prod_inds.push_back(ind); break; }
+	}
+
+	/* Collect towns with >= 200 population */
+	std::vector<const Town *> towns;
+	CargoType pass_ct = AP_FindCargoType("passengers");
+	if (IsValidCargoType(pass_ct)) {
+		for (const Town *t : Town::Iterate()) {
+			if ((uint32_t)t->cache.population < 200) continue;
+			if (used_ids.count((int32_t)t->index.base())) continue;
+			towns.push_back(t);
+		}
+	}
+
+	bool can_cargo = !prod_inds.empty();
+	bool can_pass  = !towns.empty();
+	if (!can_cargo && !can_pass) return false;
+
+	/* Pick type: 60% cargo, 40% passengers (if available) */
+	bool use_cargo;
+	if (can_cargo && can_pass)
+		use_cargo = (InteractiveRandomRange(100) < 60);
+	else
+		use_cargo = can_cargo;
+
+	/* Pick difficulty */
+	int dr = (int)InteractiveRandomRange(100);
+	std::string diff;
+	int64_t amount, reward_cash;
+	int deadline_years;
+	if (dr < 50)       { diff = "easy";   amount = 500;  reward_cash = 25000;  deadline_years = 1; }
+	else if (dr < 80)  { diff = "medium"; amount = 2000; reward_cash = 150000; deadline_years = 2; }
+	else               { diff = "hard";   amount = 8000; reward_cash = 500000; deadline_years = 3; }
+
+	/* 30% chance of Mission Check reward */
+	APTaskRewardType rtype = (InteractiveRandomRange(100) < 30)
+	    ? APTaskRewardType::MISSION_CHECK
+	    : APTaskRewardType::CASH;
+
+	int32_t cur_year = (int32_t)TimerGameCalendar::year.base();
+
+	if (use_cargo) {
+		/* Shuffle for randomness */
+		for (size_t i = prod_inds.size(); i > 1; i--) {
+			size_t j = InteractiveRandomRange((uint32_t)i);
+			if (j < i) std::swap(prod_inds[i - 1], prod_inds[j]);
+		}
+		const Industry *src = nullptr;
+		CargoType ct = INVALID_CARGO;
+		for (const Industry *ind : prod_inds) {
+			for (const auto &slot : ind->produced) {
+				if (IsValidCargoType(slot.cargo)) { ct = slot.cargo; break; }
+			}
+			if (ct != INVALID_CARGO) { src = ind; break; }
+		}
+		if (!src) return false;
+
+		std::string cargo_n = "cargo";
+		const CargoSpec *cs = CargoSpec::Get(ct);
+		if (cs) cargo_n = GetString(cs->name);
+
+		out.id             = _ap_task_next_id++;
+		out.type           = "cargo_from_industry";
+		out.amount         = amount;
+		out.current_value  = 0;
+		out.completed      = false;
+		out.expired        = false;
+		out.monitor_seeded = false;
+		out.deadline_year  = cur_year + deadline_years;
+		out.deadline_month = 1;
+		out.reward_type    = rtype;
+		out.reward_cash    = reward_cash;
+		out.entity_id      = (int32_t)src->index.base();
+		out.cargo          = (uint8_t)ct;
+		out.entity_tile    = src->location.tile.base();
+		out.entity_name    = AP_IndustryLabel(src);
+		out.difficulty     = diff;
+		if (rtype == APTaskRewardType::MISSION_CHECK)
+			out.description = fmt::format("Pick up {} t of {} from {} [REWARD: Mission Check]", amount, cargo_n, out.entity_name);
+		else
+			out.description = fmt::format("Pick up {} t of {} from {} [Reward: +{}]", amount, cargo_n, out.entity_name, AP_FormatMoneyCompact_Task(reward_cash));
+		return true;
+
+	} else {
+		/* Passenger task */
+		for (size_t i = towns.size(); i > 1; i--) {
+			size_t j = InteractiveRandomRange((uint32_t)i);
+			if (j < i) std::swap(towns[i - 1], towns[j]);
+		}
+		const Town *dst = towns[0];
+
+		int64_t pass_amount = amount; /* reuse same amounts */
+		std::string town_name = GetString(STR_TOWN_NAME, dst->index);
+
+		out.id             = _ap_task_next_id++;
+		out.type           = "passengers_to_town";
+		out.amount         = pass_amount;
+		out.current_value  = 0;
+		out.completed      = false;
+		out.expired        = false;
+		out.monitor_seeded = false;
+		out.deadline_year  = cur_year + deadline_years;
+		out.deadline_month = 1;
+		out.reward_type    = rtype;
+		out.reward_cash    = reward_cash;
+		out.entity_id      = (int32_t)dst->index.base();
+		out.cargo          = (uint8_t)pass_ct;
+		out.entity_tile    = dst->xy.base();
+		out.entity_name    = town_name;
+		out.difficulty     = diff;
+		if (rtype == APTaskRewardType::MISSION_CHECK)
+			out.description = fmt::format("Deliver {} passengers to {} [REWARD: Mission Check]", pass_amount, town_name);
+		else
+			out.description = fmt::format("Deliver {} passengers to {} [Reward: +{}]", pass_amount, town_name, AP_FormatMoneyCompact_Task(reward_cash));
+		return true;
+	}
+}
+
+/** Generate/replenish tasks up to AP_TASK_MAX_ACTIVE.
+ *  Safe to call multiple times — only adds tasks if there's room. */
+void AP_GenerateTasks()
+{
+	/* Count active (not done, not expired) */
+	auto active_count = [&]() -> int {
+		int n = 0;
+		for (const APTask &t : _ap_tasks)
+			if (!t.completed && !t.expired) n++;
+		return n;
+	};
+
+	int attempts = 0;
+	while (active_count() < AP_TASK_MAX_ACTIVE && attempts < 20) {
+		APTask t;
+		if (AP_TryMakeTask(t)) {
+			AP_SeedTaskMonitor(t);
+			t.monitor_seeded = true;
+			_ap_tasks.push_back(std::move(t));
+		}
+		attempts++;
+	}
+}
+
+/** Apply task reward and mark completed. */
+static void AP_CompleteTask(APTask &t)
+{
+	t.completed = true;
+	CompanyID cid = _local_company;
+	if (!Company::IsValidID(cid)) return;
+	Company *c = Company::Get(cid);
+
+	if (t.reward_type == APTaskRewardType::CASH) {
+		c->money += (Money)t.reward_cash;
+		AP_ShowNews(fmt::format("[Task] Completed! Reward: +{}",
+		    AP_FormatMoneyCompact_Task(t.reward_cash)));
+	} else {
+		_ap_task_checks_completed++;
+		AP_ShowNews("[Task] Completed! Reward: Mission Check earned!");
+	}
+}
+
+/** Monthly update: advance task progress, detect completion/expiry, replenish. */
+static void AP_UpdateTasks()
+{
+	if (!AP_IsConnected()) return;
+	CompanyID cid = _local_company;
+	if (!Company::IsValidID(cid)) return;
+
+	int32_t cur_year  = (int32_t)TimerGameCalendar::year.base();
+
+	for (APTask &t : _ap_tasks) {
+		if (t.completed || t.expired) continue;
+
+		/* Seed monitor on first update if not yet done */
+		if (!t.monitor_seeded) {
+			AP_SeedTaskMonitor(t);
+			t.monitor_seeded = true;
+			continue; /* skip progress this tick — start counting next month */
+		}
+
+		/* Check expiry */
+		if (cur_year > t.deadline_year) {
+			t.expired = true;
+			AP_ShowNews(fmt::format("[Task] Expired: {}", t.description.substr(0, 50)));
+			continue;
+		}
+
+		/* Update progress */
+		if (t.type == "cargo_from_industry") {
+			if (t.entity_id < 0 || !IsValidCargoType((CargoType)t.cargo)) continue;
+			IndustryID iid = (IndustryID)t.entity_id;
+			if (!Industry::IsValidID(iid)) { t.expired = true; continue; }
+			CargoMonitorID mon = EncodeCargoIndustryMonitor(cid, (CargoType)t.cargo, iid);
+			int32_t picked = GetPickupAmount(mon, true);
+			if (picked > 0) t.current_value += picked;
+
+		} else if (t.type == "passengers_to_town") {
+			if (t.entity_id < 0) continue;
+			CargoType ct = AP_FindCargoType("passengers");
+			if (!IsValidCargoType(ct)) continue;
+			TownID tid = (TownID)t.entity_id;
+			if (!Town::IsValidID(tid)) { t.expired = true; continue; }
+			CargoMonitorID mon = EncodeCargoTownMonitor(cid, ct, tid);
+			int32_t delivered = GetDeliveryAmount(mon, true);
+			if (delivered > 0) t.current_value += delivered;
+		}
+
+		/* Check completion */
+		if (t.current_value >= t.amount) {
+			AP_CompleteTask(t);
+		}
+	}
+
+	/* Replenish active tasks */
+	AP_GenerateTasks();
 }
 
 int AP_GetShopSlots()
@@ -1565,6 +2546,12 @@ static int _ap_shop_page_offset  = 0;   ///< Unused — kept for savegame compat
 /* ── Savegame accessor functions (used by archipelago_sl.cpp) ────── */
 int  AP_GetShopPageOffset()  { return _ap_shop_page_offset; }
 void AP_SetShopPageOffset(int v) { _ap_shop_page_offset = v; }
+int  AP_GetFfSpeed()  { return _ap_ff_speed; }
+void AP_SetFfSpeed(int v)
+{
+	_ap_ff_speed = std::clamp(v, 100, 300);
+	_settings_client.gui.fast_forward_speed_limit = (uint16_t)_ap_ff_speed;
+}
 int  AP_GetShopDayCounter()  { return _ap_shop_day_counter; }
 void AP_SetShopDayCounter(int v) { _ap_shop_day_counter = v; }
 bool AP_GetGoalSent()        { return _ap_goal_sent; }
@@ -1983,9 +2970,6 @@ static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 	[](auto) {
 		if (!_ap_session_started) return;
 
-		/* Named-destination: accumulate town/industry progress */
-		AP_UpdateNamedMissions();
-
 		CompanyID cid = _local_company;
 
 		for (APMission &m : _ap_pending_sd.missions) {
@@ -2032,6 +3016,9 @@ static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 		}
 		/* Refresh mission window so maintain progress is visible immediately */
 		SetWindowClassesDirty(WC_ARCHIPELAGO);
+
+		/* ── Monthly task update ── */
+		AP_UpdateTasks();
 	}
 );
 
@@ -2057,6 +3044,8 @@ static void CheckMissions()
 	int completed_this_pass = 0;
 	for (APMission &m : _ap_pending_sd.missions) {
 		if (m.completed) continue;
+		/* Tier gate: do not evaluate missions in a locked tier */
+		if (!AP_IsTierUnlocked(m.difficulty)) continue;
 		if (EvaluateMission(m)) {
 			m.completed = true;
 			completed_this_pass++;
@@ -2134,7 +3123,18 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				AP_AssignNamedEntities();
 				/* Refresh names for missions restored from savegame (deferred from Load()) */
 				if (_ap_named_entity_refresh_needed) AP_RefreshNamedEntityNames();
+				/* Refresh task entity names (deferred from savegame load) */
+				AP_RefreshTaskNames();
+				/* Generate initial tasks (safe to call: only adds if room) */
+				AP_GenerateTasks();
 				_ap_status_dirty.store(true); /* refresh GUI to show resolved [Town]/[Industry] names */
+
+				/* Colby Event — initialise town selection and cargo type */
+				_ap_colby_enabled    = _ap_pending_sd.colby_event;
+				_ap_colby_start_year = _ap_pending_sd.colby_start_year;
+				_ap_colby_town_seed  = _ap_pending_sd.colby_town_seed;
+				_ap_colby_cargo_name = _ap_pending_sd.colby_cargo;
+				AP_ColbyInit();
 
 			/* AP settings: vehicle/airport expiry already disabled above (before
 			 * BuildEngineMap).  No additional setting needed here. */
@@ -2213,26 +3213,27 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Unlock all starting vehicles.
 			 * The APWorld is responsible for ensuring only climate-compatible
 			 * vehicles appear in starting_vehicles — no fallback substitution. */
+			std::string sv_list;
 			for (const std::string &sv : _ap_pending_sd.starting_vehicles) {
 				if (sv.empty()) continue;
 				if (!_ap_engine_map_built) BuildEngineMap();
-				if (AP_UnlockEngineByName(sv)) {
-					AP_OK("Starting vehicle unlocked: " + sv);
-					AP_ShowNews("[AP] Starting vehicle: " + sv);
-				} else {
-					/* Engine not found — try rebuilding the map once (covers edge
-					 * cases where the map was built before all NewGRFs finished
-					 * loading). */
-					AP_WARN("Starting vehicle '" + sv + "' not found — rebuilding engine map and retrying");
+				bool ok = AP_UnlockEngineByName(sv);
+				if (!ok) {
+					/* Retry after map rebuild (edge case: map built before NewGRFs finished) */
 					_ap_engine_map_built = false;
 					BuildEngineMap();
-					if (AP_UnlockEngineByName(sv)) {
-						AP_OK("Starting vehicle unlocked after map rebuild: " + sv);
-						AP_ShowNews("[AP] Starting vehicle: " + sv);
-					} else {
-						AP_ERR("Starting vehicle '" + sv + "' not found in engine map!");
-					}
+					ok = AP_UnlockEngineByName(sv);
 				}
+				if (ok) {
+					if (!sv_list.empty()) sv_list += ", ";
+					sv_list += sv;
+				} else {
+					AP_ERR("Starting vehicle '" + sv + "' not found in engine map!");
+				}
+			}
+			if (!sv_list.empty()) {
+				AP_OK("[AP] Starting vehicles for this session: " + sv_list);
+				AP_ShowNews("[AP] Starting vehicles: " + sv_list);
 			}
 
 			/* Apply starting cash bonus if configured */
@@ -2261,8 +3262,9 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			      _ap_engine_map.size()));
 		}
 
-		/* Every ~5 s (20 × 250 ms): update economy stats and check missions.
-		 * Every ~10 s (40 × 250 ms): also check win condition. */
+		/* Realtime tracking: economy stats, missions and Colby run every tick (250 ms).
+		 * Engine lock sweep runs every ~5 s (20 × 250 ms) — iterates all engines, kept slower.
+		 * Win condition runs every ~1 s (4 × 250 ms) — rarely true, cheap guard. */
 		_ap_realtime_ticks++;
 
 		/* Tick down cooldowns every 250 ms */
@@ -2339,8 +3341,17 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 					AP_ShowNews("[AP] Vehicle License restored! You may build that vehicle type again.");
 				}
 			}
+
+			/* Colby escape timer: countdown to second popup */
+			if (_ap_colby_escape_ticks > 0 && _ap_session_started) {
+				_ap_colby_escape_ticks--;
+				if (_ap_colby_escape_ticks == 0) {
+					AP_ColbyShowEscapeQuery();
+				}
+			}
 		}
 
+		/* ── Engine lock sweep: every ~5 s ─────────────────────────────── */
 		if (_ap_realtime_ticks % 20 == 0 &&
 		    _ap_session_started &&
 		    _game_mode == GM_NORMAL) {
@@ -2385,12 +3396,23 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				}
 				if (need_invalidate) InvalidateWindowClassesData(WC_BUILD_VEHICLE, 0);
 			}
+		}
+
+		/* ── Real-time tracking: every 250 ms ──────────────────────────── */
+		if (_ap_session_started && _game_mode == GM_NORMAL) {
 
 			/* Accumulate cargo/profit from completed economy periods */
 			AP_UpdateSessionStats();
 
-			/* Evaluate all incomplete missions */
+			/* Accumulate named-destination progress (town/industry deliveries) */
+			AP_UpdateNamedMissions();
+
+			/* Evaluate all incomplete missions and refresh the mission window */
 			CheckMissions();
+			SetWindowClassesDirty(WC_ARCHIPELAGO);
+
+			/* Drive Colby Event progression */
+			if (_ap_colby_enabled && !_ap_colby_done) AP_ColbyTick();
 		}
 
 		if (_ap_realtime_ticks >= 40 &&

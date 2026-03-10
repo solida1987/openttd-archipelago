@@ -114,6 +114,8 @@ int          AP_GetShopDayCounter();
 void         AP_SetShopDayCounter(int v);
 bool         AP_GetGoalSent();
 void         AP_SetGoalSent(bool v);
+int          AP_GetFfSpeed();
+void         AP_SetFfSpeed(int v);
 void         AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out);
 void         AP_SetCumulStats(const uint64_t *cargo_in, int num_cargo, int64_t profit_in);
 std::string  AP_GetMaintainCountersStr();
@@ -124,6 +126,12 @@ std::string  AP_GetNamedEntityStr();
 void         AP_SetNamedEntityStr(const std::string &s);
 std::string  AP_GetSentShopStr();
 void         AP_SetSentShopStr(const std::string &s);
+void         AP_GetColbyState(int *step, int64_t *delivered, int *target_town, bool *escaped, int *escape_ticks, bool *done, bool *popup_shown);
+void         AP_SetColbyState(int step, int64_t delivered, int target_town, bool escaped, int escape_ticks, bool done, bool popup_shown);
+std::string  AP_GetTasksStr();
+void         AP_SetTasksStr(const std::string &s);
+int          AP_GetTaskChecksCompletedSaved();
+void         AP_SetTaskChecksCompleted(int v);
 
 /* ── Scratch variable — single string holds all AP state ────────────── */
 static std::string _ap_sl_blob;
@@ -150,6 +158,7 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "shop_days",   IStr(AP_GetShopDayCounter()));
         KVSet(_ap_sl_blob, "shop_sent",   AP_GetSentShopStr());
         KVSet(_ap_sl_blob, "goal_sent",   IStr(AP_GetGoalSent()));
+        KVSet(_ap_sl_blob, "ff_speed",    IStr(AP_GetFfSpeed()));
 
         constexpr int NC = 64;
         uint64_t cargo[NC] = {};
@@ -168,6 +177,22 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "sta_ticks",   IStr(sta));
         KVSet(_ap_sl_blob, "lic_ticks",   IStr(lic_t));
         KVSet(_ap_sl_blob, "lic_type",    IStr(lic_v));
+
+        /* Colby Event */
+        int   co_step = 0; int64_t co_del = 0; int co_town = (int)UINT16_MAX;
+        bool  co_esc = false; int co_eticks = 0; bool co_done = false; bool co_pop = false;
+        AP_GetColbyState(&co_step, &co_del, &co_town, &co_esc, &co_eticks, &co_done, &co_pop);
+        KVSet(_ap_sl_blob, "co_step",   IStr(co_step));
+        KVSet(_ap_sl_blob, "co_del",    IStr(co_del));
+        KVSet(_ap_sl_blob, "co_town",   IStr(co_town));
+        KVSet(_ap_sl_blob, "co_esc",    IStr(co_esc));
+        KVSet(_ap_sl_blob, "co_eticks", IStr(co_eticks));
+        KVSet(_ap_sl_blob, "co_done",   IStr(co_done));
+        KVSet(_ap_sl_blob, "co_pop",    IStr(co_pop));
+
+        /* Local tasks */
+        KVSet(_ap_sl_blob, "tasks",       AP_GetTasksStr());
+        KVSet(_ap_sl_blob, "task_checks", IStr(AP_GetTaskChecksCompletedSaved()));
 
         SlTableHeader(_ap_desc);
         SlSetArrayIndex(0);
@@ -207,6 +232,7 @@ struct APSTChunkHandler : ChunkHandler {
             AP_SetShopDayCounter(getint("shop_days"));
             AP_SetSentShopStr(KVGet(_ap_sl_blob, "shop_sent"));
             AP_SetGoalSent(KVGet(_ap_sl_blob, "goal_sent", "0") == "1");
+            AP_SetFfSpeed(getint("ff_speed"));  /* 0 = not saved yet → AP_SetFfSpeed clamps to 100 */
 
             constexpr int NC = 64;
             uint64_t cargo[NC] = {};
@@ -219,6 +245,21 @@ struct APSTChunkHandler : ChunkHandler {
             AP_SetEffectTimers(getint("fuel_ticks"), getint("cargo_ticks"),
                                getint("rel_ticks"),  getint("sta_ticks"),
                                getint("lic_ticks"),  getint("lic_type"));
+
+            /* Colby Event */
+            AP_SetColbyState(
+                getint("co_step"),
+                ParseI64(KVGet(_ap_sl_blob, "co_del", "0")),
+                getint("co_town"),
+                KVGet(_ap_sl_blob, "co_esc",  "0") == "1",
+                getint("co_eticks"),
+                KVGet(_ap_sl_blob, "co_done", "0") == "1",
+                KVGet(_ap_sl_blob, "co_pop",  "0") == "1"
+            );
+
+            /* Local tasks */
+            AP_SetTasksStr(KVGet(_ap_sl_blob, "tasks"));
+            AP_SetTaskChecksCompleted(getint("task_checks"));
         } catch (...) {
             /* Parsing failed — AP progress lost but game loads. */
         }

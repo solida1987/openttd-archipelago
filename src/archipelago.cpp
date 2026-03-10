@@ -562,6 +562,20 @@ static APSlotData ParseSlotData(const json &msg)
 	/* NewGRF options */
 	sd.enable_iron_horse         = (bool)d.value("enable_iron_horse", 0);
 
+	/* Colby Event */
+	sd.colby_event      = d.value("colby_event",      false);
+	sd.colby_start_year = d.value("colby_start_year",  0);
+	sd.colby_town_seed  = (uint32_t)d.value("colby_town_seed", (uint32_t)0);
+	sd.colby_cargo      = d.value("colby_cargo",       std::string("coal"));
+
+	/* Tier unlock requirements — how many of prev tier needed before next tier opens */
+	if (d.contains("tier_unlock_requirements") && d["tier_unlock_requirements"].is_object()) {
+		const auto &tu = d["tier_unlock_requirements"];
+		for (const auto &[k, v] : tu.items()) {
+			if (v.is_number_integer()) sd.tier_unlock_requirements[k] = v.get<int>();
+		}
+	}
+
 	/* Verbose log — visible in OpenTTD debug console (press ~ in game) */
 	Debug(misc, 0, "[AP] SlotData: version={} missions={} start_year={} vehicle='{}'",
 	      sd.game_version, sd.mission_count, sd.start_year, sd.starting_vehicle);
@@ -990,18 +1004,41 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				 * when the Python generator produces fewer missions than the
 				 * distribution formula would predict (e.g. due to max_attempts). */
 				location_ids.clear();
-				int64_t base = 6100000;
+
+				/* Fixed per-difficulty ID blocks — MUST match locations.py exactly.
+				 * Mission_Easy_001   = 6100000, Mission_Easy_002 = 6100001, ...
+				 * Mission_Medium_001 = 6102000, Mission_Hard_001 = 6104000, ...
+				 * Mission_Extreme_001= 6106000
+				 * Shop_Purchase_0001 = 6108000
+				 * Goal_Victory       = 6110000
+				 *
+				 * Using fixed blocks means IDs are stable regardless of how many
+				 * missions were generated — no more "everything shows as Easy" in
+				 * the AP console, and !hint works correctly for all difficulties. */
+				static const std::map<std::string, int64_t> kDifficultyBase = {
+					{"easy",    6'100'000},
+					{"medium",  6'102'000},
+					{"hard",    6'104'000},
+					{"extreme", 6'106'000},
+				};
+
+				/* Per-difficulty sequential counters */
+				std::map<std::string, int64_t> diff_counter;
+				for (auto &[d, base] : kDifficultyBase) diff_counter[d] = 0;
 
 				for (const auto &mission : sd.missions) {
-					location_ids[mission.location] = base++;
+					auto it = kDifficultyBase.find(mission.difficulty);
+					if (it == kDifficultyBase.end()) continue;
+					int64_t idx = diff_counter[mission.difficulty]++;
+					location_ids[mission.location] = it->second + idx;
 				}
 
 				/* Shop locations */
-				int shop_total = sd.shop_slots; /* shop_slots now stores direct item count */
+				int shop_total = sd.shop_slots;
 				for (int i = 1; i <= shop_total; i++) {
-					location_ids[fmt::format("Shop_Purchase_{:04d}", i)] = base++;
+					location_ids[fmt::format("Shop_Purchase_{:04d}", i)] = 6'108'000 + (i - 1);
 				}
-				location_ids["Goal_Victory"] = base;
+				location_ids["Goal_Victory"] = 6'110'000;
 
 				/* Build reverse map: ID → name */
 				location_id_to_name.clear();
@@ -1033,9 +1070,8 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			{
 				json cup = json::array();
 				cup.push_back({
-					{"cmd",            "ConnectUpdate"},
-					{"tags",           sd.death_link ? json::array({"DeathLink"}) : json::array()},
-					{"items_handling", 7}
+					{"cmd",  "ConnectUpdate"},
+					{"tags", sd.death_link ? json::array({"DeathLink"}) : json::array()}
 				});
 				std::lock_guard<std::mutex> lg2(outbound_mutex);
 				outbound_queue.push_back({ cup.dump() });

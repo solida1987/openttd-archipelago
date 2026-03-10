@@ -56,6 +56,7 @@ STR_CARGO_PLURAL_TOFFEE                                         :Toffee
 STR_CARGO_PLURAL_BATTERIES                                      :Batteries
 STR_CARGO_PLURAL_PLASTIC                                        :Plastic
 STR_CARGO_PLURAL_FIZZY_DRINKS                                   :Fizzy Drinks
+STR_CARGO_PLURAL_PACKAGES                                       :Packages
 
 # Singular cargo name
 STR_CARGO_SINGULAR_NOTHING                                      :
@@ -90,6 +91,7 @@ STR_CARGO_SINGULAR_TOFFEE                                       :Toffee
 STR_CARGO_SINGULAR_BATTERY                                      :Battery
 STR_CARGO_SINGULAR_PLASTIC                                      :Plastic
 STR_CARGO_SINGULAR_FIZZY_DRINK                                  :Fizzy Drink
+STR_CARGO_SINGULAR_PACKAGES                                     :Package
 
 # Quantity of cargo
 STR_QUANTITY_NOTHING                                            :
@@ -124,6 +126,7 @@ STR_QUANTITY_TOFFEE                                             :{WEIGHT_LONG} o
 STR_QUANTITY_BATTERIES                                          :{COMMA} batter{P y ies}
 STR_QUANTITY_PLASTIC                                            :{VOLUME_LONG} of plastic
 STR_QUANTITY_FIZZY_DRINKS                                       :{COMMA} fizzy drink{P "" s}
+STR_QUANTITY_PACKAGES                                           :{COMMA}{NBSP}package{P "" s}
 STR_QUANTITY_N_A                                                :N/A
 
 # Two letter abbreviation of cargo name
@@ -159,6 +162,7 @@ STR_ABBREV_TOFFEE                                               :TF
 STR_ABBREV_BATTERIES                                            :BA
 STR_ABBREV_PLASTIC                                              :PL
 STR_ABBREV_FIZZY_DRINKS                                         :FZ
+STR_ABBREV_PACKAGES                                             :PK
 STR_ABBREV_ALL                                                  :ALL
 
 # 'Mode' of transport for cargoes
@@ -2274,6 +2278,8 @@ STR_ARCHIPELAGO_BTN_SETTINGS                                    :{BLACK}Settings
 STR_ARCHIPELAGO_BTN_MISSIONS                                    :{BLACK}Missions
 STR_ARCHIPELAGO_BTN_SHOP                                        :{BLACK}Shop
 STR_ARCHIPELAGO_MISSIONS_CAPTION                                :Archipelago - Missions
+STR_ARCHIPELAGO_TAB_MISSIONS                                    :{BLACK}Missions
+STR_ARCHIPELAGO_TAB_TASKS                                       :{BLACK}Tasks
 STR_ARCHIPELAGO_FILTER_ALL                                      :{BLACK}All
 STR_ARCHIPELAGO_FILTER_EASY                                     :{BLACK}Easy
 STR_ARCHIPELAGO_FILTER_MEDIUM                                   :{BLACK}Medium
@@ -2284,6 +2290,8 @@ STR_ARCHIPELAGO_SHOP_CAPTION                                    :Archipelago - S
 STR_ARCHIPELAGO_SHOP_BUY                                        :{BLACK}Buy Selected Item
 STR_ARCHIPELAGO_GUIDE_CAPTION                                   :Archipelago - Guide & Tips
 STR_ARCHIPELAGO_BTN_GUIDE                                       :{BLACK}Guide
+STR_ARCHIPELAGO_BTN_COLBY                                       :{BLACK}Events
+STR_ARCHIPELAGO_COLBY_CAPTION                                   :Archipelago - Events
 STR_ARCHIPELAGO_GUIDE_TAB_COMMANDS                              :{BLACK}AP Commands
 STR_ARCHIPELAGO_GUIDE_TAB_HOTKEYS                               :{BLACK}Hotkeys
 STR_ARCHIPELAGO_GUIDE_TAB_TIPS                                  :{BLACK}Tips
@@ -6007,3 +6015,7 @@ STR_BADGE_CONFIG_PREVIEW                                        :Preview Image
 STR_BADGE_CONFIG_NAME                                           :Name
 STR_BADGE_FILTER_ANY_LABEL                                      :Any {STRING}
 STR_BADGE_FILTER_IS_LABEL                                       :{STRING} is {STRING}
+STR_AP_COLBY_ARREST_CAPTION                                 :The Colby Affair
+STR_AP_COLBY_ARREST_QUERY                                   :Colby has been unmasked as a smuggler! He used your network to move illicit cargo. Arrest him for a £10,000,000 reward — or let him slip away into the night?
+STR_AP_COLBY_ESCAPE_CAPTION                                 :Colby Captured Again
+STR_AP_COLBY_ESCAPE_QUERY                                   :Colby was caught at the border! Hand him over to the authorities — or sacrifice him to the Elder Gods for £2,000,000 and a massive town growth burst?
