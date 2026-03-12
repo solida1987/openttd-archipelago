@@ -15,9 +15,13 @@
 
 void ShowArchipelagoConnectWindow();
 void ShowArchipelagoStatusWindow();
+void ShowAPVictoryScreen();
 void ShowArchipelagoMissionsWindow();
 void ShowArchipelagoShopWindow();
 void ShowArchipelagoColbyWindow();
+void ShowArchipelagoDemigodWindow();
+void ShowArchipelagoRuinWindow(uint32_t tile_index);
+void ShowArchipelagoRuinsTrackerWindow();
 void AP_ShowConsole(const std::string &msg);
 
 extern std::string _ap_last_host;
@@ -47,7 +51,6 @@ int      AP_GetShopSlots();
 int      AP_GetTierCompleted(const std::string &difficulty);
 int      AP_GetTierThreshold(const std::string &difficulty);
 bool     AP_IsTierUnlocked(const std::string &difficulty);
-int      AP_GetShopRefreshDays();
 int      AP_GetShopPageOffset();   ///< Current page offset for shop slot rotation
 std::string AP_GetShopLocationLabel(const std::string &location_name);
 int64_t  AP_GetShopPrice(const std::string &location_name);
@@ -57,8 +60,12 @@ void     AP_DeductShopPrice(const std::string &location_name);
 bool     AP_ShouldStartWorld();
 void     AP_ConsumeWorldStart();   /* applies settings, clears flag */
 uint32_t AP_GetWorldSeed();        /* seed to pass to StartNewGameWithoutGUI */
-
-#endif /* ARCHIPELAGO_GUI_H */
+void     AP_SetPendingLoadSave();  /* signal that user wants to load a save */
+bool     AP_ShouldShowLoadDialog(); /* consumed by intro_gui to open file picker */
+bool     AP_IsWaitingForStartChoice();
+void     AP_SetWaitingForStartChoice(bool v);
 
 /// Returns true while the 2x cargo payment bonus is active (used by economy.cpp)
 bool AP_GetCargoBonusActive();
+
+#endif /* ARCHIPELAGO_GUI_H */

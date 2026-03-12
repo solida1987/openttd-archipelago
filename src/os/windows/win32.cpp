@@ -239,35 +239,44 @@ void DetermineBasePaths(std::string_view exe)
 	extern std::array<std::string, NUM_SEARCHPATHS> _searchpaths;
 
 	wchar_t path[MAX_PATH];
-#ifdef WITH_PERSONAL_DIR
-	if (SUCCEEDED(SHGetFolderPath(nullptr, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, path))) {
-		std::string tmp(FS2OTTD(path));
-		AppendPathSeparator(tmp);
-		tmp += PERSONAL_DIR;
-		AppendPathSeparator(tmp);
-		_searchpaths[SP_PERSONAL_DIR] = tmp;
 
-		tmp += "content_download";
-		AppendPathSeparator(tmp);
-		_searchpaths[SP_AUTODOWNLOAD_PERSONAL_DIR] = tmp;
+	/* ── SP_BINARY_DIR — resolve first so we can derive personal dir from it ── */
+	if (!GetModuleFileName(nullptr, path, static_cast<DWORD>(std::size(path)))) {
+		Debug(misc, 0, "GetModuleFileName failed ({})", GetLastError());
+		_searchpaths[SP_BINARY_DIR].clear();
+	} else {
+		wchar_t exec_dir[MAX_PATH];
+		convert_to_fs(exe, path);
+		if (!GetFullPathName(path, static_cast<DWORD>(std::size(exec_dir)), exec_dir, nullptr)) {
+			Debug(misc, 0, "GetFullPathName failed ({})", GetLastError());
+			_searchpaths[SP_BINARY_DIR].clear();
+		} else {
+			std::string tmp(FS2OTTD(exec_dir));
+			auto pos = tmp.find_last_of(PATHSEPCHAR);
+			if (pos != std::string::npos) tmp.erase(pos + 1);
+
+			_searchpaths[SP_BINARY_DIR] = tmp;
+		}
+	}
+
+	/* ── SP_PERSONAL_DIR — self-contained: <exe_dir>/data/ ──────────────────
+	 * Archipelago mod: instead of using Documents/OpenTTD, put all user data
+	 * (saves, config, NewGRFs, etc.) in a "data" folder next to the exe.
+	 * This avoids conflicts with vanilla OpenTTD installations and ensures
+	 * custom GRFs (archipelago_ruins.grf etc.) are always found. */
+	if (!_searchpaths[SP_BINARY_DIR].empty()) {
+		_searchpaths[SP_PERSONAL_DIR] = _searchpaths[SP_BINARY_DIR] + "data" + std::string(1, PATHSEPCHAR);
+
+		std::string dl = _searchpaths[SP_PERSONAL_DIR] + "content_download";
+		AppendPathSeparator(dl);
+		_searchpaths[SP_AUTODOWNLOAD_PERSONAL_DIR] = dl;
 	} else {
 		_searchpaths[SP_PERSONAL_DIR].clear();
+		_searchpaths[SP_AUTODOWNLOAD_PERSONAL_DIR].clear();
 	}
-
-	if (SUCCEEDED(SHGetFolderPath(nullptr, CSIDL_COMMON_DOCUMENTS, nullptr, SHGFP_TYPE_CURRENT, path))) {
-		std::string tmp(FS2OTTD(path));
-		AppendPathSeparator(tmp);
-		tmp += PERSONAL_DIR;
-		AppendPathSeparator(tmp);
-		_searchpaths[SP_SHARED_DIR] = tmp;
-	} else {
-		_searchpaths[SP_SHARED_DIR].clear();
-	}
-#else
-	_searchpaths[SP_PERSONAL_DIR].clear();
 	_searchpaths[SP_SHARED_DIR].clear();
-#endif
 
+	/* ── SP_WORKING_DIR ─────────────────────────────────────────────────── */
 	if (_config_file.empty()) {
 		char cwd[MAX_PATH];
 		getcwd(cwd, lengthof(cwd));
@@ -287,24 +296,6 @@ void DetermineBasePaths(std::string_view exe)
 			if (pos != std::string::npos) tmp.erase(pos + 1);
 
 			_searchpaths[SP_WORKING_DIR] = tmp;
-		}
-	}
-
-	if (!GetModuleFileName(nullptr, path, static_cast<DWORD>(std::size(path)))) {
-		Debug(misc, 0, "GetModuleFileName failed ({})", GetLastError());
-		_searchpaths[SP_BINARY_DIR].clear();
-	} else {
-		wchar_t exec_dir[MAX_PATH];
-		convert_to_fs(exe, path);
-		if (!GetFullPathName(path, static_cast<DWORD>(std::size(exec_dir)), exec_dir, nullptr)) {
-			Debug(misc, 0, "GetFullPathName failed ({})", GetLastError());
-			_searchpaths[SP_BINARY_DIR].clear();
-		} else {
-			std::string tmp(FS2OTTD(exec_dir));
-			auto pos = tmp.find_last_of(PATHSEPCHAR);
-			if (pos != std::string::npos) tmp.erase(pos + 1);
-
-			_searchpaths[SP_BINARY_DIR] = tmp;
 		}
 	}
 

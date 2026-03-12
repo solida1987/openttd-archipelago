@@ -6,3 +6,20 @@ docs/gamedocs/*
 docs/source/*
 /out
 /vcpkg_installed
+
+# Local tooling / reference docs (not part of the project)
+/.claude/
+/Reference/
+build_inc.bat
+__pycache__/
+*.pyc
+
+# Distribution / packaging
+/dist/
+
+# Local baseset tarballs (large binaries, bundled separately)
+/baseset/*.tar
+/media/baseset/*.tar
+
+# Old / archived files
+/old/

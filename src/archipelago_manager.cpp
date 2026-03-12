@@ -32,10 +32,13 @@
 #include "engine_type.h"
 #include "company_func.h"
 #include "company_base.h"
+#include "company_cmd.h"
 #include "vehicle_base.h"
 #include "industry.h"
 #include "town.h"
 #include "town_type.h"
+#include "town_cmd.h"
+#include "command_func.h"
 #include "cargotype.h"
 #include "core/random_func.hpp"
 #include "rail.h"
@@ -76,6 +79,13 @@
 #include "economy_func.h"
 #include "cargopacket.h"
 #include "newgrf_config.h"
+#include "newgrf_object.h"
+#include "object_cmd.h"
+#include "object_type.h"
+#include "landscape.h"
+#include "landscape_cmd.h"
+#include "terraform_cmd.h"
+#include "gfxinit.h"
 #include "fileio_func.h"
 #include "safeguards.h"
 
@@ -86,12 +96,28 @@
 #define AP_ERR(msg)  IConsolePrint(CC_ERROR,   "[AP] ERROR: " + std::string(msg))
 
 /* -------------------------------------------------------------------------
+ * Formatting helpers — currency respects player's chosen symbol/separator;
+ * AP_Num adds thousand separators to plain numbers.
+ * ---------------------------------------------------------------------- */
+static std::string AP_Money(Money v) { return GetString(STR_JUST_CURRENCY_LONG, v); }
+static std::string AP_Num(int64_t v) { return GetString(STR_JUST_COMMA, v); }
+
+/* -------------------------------------------------------------------------
  * Cargo type lookup — maps AP cargo names (English) → CargoType index
  * Used by mission evaluation to check delivered_cargo[] by cargo type.
  * ---------------------------------------------------------------------- */
 
 static std::map<std::string, CargoType> _ap_cargo_map;
 static bool _ap_cargo_map_built = false;
+
+/* -------------------------------------------------------------------------
+ * Forward declarations — defined later in this file but needed by functions
+ * that appear before their definition site.
+ * ---------------------------------------------------------------------- */
+static bool        _ap_towns_renamed     = false;
+int                _ap_town_rename_mode  = 0;        ///< extern in archipelago_gui.cpp
+std::string        _ap_town_custom_names;             ///< extern in archipelago_gui.cpp
+static int64_t     _ap_items_received_count = 0;
 
 static void BuildCargoMap()
 {
@@ -156,6 +182,112 @@ static CargoType AP_FindCargoType(const std::string &name)
 }
 
 /* -------------------------------------------------------------------------
+ * Town renaming — renames map towns using multiworld player names or a
+ * user-supplied custom list.  Called once on first game tick of a new world.
+ * ---------------------------------------------------------------------- */
+
+/** Parse a comma-separated name string into a deduplicated vector. */
+static std::vector<std::string> SplitNames(const std::string &csv)
+{
+	std::vector<std::string> result;
+	std::set<std::string>    seen;
+	std::string cur;
+	for (char c : csv) {
+		if (c == ',') {
+			/* trim whitespace */
+			size_t s = cur.find_first_not_of(" \t");
+			size_t e = cur.find_last_not_of(" \t");
+			if (s != std::string::npos) {
+				std::string trimmed = cur.substr(s, e - s + 1);
+				if (!trimmed.empty() && seen.insert(trimmed).second)
+					result.push_back(trimmed);
+			}
+			cur.clear();
+		} else {
+			cur += c;
+		}
+	}
+	/* last segment */
+	size_t s = cur.find_first_not_of(" \t");
+	size_t e = cur.find_last_not_of(" \t");
+	if (s != std::string::npos) {
+		std::string trimmed = cur.substr(s, e - s + 1);
+		if (!trimmed.empty() && seen.insert(trimmed).second)
+			result.push_back(trimmed);
+	}
+	return result;
+}
+
+/**
+ * Rename map towns using either multiworld player names (mode 0) or a
+ * comma-separated custom list (mode 1).  Mode 2 = off, do nothing.
+ *
+ * Each town gets at most one name.  If there are more towns than names,
+ * the remaining towns keep their generated names.  Duplicate names are
+ * skipped automatically.  Called once per new session; _ap_towns_renamed
+ * guards against re-running on save/load.
+ */
+static void AP_RenameTowns()
+{
+	if (_ap_towns_renamed) return;         /* already done for this world */
+	if (_ap_town_rename_mode == 2) {       /* OFF */
+		_ap_towns_renamed = true;
+		return;
+	}
+
+	/* Build name list */
+	std::vector<std::string> names;
+	if (_ap_town_rename_mode == 1) {
+		/* Custom mode — use the user-supplied comma-separated string */
+		names = SplitNames(_ap_town_custom_names);
+	} else {
+		/* Multiworld mode — fetch player aliases from the AP client */
+		if (_ap_client != nullptr) {
+			names = _ap_client->GetPlayerNames();
+		}
+	}
+
+	if (names.empty()) {
+		_ap_towns_renamed = true;
+		return;
+	}
+
+	/* Collect all towns in a stable order (by TownID) */
+	std::vector<Town *> towns;
+	for (Town *t : Town::Iterate()) towns.push_back(t);
+	/* Sort by index for deterministic assignment */
+	std::sort(towns.begin(), towns.end(), [](const Town *a, const Town *b) {
+		return (int)a->index.base() < (int)b->index.base();
+	});
+
+	/* Shuffle names array using the map's random seed for determinism */
+	/* Use a simple Fisher-Yates with OpenTTD's Random() */
+	for (int i = (int)names.size() - 1; i > 0; i--) {
+		int j = (int)(RandomRange((uint32_t)(i + 1)));
+		std::swap(names[i], names[j]);
+	}
+
+	/* Rename towns, one name per town, stop when we run out of names */
+	int applied = 0;
+	for (Town *t : towns) {
+		if (applied >= (int)names.size()) break;
+		const std::string &new_name = names[applied];
+
+		/* CmdRenameTown requires DoCommandFlag::Execute and deity permission */
+		CmdRenameTown(DoCommandFlags{DoCommandFlag::Execute}, t->index, new_name);
+		applied++;
+	}
+
+	_ap_towns_renamed = true;
+	AP_OK(fmt::format("Renamed {} town(s) using {} names.",
+	      applied, (int)names.size()));
+}
+
+/** APST accessors for save/load */
+bool AP_GetTownsRenamed()       { return _ap_towns_renamed; }
+void AP_SetTownsRenamed(bool v) { _ap_towns_renamed = v; }
+
+/* -------------------------------------------------------------------------
  * Session statistics — cumulative cargo delivery and profit accumulators.
  *
  * OpenTTD stores per-period stats in old_economy[0] (last completed period)
@@ -174,23 +306,16 @@ static std::set<std::string> _ap_sent_shop_locations; ///< Shop locations alread
 static uint32_t _ap_snap_cargo[NUM_CARGO]       = {};
 static Money    _ap_snap_profit                 = 0;
 
-/* ── Local Task System — declared early so AP_InitSessionStats can reset them ── */
-static std::vector<APTask> _ap_tasks;
-static int _ap_task_next_id          = 1;    ///< Auto-increment ID for new tasks
-static int _ap_task_checks_completed = 0;    ///< Mission-check rewards collected; adds to shop counter
-
 static void AP_InitSessionStats()
 {
 	for (CargoType i = 0; i < NUM_CARGO; i++) { _ap_cumul_cargo[i] = 0; _ap_snap_cargo[i] = 0; }
-	_ap_cumul_profit      = 0;
-	_ap_snap_profit       = 0;
-	_ap_stats_initialized = false;
-	_ap_shop_purchased    = false;
+	_ap_cumul_profit           = 0;
+	_ap_snap_profit            = 0;
+	_ap_stats_initialized      = false;
+	_ap_shop_purchased         = false;
+	_ap_items_received_count   = 0;   /* Reset for new games; loaded games restore from APST */
 	_ap_sent_shop_locations.clear();
-	/* Reset task state for new session */
-	_ap_tasks.clear();
-	_ap_task_next_id          = 1;
-	_ap_task_checks_completed = 0;
+	_ap_towns_renamed          = false; /* Reset for new games; loaded games restore from APST */
 	if (!_ap_cargo_map_built) BuildCargoMap();
 }
 
@@ -411,10 +536,9 @@ static bool EvaluateMission(APMission &m)
 	 * Also handle legacy UTF-8 £ keys for old saves. */
 	else if (m.type == "earn monthly" ||
 	         m.unit == "\xC2\xA3/month" || m.unit == "£/month") {
-		/* Monthly: use the LIVE current period income + expenses (expenses is negative in OpenTTD).
-		 * Using cur_economy means it resets at each period start and tracks
-		 * only THIS month's running profit — never counts losses as progress. */
-		int64_t monthly_net = (int64_t)(c->cur_economy.income + c->cur_economy.expenses);
+		/* Monthly: income – expenses of last completed period.
+		 * Guard against negative (startup costs showing as "earned") */
+		int64_t monthly_net = (int64_t)(c->old_economy[0].income + c->old_economy[0].expenses);
 		current = monthly_net > 0 ? monthly_net : 0;
 	}
 	else if (m.type == "earn" ||
@@ -565,6 +689,14 @@ std::string _ap_last_pass;
 bool        _ap_last_ssl = false;
 
 /* -------------------------------------------------------------------------
+ * Town rename settings — chosen in the connect window before generating a world
+ * ---------------------------------------------------------------------- */
+
+/* NOTE: _ap_town_rename_mode, _ap_town_custom_names, _ap_towns_renamed are
+ * declared at the top of this file (near _ap_cargo_map) so they are available
+ * to AP_RenameTowns() and AP_InitSessionStats() which appear earlier. */
+
+/* -------------------------------------------------------------------------
  * Engine name <-> EngineID map
  * Built once when we enter GM_NORMAL for the first time in a session.
  * Used only for name-based lookups when AP sends us an item.
@@ -581,6 +713,252 @@ static bool _ap_engine_map_built = false;
  *  The periodic re-lock sweep uses this to distinguish "AP-unlocked" from
  *  "re-introduced by StartupEngines()" — only engines in this set survive. */
 static std::set<EngineID> _ap_unlocked_engine_ids;
+
+/** Public API: check if a specific engine has been unlocked via AP items. */
+bool AP_IsEngineUnlocked(uint32_t engine_id)
+{
+	return _ap_unlocked_engine_ids.count((EngineID)engine_id) > 0;
+}
+
+/* ── Track direction locks ──────────────────────────────────────────────── *
+ * One bitmask per rail type (bits 0-5 = TRACK_X..TRACK_RIGHT).
+ * Index matches C++ RailType enum: 0=Normal, 1=Electric, 2=Monorail, 3=Maglev.
+ * When enable_rail_direction_unlocks is true in slot_data, all bytes are set
+ * to 0x3F (all 6 bits) at session start. Each received item clears one bit.
+ * Array is fully unlocked (all zeros) when option is disabled.
+ */
+static constexpr int AP_NUM_RAILTYPES = 4;
+static uint8_t _ap_locked_track_dirs[AP_NUM_RAILTYPES] = {0, 0, 0, 0};
+/** True once session init has set the initial lock state.
+ *  Reset to false by AP_OnSlotData so reconnects don't re-lock
+ *  directions that were already restored from the savegame. */
+static bool _ap_track_dirs_inited = false;
+
+/* Road direction locks: bit 0=X (NE-SW), bit 1=Y (NW-SE) */
+static uint8_t _ap_locked_road_dirs = 0;
+static bool    _ap_road_dirs_inited = false;
+
+/* Signal locks: bits 0-5 map to SignalType enum */
+static uint8_t _ap_locked_signals = 0;
+static bool    _ap_signals_inited = false;
+
+/* Bridge locks: bits 0-12 map to BridgeType */
+static uint16_t _ap_locked_bridges = 0;
+static bool     _ap_bridges_inited = false;
+
+/* Tunnel lock: single bool */
+static bool _ap_locked_tunnels = false;
+static bool _ap_tunnels_inited = false;
+
+/* Airport locks: bits 0-8 map to AirportTypes; bit 0 (AT_SMALL) always free */
+static uint16_t _ap_locked_airports = 0;
+static bool     _ap_airports_inited = false;
+
+/* Tree locks: bits 0-9 map to tree packs */
+static uint16_t _ap_locked_trees = 0;
+static bool     _ap_trees_inited = false;
+
+/* Terraform locks: bit 0=Raise, bit 1=Lower */
+static uint8_t _ap_locked_terraform = 0;
+static bool    _ap_terraform_inited = false;
+
+/* Town Authority action locks: bits 0-7 map to TownAction enum */
+static uint8_t _ap_locked_town_actions = 0;
+static bool    _ap_town_actions_inited = false;
+
+/* ── Ruin Objects ──────────────────────────────────────────────── */
+/* GRFID "APRU" — stored little-endian as read by ReadDWord():
+ *   file bytes  41 50 52 55  →  LE uint32  0x55525041              */
+static constexpr uint32_t AP_RUINS_GRFID = 0x55525041;
+static constexpr int AP_NUM_RUIN_TYPES = 6;
+
+/* Cached ObjectType indices for the 6 ruin types (resolved after GRF load). */
+static ObjectType _ap_ruin_types[AP_NUM_RUIN_TYPES] = {
+	INVALID_OBJECT_TYPE, INVALID_OBJECT_TYPE, INVALID_OBJECT_TYPE,
+	INVALID_OBJECT_TYPE, INVALID_OBJECT_TYPE, INVALID_OBJECT_TYPE
+};
+static bool _ap_ruin_types_resolved = false;
+
+/** Resolve ruin ObjectTypes by scanning ObjectSpecs for our GRFID.
+ *  Called once after world generation when the GRF is loaded. */
+static void AP_ResolveRuinTypes()
+{
+	if (_ap_ruin_types_resolved) return;
+	_ap_ruin_types_resolved = true;
+
+	for (int i = 0; i < AP_NUM_RUIN_TYPES; i++) _ap_ruin_types[i] = INVALID_OBJECT_TYPE;
+
+	const auto &specs = ObjectSpec::Specs();
+	for (size_t idx = NEW_OBJECT_OFFSET; idx < specs.size(); idx++) {
+		const ObjectSpec &s = specs[idx];
+		if (!s.IsEnabled()) continue;
+		if (s.grf_prop.grfid != AP_RUINS_GRFID) continue;
+		uint16_t local_id = s.grf_prop.local_id;
+		if (local_id < AP_NUM_RUIN_TYPES) {
+			_ap_ruin_types[local_id] = static_cast<ObjectType>(idx);
+			AP_LOG(fmt::format("Resolved ruin type {} → ObjectType {}", local_id, idx));
+		}
+	}
+}
+
+/** Place a ruin object on a random valid tile.
+ *  @param ruin_index 0..5 (matches NML item IDs)
+ *  @return true if successfully placed */
+static bool AP_PlaceRuin(int ruin_index)
+{
+	AP_ResolveRuinTypes();
+
+	if (ruin_index < 0 || ruin_index >= AP_NUM_RUIN_TYPES) return false;
+	ObjectType ot = _ap_ruin_types[ruin_index];
+	if (ot == INVALID_OBJECT_TYPE) {
+		AP_WARN(fmt::format("Ruin type {} not resolved — GRF missing?", ruin_index));
+		return false;
+	}
+
+	/* Try random tiles until we find one that works */
+	for (int attempt = 0; attempt < 5000; attempt++) {
+		TileIndex tile = RandomTile();
+
+		/* Quick pre-checks: flat, clear land, not too close to edge */
+		if (!IsValidTile(tile)) continue;
+		if (TileX(tile) < 2 || TileY(tile) < 2) continue;
+		if (TileX(tile) >= Map::SizeX() - 2 || TileY(tile) >= Map::SizeY() - 2) continue;
+
+		/* Try to build the object (Deity command) */
+		CompanyID old_company = _current_company;
+		_current_company = OWNER_DEITY;
+		CommandCost res = Command<CMD_BUILD_OBJECT>::Do(
+			DoCommandFlags{DoCommandFlag::Execute},
+			tile, ot, 0);
+		_current_company = old_company;
+
+		if (res.Succeeded()) {
+			AP_OK(fmt::format("Ruin placed at tile {}", tile));
+			return true;
+		}
+	}
+
+	AP_WARN(fmt::format("Failed to place ruin type {} after 5000 attempts", ruin_index));
+	return false;
+}
+
+/* ── Ruin Gameplay System ─────────────────────────────────────────── */
+/* Active ruins on the map, requiring cargo delivery to clear.        */
+static std::vector<APRuin> _ap_active_ruins;
+static int _ap_ruins_spawned   = 0;  ///< Total spawned this session
+static int _ap_ruins_completed = 0;  ///< Total cleared this session
+static int _ap_ruin_cooldown_months = 0; ///< Months until next spawn allowed
+static constexpr int AP_RUIN_SPAWN_COOLDOWN = 6; ///< Months between new ruin spawns
+static bool _ap_ruins_initial_spawned = false; ///< Have we done the initial batch?
+
+/* Forward declarations for ruin functions (defined after _ap_pending_sd) */
+static bool AP_SpawnRuin();
+static void AP_UpdateRuinProgress(CompanyID cid, std::set<CargoMonitorID> &drained);
+static void AP_RuinMonthlyTick();
+
+/**
+ * Check if a tile is an active (non-completed) ruin and fill cargo acceptance.
+ * Called from object_cmd.cpp AddAcceptedCargo_Object so stations near ruins
+ * correctly show "Accepts: Coal, Goods" etc. and cargo can actually be delivered.
+ */
+bool AP_GetRuinCargoAcceptance(uint32_t tile_index, CargoArray &acceptance, CargoTypes &always_accepted)
+{
+	for (const APRuin &ruin : _ap_active_ruins) {
+		if (ruin.completed) continue;
+		if (ruin.tile != tile_index) continue;
+
+		/* Found an active ruin on this tile — add its cargo reqs as acceptance */
+		for (const APRuinCargoReq &req : ruin.cargo_reqs) {
+			if (req.delivered >= req.required) continue; /* already satisfied */
+			if (req.cargo == 0xFF) continue;             /* invalid cargo */
+			acceptance[req.cargo] += 8; /* 8/8 = full acceptance */
+			SetBit(always_accepted, req.cargo);
+		}
+		return true;
+	}
+	return false;
+}
+
+/** Check if a tile has an active (non-completed) ruin. */
+bool AP_IsRuinTile(uint32_t tile_index)
+{
+	for (const APRuin &ruin : _ap_active_ruins) {
+		if (ruin.tile == tile_index && !ruin.completed) return true;
+	}
+	return false;
+}
+
+/** Fill an APRuinView snapshot for the ruin at the given tile. */
+bool AP_GetRuinViewByTile(uint32_t tile_index, APRuinView &out)
+{
+	for (const APRuin &ruin : _ap_active_ruins) {
+		if (ruin.tile != tile_index) continue;
+		out.id            = ruin.id;
+		out.location_name = ruin.location_name;
+		out.tile          = ruin.tile;
+		out.town_name     = ruin.town_name;
+		out.completed     = ruin.completed;
+		out.cargo.clear();
+		for (const APRuinCargoReq &req : ruin.cargo_reqs) {
+			APRuinView::CargoLine cl;
+			cl.name      = req.cargo_name;
+			cl.required  = req.required;
+			cl.delivered = req.delivered;
+			out.cargo.push_back(std::move(cl));
+		}
+		return true;
+	}
+	return false;
+}
+
+/** Get all ruins for display in the industry directory. */
+std::vector<APRuinView> AP_GetAllRuinViews()
+{
+	std::vector<APRuinView> result;
+	for (const APRuin &ruin : _ap_active_ruins) {
+		APRuinView rv;
+		rv.id            = ruin.id;
+		rv.location_name = ruin.location_name;
+		rv.tile          = ruin.tile;
+		rv.town_name     = ruin.town_name;
+		rv.completed     = ruin.completed;
+		for (const APRuinCargoReq &req : ruin.cargo_reqs) {
+			APRuinView::CargoLine cl;
+			cl.name      = req.cargo_name;
+			cl.required  = req.required;
+			cl.delivered = req.delivered;
+			rv.cargo.push_back(std::move(cl));
+		}
+		result.push_back(std::move(rv));
+	}
+	return result;
+}
+
+/* Fast-forward speed — controlled by Speed Boost items (100→300 in steps of 10) */
+static int _ap_ff_speed = 100;
+
+/* News filter: 0 = Off (no newspaper popups), 1 = Self only, 2 = All (default) */
+int _ap_news_filter = 2;
+
+/* Local Task System state */
+static constexpr int AP_TASK_MAX_ACTIVE = 5;
+static std::vector<APTask> _ap_tasks;
+static int _ap_task_next_id          = 1;    ///< Auto-increment ID for new tasks
+static int _ap_task_checks_completed = 0;    ///< Mission-check rewards collected; adds to shop counter
+static std::string _ap_staging_tasks;        ///< Task string loaded from savegame, applied on first tick
+static int  _ap_staging_task_checks  = 0;
+static bool _ap_staging_has_data     = false;
+
+/* Staging for cumulative stats — restored by SL before first tick, applied after AP_InitSessionStats */
+static uint64_t _ap_staging_cargo[NUM_CARGO] = {};
+static int64_t  _ap_staging_profit           = 0;
+static int64_t  _ap_staging_items_received   = -1;  ///< -1 = not staged
+static bool     _ap_staging_stats            = false;
+
+/* Staging for shop sent locations — AP_InitSessionStats clears _ap_sent_shop_locations,
+ * so the save/load sets this staging string which is applied after init. */
+static std::string _ap_staging_shop_sent;
+static bool        _ap_staging_shop_sent_valid = false;
 
 static void BuildEngineMap()
 {
@@ -887,12 +1265,8 @@ static int         _ap_colby_escape_ticks   = 0;
 static bool        _ap_colby_done           = false;
 static constexpr int64_t COLBY_STEP_AMOUNT  = 200;
 static constexpr int     COLBY_ESCAPE_TICKS = 6000;
-static SignID      _ap_colby_source_sign     = SignID::Invalid();
-static TileIndex   _ap_colby_source_tile     = INVALID_TILE;
-static StationID   _ap_colby_source_station  = StationID::Invalid();
-static IndustryID  _ap_colby_source_industry = IndustryID::Invalid();
-
-static int         _ap_ff_speed             = 100; ///< Current fast-forward cap in % (100=normal, max 300)
+static SignID      _ap_colby_source_sign    = SignID::Invalid();
+static TileIndex   _ap_colby_source_tile    = INVALID_TILE;
 
 /* =========================================================================
  * Colby Event — forward declarations for callbacks
@@ -900,7 +1274,7 @@ static int         _ap_ff_speed             = 100; ///< Current fast-forward cap
 static void AP_ColbyShowFinalQuery();
 static void AP_ColbyShowEscapeQuery();
 static std::string AP_TownName(const Town *t); ///< forward decl — defined near AP_GetSlotData
-static void AP_ShowNews(const std::string &text); ///< forward decl — defined after saveload globals
+static void AP_ShowNews(const std::string &text, bool is_self = true); ///< forward decl — defined after saveload globals
 
 /* =========================================================================
  * Colby Event — popup callbacks (called by query window on main thread)
@@ -914,7 +1288,7 @@ static void AP_ColbyArrestCallback(Window *, bool arrest)
 		CompanyID cid = _local_company;
 		Company *c = Company::GetIfValid(cid);
 		if (c != nullptr) c->money += (Money)10000000LL;
-		AP_ShowNews("[AP] Colby arrested! £10,000,000 reward deposited into your account!");
+		AP_ShowNews(fmt::format("[AP] Colby arrested! {} reward deposited into your account!", AP_Money((Money)10000000LL)));
 		AP_ShowNews(fmt::format("[AP] The town of {} is now free of Colby's influence.", _ap_colby_target_name));
 	} else {
 		/* Let Colby escape — start countdown to second popup */
@@ -939,7 +1313,7 @@ static void AP_ColbyEscapeCallback(Window *, bool imprison)
 		for (Town *t : Town::Iterate()) {
 			t->grow_counter = 0; /* immediate growth pulse in every town */
 		}
-		AP_ShowNews("[AP] Colby sacrificed to the Elder Gods! +£2,000,000 and all towns are growing rapidly!");
+		AP_ShowNews(fmt::format("[AP] Colby sacrificed to the Elder Gods! +{} and all towns are growing rapidly!", AP_Money((Money)2000000LL)));
 	}
 	/* _ap_colby_done was already true from popup A callback */
 }
@@ -974,12 +1348,33 @@ static void AP_ColbyShowEscapeQuery()
 	);
 }
 
-/** Get the runtime CargoType slot for CT_COLBY_PACKAGE (cached after first call). */
+/** Resolve the Colby cargo type. Called once from AP_ColbyInit().
+ *  On Tropical/Toyland the CLBY cargo doesn't exist (no void slot in the
+ *  climate table), so we fall back to the slot_data cargo name which is
+ *  "goods" for Tropical and "sweets" for Toyland. */
+static CargoType AP_ResolveColbyCargo()
+{
+	CargoType ct = GetCargoTypeByLabel(CT_COLBY_PACKAGE);
+	if (ct != INVALID_CARGO) return ct;
+
+	/* Tropical / Toyland — CLBY slot unavailable, fall back to slot_data cargo */
+	if (!_ap_colby_cargo_name.empty()) {
+		ct = (CargoType)AP_FindCargoType(_ap_colby_cargo_name);
+		if (ct != INVALID_CARGO) {
+			AP_OK(fmt::format("[Colby] CLBY cargo unavailable in this climate, using fallback: {}", _ap_colby_cargo_name));
+			return ct;
+		}
+	}
+	/* Last resort — use goods (exists in Temperate/Arctic/Tropical) */
+	ct = (CargoType)AP_FindCargoType("goods");
+	if (ct != INVALID_CARGO) AP_OK("[Colby] Using 'goods' as last-resort Colby cargo");
+	return ct;
+}
+
+/** Get the runtime CargoType for Colby packages (resolved once at init). */
 static CargoType AP_GetColbyPackageCargo()
 {
-	static CargoType ct = INVALID_CARGO;
-	if (ct == INVALID_CARGO) ct = GetCargoTypeByLabel(CT_COLBY_PACKAGE);
-	return ct;
+	return _ap_colby_cargo_type;
 }
 
 /** Remove the source sign from the previous step. */
@@ -988,31 +1383,15 @@ static void AP_ColbyCleanupSource()
 	if (Sign *si = Sign::GetIfValid(_ap_colby_source_sign); si != nullptr) {
 		delete si;
 	}
-	/* Remove any injected package cargo from the industry's produced slot */
-	if (Industry *ind = Industry::GetIfValid(_ap_colby_source_industry); ind != nullptr) {
-		CargoType ct = AP_GetColbyPackageCargo();
-		for (auto &slot : ind->produced) {
-			if (slot.cargo == ct) {
-				slot.cargo   = INVALID_CARGO;
-				slot.waiting = 0;
-				slot.history[THIS_MONTH].production = 0;
-				break;
-			}
-		}
-	}
-	_ap_colby_source_sign     = SignID::Invalid();
-	_ap_colby_source_tile     = INVALID_TILE;
-	_ap_colby_source_station  = StationID::Invalid();
-	_ap_colby_source_industry = IndustryID::Invalid();
+	_ap_colby_source_sign = SignID::Invalid();
+	_ap_colby_source_tile = INVALID_TILE;
 }
 
 /**
  * Spawn the cargo source for the current step:
- *  - Find a nearby industry that does NOT produce CT_COLBY_PACKAGE.
- *  - Add a temporary extra produced slot (or inject into waiting) with COLBY_STEP_AMOUNT*2 packages.
- *  - Place a sign "★ Colby's Stash ★" at the industry tile.
- *  Player builds a station over the industry to collect the packages.
- *  Packages are CargoClass::Express so any goods van / truck can carry them.
+ *  - Find a station 200-400 manhattan tiles from Colby's town.
+ *  - Inject COLBY_STEP_AMOUNT * 2 packages directly into that station.
+ *  - Place a sign "★ Colby's Stash ★" on the station tile.
  */
 static void AP_ColbySpawnSource()
 {
@@ -1025,97 +1404,40 @@ static void AP_ColbySpawnSource()
 
 	TileIndex center = town->xy;
 
-	/* ── 1. Find a suitable industry ───────────────────────────────────────
-	 * Prefer industries within 50–300 tiles that don't already produce packages.
-	 * Fall back progressively if nothing is found. */
-	Industry *best_ind = nullptr;
-	uint best_dist     = UINT_MAX;
+	/* Search for a station at an appropriate distance from the target town */
+	Station *best_st = nullptr;
+	uint best_dist = UINT_MAX;
 
 	auto try_range = [&](uint lo, uint hi) {
-		for (Industry *ind : Industry::Iterate()) {
-			uint d = DistanceManhattan(center, ind->location.tile);
-			if (d < lo || d > hi || d >= best_dist) continue;
-			/* Skip if this industry already produces packages */
-			bool has_pkg = false;
-			for (const auto &slot : ind->produced) {
-				if (IsValidCargoType(slot.cargo) && slot.cargo == ct) { has_pkg = true; break; }
+		for (Station *st : Station::Iterate()) {
+			if (st->owner != _local_company) continue; /* Fix #16: only use player-owned stations */
+			uint d = DistanceManhattan(center, st->xy);
+			if (d >= lo && d <= hi && d < best_dist) {
+				best_st = st;
+				best_dist = d;
 			}
-			if (has_pkg) continue;
-			best_ind  = ind;
-			best_dist = d;
 		}
 	};
 
-	try_range(50,  300);
-	if (best_ind == nullptr) try_range(20, 600);
-	if (best_ind == nullptr) try_range(0,  2000);
+	try_range(200, 400);
+	if (best_st == nullptr) try_range(100, 600);
+	if (best_st == nullptr) try_range(50,  1000);
 
-	if (best_ind == nullptr) {
-		AP_ShowNews(fmt::format("[AP] Colby Event: No industry found near {} for step {}/5. "
-			"The packages will appear at a random map location.", _ap_colby_target_name, _ap_colby_step));
-		/* Last-resort: place a sign in the middle of the map and skip injection */
-		TileIndex fallback = center;
-		if (Sign::CanAllocateItem()) {
-			int px = (int)(TileX(fallback) * TILE_SIZE + TILE_SIZE / 2);
-			int py = (int)(TileY(fallback) * TILE_SIZE + TILE_SIZE / 2);
-			int pz = (int)(TileHeight(fallback) * TILE_HEIGHT);
-			Sign *si = new Sign(OWNER_DEITY, px, py, pz, "\xe2\x98\x85 Colby's Stash \xe2\x98\x85");
-			si->UpdateVirtCoord();
-			_ap_colby_source_sign = si->index;
-			_ap_colby_source_tile = fallback;
-		}
+	if (best_st == nullptr) {
+		AP_ShowNews(fmt::format("[AP] Colby Event: No station found to place packages for step {}/5. Build more stations!", _ap_colby_step));
 		return;
 	}
 
-	/* ── 2. Inject packages into the industry's produced list ──────────────
-	 * Find an existing empty produced slot and temporarily use it for packages.
-	 * If no empty slot, use the first non-package slot and remember the original cargo
-	 * so we can restore it when the step completes. */
-	_ap_colby_source_industry = best_ind->index;
-	_ap_colby_source_tile     = best_ind->location.tile;
+	_ap_colby_source_tile = best_st->xy;
 
-	uint16_t inject_amount = (uint16_t)std::min((int64_t)COLBY_STEP_AMOUNT * 2, (int64_t)UINT16_MAX);
+	/* Inject packages into the station cargo list */
+	uint16_t amount = (uint16_t)std::min((int64_t)COLBY_STEP_AMOUNT * 2, (int64_t)UINT16_MAX);
+	Source src{best_st->town->index, SourceType::Town}; /* Fix #17: source is a town, not an industry */
+	CargoPacket *cp = new CargoPacket(best_st->index, amount, src);
+	best_st->goods[ct].GetOrCreateData().cargo.Append(cp, StationID::Invalid());
+	best_st->goods[ct].status.Set(GoodsEntry::State::Rating);
 
-	/* Try to find an unused produced slot */
-	bool injected = false;
-	for (auto &slot : best_ind->produced) {
-		if (!IsValidCargoType(slot.cargo)) {
-			/* Empty slot — borrow it temporarily */
-			slot.cargo   = ct;
-			slot.waiting = inject_amount;
-			slot.history[THIS_MONTH].production = inject_amount;
-			injected = true;
-			break;
-		}
-	}
-
-	if (!injected) {
-		/* All produced slots are used — inject directly into the first non-package slot
-		 * by adding to its waiting count without changing cargo type */
-		for (auto &slot : best_ind->produced) {
-			if (IsValidCargoType(slot.cargo) && slot.cargo != ct) {
-				/* We can't change the cargo type; instead log a warning and use station fallback */
-				break;
-			}
-		}
-		/* Station injection fallback: find or use any station near the industry */
-		Station *fallback_st = nullptr;
-		uint fallback_dist   = UINT_MAX;
-		for (Station *st : Station::Iterate()) {
-			uint d = DistanceManhattan(best_ind->location.tile, st->xy);
-			if (d < 50 && d < fallback_dist) { fallback_st = st; fallback_dist = d; }
-		}
-		if (fallback_st != nullptr) {
-			Source src{fallback_st->index, SourceType::Industry};
-			CargoPacket *cp = new CargoPacket(fallback_st->index, inject_amount, src);
-			fallback_st->goods[ct].GetOrCreateData().cargo.Append(cp, StationID::Invalid());
-			fallback_st->goods[ct].status.Set(GoodsEntry::State::Rating);
-			_ap_colby_source_station = fallback_st->index;
-			_ap_colby_source_tile    = fallback_st->xy;
-		}
-	}
-
-	/* ── 3. Place sign at the industry tile ─────────────────────────────── */
+	/* Place sign at the source station tile */
 	if (Sign::CanAllocateItem()) {
 		int px = (int)(TileX(_ap_colby_source_tile) * TILE_SIZE + TILE_SIZE / 2);
 		int py = (int)(TileY(_ap_colby_source_tile) * TILE_SIZE + TILE_SIZE / 2);
@@ -1125,26 +1447,26 @@ static void AP_ColbySpawnSource()
 		_ap_colby_source_sign = si->index;
 	}
 
-	/* ── 4. News announcement ───────────────────────────────────────────── */
-	const IndustrySpec *spec = GetIndustrySpec(best_ind->type);
-	std::string ind_name = (spec != nullptr) ? GetString(spec->name) : "an industry";
-	AP_ShowNews(fmt::format("[AP] Step {}/5: Build a station over {} near {} "
-		"to collect {} packages, then deliver to {}!",
-		_ap_colby_step, ind_name, _ap_colby_target_name,
-		COLBY_STEP_AMOUNT, _ap_colby_target_name));
+	AP_ShowNews(fmt::format("[AP] Step {}/5: Load {} packages from station near {} and deliver to {}!",
+		_ap_colby_step, COLBY_STEP_AMOUNT, best_st->GetCachedName(), _ap_colby_target_name));
 
-	/* ── 5. Force destination stations to accept packages ───────────────── */
-	const Town *target_t = Town::GetIfValid(_ap_colby_target_town);
-	if (target_t != nullptr) {
-		for (Station *dest_st : Station::Iterate()) {
-			if (dest_st->town == nullptr) continue;
-			if (dest_st->town->index != _ap_colby_target_town) continue;
-			dest_st->always_accepted |= (1ULL << ct);
-			dest_st->goods[ct].status.Set(GoodsEntry::State::Rating);
+	/* Force destination stations near the target town to accept packages.
+	 * Without this, station placement dialog won't show "Accepts: Packages"
+	 * and auto-unload won't work unless player uses "Unload all" order.
+	 * We set always_accepted on every station within 64 tiles of the town. */
+	if (_ap_colby_target_town != (TownID)UINT16_MAX) {
+		const Town *target_t = Town::GetIfValid(_ap_colby_target_town);
+		if (target_t != nullptr) {
+			for (Station *dest_st : Station::Iterate()) {
+				if (dest_st->town == nullptr) continue;
+				if (dest_st->town->index != _ap_colby_target_town) continue;
+				/* Mark this station as always accepting packages */
+				dest_st->always_accepted |= (1ULL << ct);
+				dest_st->goods[ct].status.Set(GoodsEntry::State::Rating);
+			}
 		}
 	}
 }
-
 
 /** Announce the current active step via news. */
 static void AP_ColbyAnnounceStep()
@@ -1173,9 +1495,14 @@ static void AP_ColbyInit()
 {
 	if (!_ap_colby_enabled) return;
 
-	/* Always use CT_COLBY_PACKAGE — no slot_data cargo resolution needed */
-	_ap_colby_cargo_type = AP_GetColbyPackageCargo();
-	_ap_colby_cargo_name = "packages";
+	/* Resolve cargo type — uses CLBY label on Temperate/Arctic, falls back to
+	 * slot_data cargo name (goods/sweets) on Tropical/Toyland. */
+	_ap_colby_cargo_type = AP_ResolveColbyCargo();
+	if (_ap_colby_cargo_type == INVALID_CARGO) {
+		AP_WARN("[Colby] No valid cargo type available — disabling event.");
+		_ap_colby_enabled = false;
+		return;
+	}
 
 	if (_ap_colby_step != 0) {
 		/* Loaded from savegame — re-register cargomonitor if a step is active. */
@@ -1310,12 +1637,15 @@ void AP_SetColbyState(int step, int64_t delivered, int target_town,
 }
 
 
-static void AP_ShowNews(const std::string &text)
+static void AP_ShowNews(const std::string &text, bool is_self)
 {
 	IConsolePrint(CC_INFO, "[AP] " + text);
 	Debug(misc, 0, "[AP] {}", text);
 
-	if (_game_mode == GM_NORMAL) {
+	/* Filter: 0=Off (never), 1=Self only, 2=All */
+	bool show = (_game_mode == GM_NORMAL) &&
+	            ((_ap_news_filter >= 2) || (_ap_news_filter == 1 && is_self));
+	if (show) {
 		AddNewsItem(
 			GetEncodedString(STR_ARCHIPELAGO_NEWS, text),
 			NewsType::General,
@@ -1324,6 +1654,691 @@ static void AP_ShowNews(const std::string &text)
 		);
 	}
 }
+
+/* Forward declaration — defined later in this file */
+extern std::atomic<bool> _ap_status_dirty;
+
+/* =========================================================================
+ * Demigods (God of Wackens) — state and logic
+ * ========================================================================= */
+static bool        _ap_demigod_enabled        = false;
+static std::vector<APDemigodDef> _ap_demigod_defs;
+static std::set<std::string>     _ap_demigod_defeated;   ///< Location names of defeated demigods
+static int         _ap_demigod_active_idx     = -1;      ///< Index into _ap_demigod_defs; -1 = none
+static CompanyID   _ap_demigod_active_company = CompanyID::Invalid();
+static int         _ap_demigod_next_spawn_year = 0;
+static bool        _ap_demigod_pending_name   = false;   ///< Waiting one tick to name the new AI company
+static int         _ap_demigod_interval_min   = 5;       ///< Min years between spawns (from slot_data)
+static int         _ap_demigod_interval_max   = 15;      ///< Max years between spawns (from slot_data)
+/* Saved vehicle restrictions (restored on defeat) */
+static bool        _ap_demigod_veh_saved      = false;
+static bool        _ap_demigod_saved_train    = false;
+static bool        _ap_demigod_saved_roadveh  = false;
+static bool        _ap_demigod_saved_aircraft = false;
+static bool        _ap_demigod_saved_ship     = false;
+
+/** Apply vehicle type restrictions matching a demigod theme. */
+static void AP_DemigodApplyTheme(const std::string &theme)
+{
+	/* Save player's original settings (only first time) */
+	if (!_ap_demigod_veh_saved) {
+		_ap_demigod_saved_train    = _settings_game.ai.ai_disable_veh_train;
+		_ap_demigod_saved_roadveh  = _settings_game.ai.ai_disable_veh_roadveh;
+		_ap_demigod_saved_aircraft = _settings_game.ai.ai_disable_veh_aircraft;
+		_ap_demigod_saved_ship     = _settings_game.ai.ai_disable_veh_ship;
+		_ap_demigod_veh_saved = true;
+	}
+	/* Default: all disabled, then enable themed type */
+	bool t = true, r = true, a = true, s = true;
+	if (theme == "trains")    { t = false; }
+	else if (theme == "road")     { r = false; }
+	else if (theme == "aircraft") { a = false; }
+	else if (theme == "ships")    { s = false; }
+	else { t = false; r = false; a = false; s = false; } /* freight/mixed: all enabled */
+	_settings_game.ai.ai_disable_veh_train    = t;
+	_settings_game.ai.ai_disable_veh_roadveh  = r;
+	_settings_game.ai.ai_disable_veh_aircraft = a;
+	_settings_game.ai.ai_disable_veh_ship     = s;
+}
+
+/** Restore original vehicle restrictions after a demigod is defeated/removed. */
+static void AP_DemigodRestoreRestrictions()
+{
+	if (!_ap_demigod_veh_saved) return;
+	_settings_game.ai.ai_disable_veh_train    = _ap_demigod_saved_train;
+	_settings_game.ai.ai_disable_veh_roadveh  = _ap_demigod_saved_roadveh;
+	_settings_game.ai.ai_disable_veh_aircraft = _ap_demigod_saved_aircraft;
+	_settings_game.ai.ai_disable_veh_ship     = _ap_demigod_saved_ship;
+	_ap_demigod_veh_saved = false;
+}
+
+/** God of Wackens newspaper lines for spawning. */
+static const char *kWackensSpawnLines[] = {
+	"The God of Wackens has grown bored... He summons the {} to humble the mortal transport companies!",
+	"The God of Wackens has noticed your inefficient logistics. He sends the {} to show you how it's done.",
+	"The God of Wackens has awakened after a 300 year nap. He is immediately disappointed in your logistics. The {} arrives!",
+	"The God of Wackens is displeased. He sends forth the {}!",
+	"A divine rumble echoes across the land. The God of Wackens conjures the {}!",
+};
+
+/** Spawn the next undefeated demigod. */
+static void AP_DemigodSpawn()
+{
+	/* Pick next undefeated demigod */
+	int pick = -1;
+	for (int i = 0; i < (int)_ap_demigod_defs.size(); i++) {
+		if (_ap_demigod_defeated.count(_ap_demigod_defs[i].location) == 0) {
+			pick = i;
+			break;
+		}
+	}
+	if (pick < 0) return; /* all defeated */
+
+	/* Check company slot availability (max 15) */
+	if (!Company::CanAllocateItem()) {
+		AP_ShowNews("[AP] The God of Wackens tries to send a demigod, but the world is too crowded! (Company limit reached)");
+		_ap_demigod_next_spawn_year++; /* retry next year */
+		return;
+	}
+
+	const APDemigodDef &def = _ap_demigod_defs[pick];
+
+	/* Apply vehicle type restrictions for this theme */
+	AP_DemigodApplyTheme(def.theme);
+
+	/* Create AI company */
+	Command<CMD_COMPANY_CTRL>::Post(CCA_NEW_AI, CompanyID::Invalid(), CRR_NONE, INVALID_CLIENT_ID);
+
+	_ap_demigod_active_idx = pick;
+	_ap_demigod_pending_name = true; /* will set name on next tick */
+
+	/* Show God of Wackens newspaper */
+	int line_idx = (int)(RandomRange((uint32_t)(sizeof(kWackensSpawnLines) / sizeof(kWackensSpawnLines[0]))));
+	AP_ShowNews(fmt::format(fmt::runtime(kWackensSpawnLines[line_idx]), def.name));
+
+	Debug(misc, 0, "[AP] Demigod spawned: {} (theme={}, tribute={})", def.name, def.theme, def.tribute_cost);
+}
+
+/** Calculate the next spawn year from the current year + random interval. */
+static void AP_DemigodScheduleNext()
+{
+	int cur = (int)TimerGameCalendar::year.base();
+	int min_iv = std::max(1, _ap_demigod_interval_min);
+	int max_iv = std::max(min_iv, _ap_demigod_interval_max);
+	_ap_demigod_next_spawn_year = cur + min_iv + (int)RandomRange((uint32_t)(max_iv - min_iv + 1));
+	Debug(misc, 0, "[AP] Next demigod spawn scheduled for year {}", _ap_demigod_next_spawn_year);
+}
+
+/** Called every realtime tick. Handles pending naming, company health, and spawn timer. */
+static void AP_DemigodTick()
+{
+	if (!_ap_demigod_enabled) return;
+
+	/* Handle pending naming — find the newest AI company and set its name */
+	if (_ap_demigod_pending_name && _ap_demigod_active_idx >= 0 &&
+	    _ap_demigod_active_idx < (int)_ap_demigod_defs.size()) {
+		CompanyID newest = CompanyID::Invalid();
+		for (const Company *c : Company::Iterate()) {
+			if (c->is_ai && (newest == CompanyID::Invalid() || c->index > newest)) {
+				newest = c->index;
+			}
+		}
+		if (newest != CompanyID::Invalid()) {
+			Company *c = Company::Get(newest);
+			const APDemigodDef &def = _ap_demigod_defs[_ap_demigod_active_idx];
+			c->name = def.name;
+			c->president_name = def.president_name;
+			_ap_demigod_active_company = newest;
+			_ap_demigod_pending_name = false;
+			InvalidateWindowClassesData(WC_COMPANY);
+			Debug(misc, 0, "[AP] Demigod company named: {} (CompanyID={})", def.name, (int)newest.base());
+		}
+	}
+
+	/* Check if active demigod's company was deleted externally (bankrupt, etc.) */
+	if (_ap_demigod_active_idx >= 0 && _ap_demigod_active_idx < (int)_ap_demigod_defs.size() &&
+	    !_ap_demigod_pending_name) {
+		if (!Company::IsValidID(_ap_demigod_active_company)) {
+			const APDemigodDef &def = _ap_demigod_defs[_ap_demigod_active_idx];
+			AP_ShowNews(fmt::format("[AP] The {} has gone bankrupt. The God of Wackens is disappointed.", def.name));
+			AP_DemigodRestoreRestrictions();
+			_ap_demigod_active_idx = -1;
+			_ap_demigod_active_company = CompanyID::Invalid();
+			/* Don't send AP check — not a proper defeat. Schedule next. */
+			if ((int)_ap_demigod_defeated.size() < (int)_ap_demigod_defs.size()) {
+				AP_DemigodScheduleNext();
+			}
+		}
+	}
+
+	/* Spawn timer — check if it's time to spawn */
+	if (_ap_demigod_active_idx < 0 && !_ap_demigod_pending_name && _ap_demigod_next_spawn_year > 0) {
+		int cur_year = (int)TimerGameCalendar::year.base();
+		if (cur_year >= _ap_demigod_next_spawn_year) {
+			AP_DemigodSpawn();
+		}
+	}
+}
+
+/** Called during first-tick session setup. Takes slot_data by reference. */
+static void AP_DemigodInit(const APSlotData &sd)
+{
+	_ap_demigod_enabled      = sd.demigod_enabled;
+	_ap_demigod_defs         = sd.demigods;
+	_ap_demigod_interval_min = sd.demigod_spawn_interval_min;
+	_ap_demigod_interval_max = sd.demigod_spawn_interval_max;
+	/* Don't clear _ap_demigod_defeated — loaded from savegame. */
+	/* If enabled and no active demigod and no spawn scheduled, schedule the first one. */
+	if (_ap_demigod_enabled && _ap_demigod_active_idx < 0 && _ap_demigod_next_spawn_year == 0) {
+		AP_DemigodScheduleNext();
+	}
+	/* If an active demigod is loaded from save, re-apply vehicle restrictions */
+	if (_ap_demigod_active_idx >= 0 && _ap_demigod_active_idx < (int)_ap_demigod_defs.size()) {
+		if (Company::IsValidID(_ap_demigod_active_company)) {
+			/* Vehicle restrictions are already saved in the APST chunk, just re-apply theme */
+			const APDemigodDef &def = _ap_demigod_defs[_ap_demigod_active_idx];
+			/* Don't call AP_DemigodApplyTheme — saved restrictions were already persisted.
+			 * Just set the settings directly based on theme. */
+			bool t = true, r = true, a = true, s = true;
+			if (def.theme == "trains")    { t = false; }
+			else if (def.theme == "road")     { r = false; }
+			else if (def.theme == "aircraft") { a = false; }
+			else if (def.theme == "ships")    { s = false; }
+			else { t = false; r = false; a = false; s = false; }
+			_settings_game.ai.ai_disable_veh_train    = t;
+			_settings_game.ai.ai_disable_veh_roadveh  = r;
+			_settings_game.ai.ai_disable_veh_aircraft = a;
+			_settings_game.ai.ai_disable_veh_ship     = s;
+		} else {
+			/* Company gone after load — clean up */
+			AP_DemigodRestoreRestrictions();
+			_ap_demigod_active_idx = -1;
+			_ap_demigod_active_company = CompanyID::Invalid();
+			if ((int)_ap_demigod_defeated.size() < (int)_ap_demigod_defs.size()) {
+				AP_DemigodScheduleNext();
+			}
+		}
+	}
+	Debug(misc, 0, "[AP] Demigod init: enabled={} defs={} defeated={} active={} next_year={}",
+	      _ap_demigod_enabled, _ap_demigod_defs.size(), _ap_demigod_defeated.size(),
+	      _ap_demigod_active_idx, _ap_demigod_next_spawn_year);
+}
+
+/** Tribute payment — defeat the active demigod. Called from GUI. */
+void AP_DemigodDefeat()
+{
+	if (_ap_demigod_active_idx < 0 || _ap_demigod_active_idx >= (int)_ap_demigod_defs.size()) return;
+	const APDemigodDef &def = _ap_demigod_defs[_ap_demigod_active_idx];
+
+	/* Check player has enough money */
+	CompanyID cid = _local_company;
+	Company *c = Company::GetIfValid(cid);
+	if (c == nullptr || c->money < (Money)def.tribute_cost) return;
+
+	/* Deduct tribute cost */
+	c->money -= (Money)def.tribute_cost;
+
+	/* Delete demigod company */
+	if (Company::IsValidID(_ap_demigod_active_company)) {
+		Command<CMD_COMPANY_CTRL>::Post(CCA_DELETE, _ap_demigod_active_company, CRR_MANUAL, INVALID_CLIENT_ID);
+	}
+
+	/* Restore vehicle restrictions */
+	AP_DemigodRestoreRestrictions();
+
+	/* Send AP location check */
+	if (_ap_client != nullptr) {
+		_ap_client->SendCheckByName(def.location);
+	}
+
+	/* Record defeat */
+	_ap_demigod_defeated.insert(def.location);
+
+	/* Show victory news */
+	AP_ShowNews(fmt::format("[AP] You have paid tribute to the Elder Gods! The {} fades from existence.", def.name));
+
+	/* Clean up */
+	_ap_demigod_active_idx = -1;
+	_ap_demigod_active_company = CompanyID::Invalid();
+
+	/* Check if all defeated */
+	if ((int)_ap_demigod_defeated.size() >= (int)_ap_demigod_defs.size()) {
+		AP_ShowNews("[AP] All demigods have been defeated! The God of Wackens acknowledges your supremacy!");
+	} else {
+		AP_DemigodScheduleNext();
+	}
+
+	_ap_status_dirty.store(true);
+}
+
+/** Status snapshot for the GUI. */
+DemigodStatus AP_GetDemigodStatus()
+{
+	DemigodStatus s{};
+	s.enabled        = _ap_demigod_enabled;
+	s.active         = (_ap_demigod_active_idx >= 0 && !_ap_demigod_pending_name);
+	s.defeated_count = (int)_ap_demigod_defeated.size();
+	s.total_count    = (int)_ap_demigod_defs.size();
+	s.active_idx     = _ap_demigod_active_idx;
+	s.next_spawn_year = _ap_demigod_next_spawn_year;
+	s.active_company = -1;
+	if (s.active && _ap_demigod_active_idx < (int)_ap_demigod_defs.size()) {
+		const APDemigodDef &def = _ap_demigod_defs[_ap_demigod_active_idx];
+		s.active_name    = def.name;
+		s.active_theme   = def.theme;
+		s.tribute_cost   = def.tribute_cost;
+		s.active_company = (int)_ap_demigod_active_company.base();
+	}
+	return s;
+}
+
+bool AP_IsDemigodEnabled()
+{
+	return _ap_demigod_enabled && !_ap_demigod_defs.empty();
+}
+
+/** Save/load helpers for demigod state. */
+void AP_GetDemigodState(std::string *defeated, int *active_idx, int *company,
+                        int *next_year, bool *veh_saved, bool *sv_train,
+                        bool *sv_road, bool *sv_air, bool *sv_ship)
+{
+	/* Serialize defeated set as comma-separated location names */
+	std::string d;
+	for (const auto &loc : _ap_demigod_defeated) {
+		if (!d.empty()) d += ',';
+		d += loc;
+	}
+	*defeated   = d;
+	*active_idx = _ap_demigod_active_idx;
+	*company    = (_ap_demigod_active_company != CompanyID::Invalid())
+	              ? (int)_ap_demigod_active_company.base() : -1;
+	*next_year  = _ap_demigod_next_spawn_year;
+	*veh_saved  = _ap_demigod_veh_saved;
+	*sv_train   = _ap_demigod_saved_train;
+	*sv_road    = _ap_demigod_saved_roadveh;
+	*sv_air     = _ap_demigod_saved_aircraft;
+	*sv_ship    = _ap_demigod_saved_ship;
+}
+
+void AP_SetDemigodState(const std::string &defeated, int active_idx, int company,
+                        int next_year, bool veh_saved, bool sv_train,
+                        bool sv_road, bool sv_air, bool sv_ship)
+{
+	_ap_demigod_defeated.clear();
+	if (!defeated.empty()) {
+		const char *p   = defeated.data();
+		const char *end = p + defeated.size();
+		while (p < end) {
+			const char *comma = (const char *)memchr(p, ',', (size_t)(end - p));
+			if (comma == nullptr) comma = end;
+			if (comma > p) _ap_demigod_defeated.insert(std::string(p, comma));
+			p = (comma < end) ? comma + 1 : end;
+		}
+	}
+	_ap_demigod_active_idx     = active_idx;
+	_ap_demigod_active_company = (company >= 0) ? (CompanyID)(uint8_t)company : CompanyID::Invalid();
+	_ap_demigod_next_spawn_year = next_year;
+	_ap_demigod_veh_saved      = veh_saved;
+	_ap_demigod_saved_train    = sv_train;
+	_ap_demigod_saved_roadveh  = sv_road;
+	_ap_demigod_saved_aircraft = sv_air;
+	_ap_demigod_saved_ship     = sv_ship;
+}
+
+/* =========================================================================
+ * DAY / NIGHT CYCLE
+ *
+ * Swaps between OpenGFX (day) and NightGFX (night) every 6 game months.
+ * Jan–Jun = day, Jul–Dec = night.  Requires NightGFX to be installed.
+ * ========================================================================= */
+
+static bool _ap_daynight_is_night = false; ///< true when NightGFX is active
+static const char *kDayBaseSet   = "OpenGFX";
+static const char *kNightBaseSet = "NightGFX";
+
+/** Switch the base graphics set and reload all sprites mid-game. */
+static void AP_DayNightSwitch(bool to_night)
+{
+	if (_ap_daynight_is_night == to_night) return; /* already correct */
+
+	const char *target = to_night ? kNightBaseSet : kDayBaseSet;
+	bool ok = BaseGraphics::SetSetByName(target);
+	if (!ok) {
+		Debug(misc, 0, "[AP] Day/Night: baseset '{}' not found — skipping switch", target);
+		return;
+	}
+
+	_ap_daynight_is_night = to_night;
+	GfxLoadSprites();
+	MarkWholeScreenDirty();
+	Debug(misc, 0, "[AP] Day/Night: switched to {} ({})", to_night ? "night" : "day", target);
+}
+
+/** Called every game month from the calendar timer.
+ *  Months 0-5 (Jan-Jun) = day, months 6-11 (Jul-Dec) = night. */
+static void AP_DayNightTick()
+{
+	if (_game_mode != GM_NORMAL) return;
+	if (!AP_IsConnected()) return;
+
+	/* Check if NightGFX is available at all */
+	static bool _night_available = true; /* optimistic — set false on first failure */
+	if (!_night_available) return;
+
+	bool want_night = (TimerGameCalendar::month >= 6);
+	if (want_night == _ap_daynight_is_night) return;
+
+	const char *target = want_night ? kNightBaseSet : kDayBaseSet;
+	bool ok = BaseGraphics::SetSetByName(target);
+	if (!ok) {
+		if (want_night) {
+			_night_available = false;
+			Debug(misc, 0, "[AP] Day/Night: NightGFX not found — feature disabled");
+		}
+		return;
+	}
+
+	_ap_daynight_is_night = want_night;
+	GfxLoadSprites();
+	MarkWholeScreenDirty();
+	Debug(misc, 0, "[AP] Day/Night: switched to {} (month={})",
+	      want_night ? "night" : "day", (int)TimerGameCalendar::month);
+}
+
+/* =========================================================================
+ * WRATH OF THE GOD OF WACKENS
+ *
+ * Tracks player destruction (houses, roads, terrain, trees) via yearly
+ * counters.  When limits are exceeded the divine anger meter (0-5) rises
+ * and escalating punishments are applied.  Anger decays 1 level per year
+ * if the player behaves.
+ * ========================================================================= */
+
+static bool _ap_wrath_enabled          = false;
+static int  _ap_wrath_anger            = 0;      ///< 0=Peaceful .. 5=Divine Wrath
+static int  _ap_wrath_houses_year      = 0;
+static int  _ap_wrath_roads_year       = 0;
+static int  _ap_wrath_terrain_year     = 0;
+static int  _ap_wrath_trees_year       = 0;
+static int  _ap_wrath_last_eval_year   = 0;
+static int  _ap_wrath_limit_houses     = 2;
+static int  _ap_wrath_limit_roads      = 2;
+static int  _ap_wrath_limit_terrain    = 25;
+static int  _ap_wrath_limit_trees      = 10;
+
+/* ── Tracking (called from *_cmd.cpp hooks) ─────────────────────── */
+
+void AP_WrathTrackHouse()  { if (_ap_wrath_enabled) _ap_wrath_houses_year++;  }
+void AP_WrathTrackRoad()   { if (_ap_wrath_enabled) _ap_wrath_roads_year++;   }
+void AP_WrathTrackTerrain(){ if (_ap_wrath_enabled) _ap_wrath_terrain_year++; }
+void AP_WrathTrackTree()   { if (_ap_wrath_enabled) _ap_wrath_trees_year++;   }
+
+/* ── Newspaper messages ─────────────────────────────────────────── */
+
+static const char *kWrathEscalateLines[] = {
+	"The God of Wackens stirs in his slumber. He has noticed your... remodeling.",
+	"The God of Wackens is growing irritated. He suggests you stop bulldozing everything.",
+	"The God of Wackens clenches his holy fist! Your reckless destruction has angered him!",
+	"The God of Wackens is FURIOUS! The ground trembles beneath your tracks!",
+	"THE GOD OF WACKENS HAS UNLEASHED HIS DIVINE WRATH! You should have listened!",
+};
+
+static const char *kWrathDecayLines[] = {
+	"The God of Wackens has calmed down. He approves of your restraint.",
+	"The God of Wackens is less irritated. Perhaps there is hope for you yet.",
+	"The God of Wackens takes a deep breath. His fury subsides... for now.",
+	"The God of Wackens unclenches his fist. But he is still watching you.",
+	"The God of Wackens returns to a peaceful meditation. Do not ruin it.",
+};
+
+static const char *kWrathPunishLines[] = {
+	"",  /* level 0: never used */
+	"",  /* level 1: escalation message is the warning */
+	"The God of Wackens has turned the towns against you! Town ratings plummet!",
+	"The God of Wackens smites your fleet! Breakdowns everywhere!",
+	"The God of Wackens tears at your infrastructure! Roads and rails crumble!",
+	"THE GOD OF WACKENS UNLEASHES TOTAL DESTRUCTION! Sinkholes! Vanishing stations! Signal chaos!",
+};
+
+/* ── Punishment helpers ─────────────────────────────────────────── */
+
+/** Level 4: Remove a handful of random player-owned rail tiles. */
+static void AP_WrathInfraDamage(CompanyID cid)
+{
+	std::vector<TileIndex> owned_rail;
+	for (TileIndex t = TileIndex{}; t < Map::Size(); t++) {
+		if (IsTileType(t, MP_RAILWAY) && GetTileOwner(t) == cid) {
+			owned_rail.push_back(t);
+		}
+	}
+	int to_remove = std::min((int)owned_rail.size(), 5 + (int)RandomRange(4));
+	for (int i = 0; i < to_remove && !owned_rail.empty(); i++) {
+		int idx = (int)RandomRange((uint32_t)owned_rail.size());
+		Command<CMD_LANDSCAPE_CLEAR>::Do(DoCommandFlag::Execute, owned_rail[idx]);
+		owned_rail[idx] = owned_rail.back();
+		owned_rail.pop_back();
+	}
+}
+
+/** Level 5: Create a crater by clearing and lowering a 5x5 area around random player infrastructure. */
+static void AP_WrathSinkhole(CompanyID cid)
+{
+	std::vector<TileIndex> targets;
+	for (TileIndex t = TileIndex{}; t < Map::Size(); t++) {
+		if ((IsTileType(t, MP_RAILWAY) || IsTileType(t, MP_STATION)) &&
+		    GetTileOwner(t) == cid) {
+			targets.push_back(t);
+		}
+	}
+	if (targets.empty()) return;
+	TileIndex center = targets[RandomRange((uint32_t)targets.size())];
+
+	for (int dx = -2; dx <= 2; dx++) {
+		for (int dy = -2; dy <= 2; dy++) {
+			TileIndex t = TileAddWrap(center, dx, dy);
+			if (t == INVALID_TILE) continue;
+			Command<CMD_LANDSCAPE_CLEAR>::Do(DoCommandFlag::Execute, t);
+			/* Lower terrain at each corner */
+			Command<CMD_TERRAFORM_LAND>::Do(DoCommandFlag::Execute, t, SLOPE_N, false);
+			Command<CMD_TERRAFORM_LAND>::Do(DoCommandFlag::Execute, t, SLOPE_S, false);
+			Command<CMD_TERRAFORM_LAND>::Do(DoCommandFlag::Execute, t, SLOPE_E, false);
+			Command<CMD_TERRAFORM_LAND>::Do(DoCommandFlag::Execute, t, SLOPE_W, false);
+		}
+	}
+}
+
+/** Level 5: Delete 1-2 random player stations. */
+static void AP_WrathStationDelete(CompanyID cid)
+{
+	std::vector<StationID> player_stations;
+	for (Station *st : Station::Iterate()) {
+		if (st->owner == cid) player_stations.push_back(st->index);
+	}
+	int to_delete = std::min((int)player_stations.size(), 1 + (int)RandomRange(2));
+	for (int i = 0; i < to_delete && !player_stations.empty(); i++) {
+		int idx = (int)RandomRange((uint32_t)player_stations.size());
+		Station *victim = Station::GetIfValid(player_stations[idx]);
+		if (victim != nullptr) {
+			AP_ShowNews(fmt::format("The earth swallows {}!", victim->GetCachedName()));
+			Command<CMD_LANDSCAPE_CLEAR>::Do(DoCommandFlag::Execute, victim->xy);
+		}
+		player_stations[idx] = player_stations.back();
+		player_stations.pop_back();
+	}
+}
+
+/** Level 5: All trains break down + fuel shortage. */
+static void AP_WrathSignalMadness(CompanyID cid)
+{
+	for (Vehicle *v : Vehicle::Iterate()) {
+		if (v->owner == cid && v->IsPrimaryVehicle() && v->type == VEH_TRAIN) {
+			if (v->breakdown_ctr == 0) {
+				v->breakdown_ctr   = 2;
+				v->breakdown_delay = 255;
+			}
+		}
+	}
+	/* Also halve all vehicle speeds immediately */
+	for (Vehicle *v2 : Vehicle::Iterate()) {
+		if (v2->owner == cid && v2->IsPrimaryVehicle())
+			v2->cur_speed = v2->cur_speed / 2;
+	}
+}
+
+/** Apply punishment for the given anger level. */
+static void AP_WrathPunish(int level)
+{
+	CompanyID cid = _local_company;
+	Company *c = Company::GetIfValid(cid);
+	if (c == nullptr) return;
+
+	switch (level) {
+		case 1: /* Newspaper warning only — already shown by escalation message */
+			break;
+
+		case 2: /* Town ratings drop */
+			for (Town *t : Town::Iterate()) {
+				ChangeTownRating(t, -200, RATING_MINIMUM, DoCommandFlag::Execute);
+			}
+			AP_ShowNews(kWrathPunishLines[2]);
+			break;
+
+		case 3: { /* Breakdowns + financial fine */
+			for (Vehicle *v : Vehicle::Iterate()) {
+				if (v->owner == cid && v->IsPrimaryVehicle()) {
+					v->breakdown_chance = 255;
+					v->reliability = 1;
+				}
+			}
+			Money fine = std::max((Money)10000LL, c->money / 4);
+			c->money -= fine;
+			AP_ShowNews(fmt::format("{} Divine fine: {}!",
+			    kWrathPunishLines[3], AP_Money(fine)));
+			break;
+		}
+
+		case 4: /* Infrastructure damage */
+			AP_WrathInfraDamage(cid);
+			AP_ShowNews(kWrathPunishLines[4]);
+			break;
+
+		case 5: /* Full divine wrath */
+			AP_WrathSinkhole(cid);
+			AP_WrathStationDelete(cid);
+			AP_WrathSignalMadness(cid);
+			AP_ShowNews(kWrathPunishLines[5]);
+			break;
+	}
+
+	_ap_status_dirty.store(true, std::memory_order_relaxed);
+}
+
+/* ── Yearly evaluation ──────────────────────────────────────────── */
+
+/** Called from realtime timer every tick — detects year boundary and evaluates. */
+static void AP_WrathYearlyEval()
+{
+	if (!_ap_wrath_enabled) return;
+
+	int cur_year = (int)TimerGameCalendar::year.base();
+	if (cur_year <= _ap_wrath_last_eval_year) return;
+	_ap_wrath_last_eval_year = cur_year;
+
+	/* Check if any category exceeded its limit */
+	bool exceeded = (_ap_wrath_houses_year  > _ap_wrath_limit_houses) ||
+	                (_ap_wrath_roads_year   > _ap_wrath_limit_roads)  ||
+	                (_ap_wrath_terrain_year > _ap_wrath_limit_terrain)||
+	                (_ap_wrath_trees_year   > _ap_wrath_limit_trees);
+
+	int old_anger = _ap_wrath_anger;
+
+	if (exceeded) {
+		int over_count = 0;
+		if (_ap_wrath_houses_year  > _ap_wrath_limit_houses)  over_count++;
+		if (_ap_wrath_roads_year   > _ap_wrath_limit_roads)   over_count++;
+		if (_ap_wrath_terrain_year > _ap_wrath_limit_terrain)  over_count++;
+		if (_ap_wrath_trees_year   > _ap_wrath_limit_trees)   over_count++;
+		int increase = (over_count >= 3) ? 2 : 1;
+		_ap_wrath_anger = std::min(5, _ap_wrath_anger + increase);
+	} else {
+		if (_ap_wrath_anger > 0) _ap_wrath_anger--;
+	}
+
+	/* Newspaper on anger change */
+	if (_ap_wrath_anger > old_anger && _ap_wrath_anger >= 1 && _ap_wrath_anger <= 5) {
+		AP_ShowNews(kWrathEscalateLines[_ap_wrath_anger - 1]);
+	} else if (_ap_wrath_anger < old_anger) {
+		int idx = std::min(_ap_wrath_anger, 4);
+		AP_ShowNews(kWrathDecayLines[idx]);
+	}
+
+	/* Punishment on escalation */
+	if (_ap_wrath_anger > old_anger) {
+		AP_WrathPunish(_ap_wrath_anger);
+	}
+
+	/* Reset yearly counters */
+	_ap_wrath_houses_year  = 0;
+	_ap_wrath_roads_year   = 0;
+	_ap_wrath_terrain_year = 0;
+	_ap_wrath_trees_year   = 0;
+
+	Debug(misc, 0, "[AP] Wrath yearly eval: anger {} -> {} (exceeded={})",
+	      old_anger, _ap_wrath_anger, exceeded);
+}
+
+/* ── Init / Saveload ────────────────────────────────────────────── */
+
+static void AP_WrathInit(const APSlotData &sd)
+{
+	_ap_wrath_enabled       = sd.wrath_enabled;
+	_ap_wrath_limit_houses  = sd.wrath_limit_houses;
+	_ap_wrath_limit_roads   = sd.wrath_limit_roads;
+	_ap_wrath_limit_terrain = sd.wrath_limit_terrain;
+	_ap_wrath_limit_trees   = sd.wrath_limit_trees;
+	if (_ap_wrath_last_eval_year == 0) {
+		_ap_wrath_last_eval_year = (int)TimerGameCalendar::year.base();
+	}
+	if (_ap_wrath_enabled) {
+		Debug(misc, 0, "[AP] Wrath system enabled (limits: H={} R={} T={} Tr={})",
+		      _ap_wrath_limit_houses, _ap_wrath_limit_roads,
+		      _ap_wrath_limit_terrain, _ap_wrath_limit_trees);
+	}
+}
+
+void AP_GetWrathState(int *anger, int *houses, int *roads, int *terrain, int *trees, int *last_eval_year)
+{
+	*anger          = _ap_wrath_anger;
+	*houses         = _ap_wrath_houses_year;
+	*roads          = _ap_wrath_roads_year;
+	*terrain        = _ap_wrath_terrain_year;
+	*trees          = _ap_wrath_trees_year;
+	*last_eval_year = _ap_wrath_last_eval_year;
+}
+
+void AP_SetWrathState(int anger, int houses, int roads, int terrain, int trees, int last_eval_year)
+{
+	_ap_wrath_anger            = anger;
+	_ap_wrath_houses_year      = houses;
+	_ap_wrath_roads_year       = roads;
+	_ap_wrath_terrain_year     = terrain;
+	_ap_wrath_trees_year       = trees;
+	_ap_wrath_last_eval_year   = last_eval_year;
+}
+
+WrathStatus AP_GetWrathStatus()
+{
+	return {
+		_ap_wrath_enabled,
+		_ap_wrath_anger,
+		_ap_wrath_houses_year, _ap_wrath_roads_year,
+		_ap_wrath_terrain_year, _ap_wrath_trees_year,
+		_ap_wrath_limit_houses, _ap_wrath_limit_roads,
+		_ap_wrath_limit_terrain, _ap_wrath_limit_trees,
+	};
+}
+
+bool AP_IsWrathEnabled() { return _ap_wrath_enabled; }
 
 /* -------------------------------------------------------------------------
  * Pending / deferred state
@@ -1350,10 +2365,17 @@ bool AP_GetCargoBonusActive() { return _ap_cargo_bonus_ticks > 0; }
 
 /* Bug B fix: reset per-connection, not global-ever */
 static bool        _ap_world_started_this_session  = false;
+static bool        _ap_pending_load_save            = false; ///< True when user clicked "Load Save" in connect window
+static bool        _ap_waiting_for_start_choice     = false; ///< True while ShowQuery start-choice dialog is open
 static bool        _ap_named_entity_refresh_needed = false; ///< Set after Load() — defer GetString calls to first game tick
 
 /* Items received before we've entered GM_NORMAL are queued here */
 static std::vector<APItem> _ap_pending_items;
+
+/* Number of AP items we have fully processed (applied to game state).
+ * Saved in APST chunk. On reconnect, AP resends all items from index 0 —
+ * we skip any item whose server_index < this count to prevent double-apply.
+ * NOTE: declared at the top of this file so it is available to AP_InitSessionStats(). */
 
 /* Exposed for GUI polling */
 std::atomic<bool> _ap_status_dirty{ false };
@@ -1376,15 +2398,14 @@ ColbyStatus AP_GetColbyStatus() {
 	s.popup_shown   = _ap_colby_popup_shown;
 	s.escape_ticks  = _ap_colby_escape_ticks;
 	s.town_name     = _ap_colby_target_name;
-	s.town_id       = (uint32_t)_ap_colby_target_town.base();
-	s.source_tile   = (uint32_t)_ap_colby_source_tile.base();
+	s.town_id       = _ap_colby_target_town;
+	s.source_tile   = _ap_colby_source_tile;
 	s.cargo_name    = _ap_colby_cargo_name.empty() ? "packages" : _ap_colby_cargo_name;
-	/* Source name: prefer industry, fall back to station */
-	if (const Industry *ind = Industry::GetIfValid(_ap_colby_source_industry); ind != nullptr) {
-		const IndustrySpec *spec = GetIndustrySpec(ind->type);
-		s.source_name = (spec != nullptr) ? GetString(spec->name) : "industry";
-	} else if (const Station *st = Station::GetIfValid(_ap_colby_source_station); st != nullptr) {
-		s.source_name = std::string(st->GetCachedName());
+	/* Stash station name from tile (guard against demolished station) */
+	if (_ap_colby_source_tile != INVALID_TILE && IsTileType(_ap_colby_source_tile, MP_STATION)) {
+		StationID sid = GetStationIndex(_ap_colby_source_tile);
+		const Station *st = Station::GetIfValid(sid);
+		if (st != nullptr) s.source_name = std::string(st->GetCachedName());
 	}
 	return s;
 }
@@ -1399,17 +2420,23 @@ static void AP_AssignNamedEntities();
 static void AP_OnSlotData(const APSlotData &sd)
 {
 	AP_OK("[CALLBACK] AP_OnSlotData called on main thread!");
-	Debug(misc, 1, "[AP] Slot data received. {} missions, diff={}, start_year={}",
-	      sd.missions.size(), (int)sd.win_difficulty, sd.start_year);
+	Debug(misc, 1, "[AP] Slot data received. {} missions, win_diff={} cv={} start_year={}",
+	      sd.missions.size(), (int)sd.win_difficulty, sd.win_target_company_value, sd.start_year);
 
 	_ap_pending_sd      = sd;
 	_ap_session_started = false; /* reset so first-tick setup runs again */
 	_ap_goal_sent       = false;
 	_ap_engine_map_built = false; /* rebuild map for new session */
 	_ap_cargo_map_built  = false; /* rebuild cargo map for new session */
-	/* Reset fast-forward speed to 100% (no speedup) for new session */
-	_ap_ff_speed = 100;
-	_settings_client.gui.fast_forward_speed_limit = 100;
+	_ap_track_dirs_inited = false; /* allow session init to re-evaluate lock state */
+	_ap_road_dirs_inited  = false;
+	_ap_signals_inited    = false;
+	_ap_bridges_inited    = false;
+	_ap_tunnels_inited    = false;
+	_ap_airports_inited   = false;
+	_ap_trees_inited      = false;
+	_ap_terraform_inited  = false;
+	_ap_town_actions_inited = false;
 	_ap_status_dirty.store(true);
 
 	/* Only auto-start world if we're on the main menu and haven't started yet */
@@ -1436,12 +2463,23 @@ static void AP_OnSlotData(const APSlotData &sd)
 
 static void AP_OnItemReceived(const APItem &item)
 {
-	Debug(misc, 1, "[AP] Item received: '{}' (id={})", item.item_name, item.item_id);
+	Debug(misc, 1, "[AP] Item received: '{}' (id={} idx={})", item.item_name, item.item_id, item.server_index);
 
 	/* Queue items that arrive before we've entered GM_NORMAL */
 	if (!_ap_session_started) {
 		_ap_pending_items.push_back(item);
 		return;
+	}
+
+	/* Skip items we have already processed (e.g. AP resends all items on reconnect).
+	 * server_index == -1 means index unknown (old saves / edge cases) — process anyway. */
+	if (item.server_index >= 0 && item.server_index < _ap_items_received_count) {
+		Debug(misc, 1, "[AP] Skipping already-applied item idx={} '{}'", item.server_index, item.item_name);
+		return;
+	}
+	/* Advance counter to one past this item's index */
+	if (item.server_index >= 0) {
+		_ap_items_received_count = item.server_index + 1;
 	}
 
 	if (item.item_name.empty()) {
@@ -1479,7 +2517,7 @@ static void AP_OnItemReceived(const APItem &item)
 			/* Player already in debt: add 25% of max_loan as extra debt */
 			Money penalty = (Money)((int64_t)_ap_pending_sd.max_loan / 4);
 			c->money -= penalty;
-			AP_ShowNews(fmt::format("[AP] TRAP: Recession! Extra debt: \xc2\xa3{}.", (long long)penalty));
+			AP_ShowNews(fmt::format("[AP] TRAP: Recession! Extra debt: {}.", AP_Money(penalty)));
 		}
 	} else if (item.item_name == "Maintenance Surge") {
 		/* Add a moderate fixed loan increment, capped at max_loan from slot_data
@@ -1496,13 +2534,7 @@ static void AP_OnItemReceived(const APItem &item)
 		if (forced_loan <= 0) forced_loan = (Money)300000LL; /* sane fallback */
 		c->current_loan = std::min(c->current_loan + forced_loan,
 		                           forced_loan * 2); /* cap at 2× max_loan */
-		{
-			int64_t fl = (int64_t)forced_loan;
-			std::string loan_str = (fl >= 1000000)
-			    ? fmt::format("\xC2\xA3{:.1f}M", fl / 1000000.0)
-			    : fmt::format("\xC2\xA3{}k",     fl / 1000);
-			AP_ShowNews("[AP] TRAP: Bank Loan Forced! +" + loan_str);
-		}
+		AP_ShowNews(fmt::format("[AP] TRAP: Bank Loan Forced! +{}", AP_Money(forced_loan)));
 	} else if (item.item_name == "Signal Failure") {
 		for (Vehicle *v : Vehicle::Iterate()) {
 			if (v->owner == cid && v->IsPrimaryVehicle() && v->type == VEH_TRAIN) {
@@ -1595,17 +2627,17 @@ static void AP_OnItemReceived(const APItem &item)
 	/* ── UTILITY ITEMS ─────────────────────────────────── */
 	} else if (item.item_name == "Cash Injection £50,000") {
 		c->money += (Money)50000LL;
-		AP_ShowNews("[AP] Bonus: +£50,000!");
+		AP_ShowNews(fmt::format("[AP] Bonus: +{}!", AP_Money((Money)50000LL)));
 	} else if (item.item_name == "Cash Injection £200,000") {
 		c->money += (Money)200000LL;
-		AP_ShowNews("[AP] Bonus: +£200,000!");
+		AP_ShowNews(fmt::format("[AP] Bonus: +{}!", AP_Money((Money)200000LL)));
 	} else if (item.item_name == "Cash Injection £500,000") {
 		c->money += (Money)500000LL;
-		AP_ShowNews("[AP] Bonus: +£500,000!");
+		AP_ShowNews(fmt::format("[AP] Bonus: +{}!", AP_Money((Money)500000LL)));
 	} else if (item.item_name == "Loan Reduction £100,000") {
 		Money reduce = (Money)100000LL;
 		c->current_loan = (c->current_loan > reduce) ? Money(c->current_loan - reduce) : Money(0);
-		AP_ShowNews("[AP] Bonus: Loan reduced by £100,000!");
+		AP_ShowNews(fmt::format("[AP] Bonus: Loan reduced by {}!", AP_Money(reduce)));
 	} else if (item.item_name == "Reliability Boost (all vehicles, 90 days)") {
 		/* Start a 90-game-day reliability timer (90 days * ~80 ticks/day ≈ 7200 ticks).
 		 * The per-tick handler re-applies max reliability every tick, countering the
@@ -1650,9 +2682,260 @@ static void AP_OnItemReceived(const APItem &item)
 	} else if (item.item_name == "Cash Bonus" || item.item_name == "Extra Funding") {
 		/* Legacy names */
 		c->money += (Money)100000LL;
-		AP_ShowNews("[AP] Bonus: +£100,000!");
+		AP_ShowNews(fmt::format("[AP] Bonus: +{}!", AP_Money((Money)100000LL)));
+
+	/* ── TRACK DIRECTION UNLOCK ITEMS ───────────────────────────────────
+	 * 24 items: 4 rail types × 6 track directions.
+	 * RailType: 0=Normal, 1=Electric, 2=Monorail, 3=Maglev
+	 * Track bits: 0=NE-SW, 1=NW-SE, 2=N, 3=S, 4=W, 5=E
+	 */
+	// Normal Rail (railtype=0)
+	} else if (item.item_name == "Normal Rail Track: NE-SW") {
+		_ap_locked_track_dirs[0] &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Normal Rail Track NE-SW!");
+	} else if (item.item_name == "Normal Rail Track: NW-SE") {
+		_ap_locked_track_dirs[0] &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Normal Rail Track NW-SE!");
+	} else if (item.item_name == "Normal Rail Track: N") {
+		_ap_locked_track_dirs[0] &= ~(1u << 2);
+		AP_ShowNews("[AP] Unlocked: Normal Rail Track N!");
+	} else if (item.item_name == "Normal Rail Track: S") {
+		_ap_locked_track_dirs[0] &= ~(1u << 3);
+		AP_ShowNews("[AP] Unlocked: Normal Rail Track S!");
+	} else if (item.item_name == "Normal Rail Track: W") {
+		_ap_locked_track_dirs[0] &= ~(1u << 4);
+		AP_ShowNews("[AP] Unlocked: Normal Rail Track W!");
+	} else if (item.item_name == "Normal Rail Track: E") {
+		_ap_locked_track_dirs[0] &= ~(1u << 5);
+		AP_ShowNews("[AP] Unlocked: Normal Rail Track E!");
+	// Electrified Rail (railtype=1)
+	} else if (item.item_name == "Electrified Track: NE-SW") {
+		_ap_locked_track_dirs[1] &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Electrified Track NE-SW!");
+	} else if (item.item_name == "Electrified Track: NW-SE") {
+		_ap_locked_track_dirs[1] &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Electrified Track NW-SE!");
+	} else if (item.item_name == "Electrified Track: N") {
+		_ap_locked_track_dirs[1] &= ~(1u << 2);
+		AP_ShowNews("[AP] Unlocked: Electrified Track N!");
+	} else if (item.item_name == "Electrified Track: S") {
+		_ap_locked_track_dirs[1] &= ~(1u << 3);
+		AP_ShowNews("[AP] Unlocked: Electrified Track S!");
+	} else if (item.item_name == "Electrified Track: W") {
+		_ap_locked_track_dirs[1] &= ~(1u << 4);
+		AP_ShowNews("[AP] Unlocked: Electrified Track W!");
+	} else if (item.item_name == "Electrified Track: E") {
+		_ap_locked_track_dirs[1] &= ~(1u << 5);
+		AP_ShowNews("[AP] Unlocked: Electrified Track E!");
+	// Monorail (railtype=2)
+	} else if (item.item_name == "Monorail Track: NE-SW") {
+		_ap_locked_track_dirs[2] &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Monorail Track NE-SW!");
+	} else if (item.item_name == "Monorail Track: NW-SE") {
+		_ap_locked_track_dirs[2] &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Monorail Track NW-SE!");
+	} else if (item.item_name == "Monorail Track: N") {
+		_ap_locked_track_dirs[2] &= ~(1u << 2);
+		AP_ShowNews("[AP] Unlocked: Monorail Track N!");
+	} else if (item.item_name == "Monorail Track: S") {
+		_ap_locked_track_dirs[2] &= ~(1u << 3);
+		AP_ShowNews("[AP] Unlocked: Monorail Track S!");
+	} else if (item.item_name == "Monorail Track: W") {
+		_ap_locked_track_dirs[2] &= ~(1u << 4);
+		AP_ShowNews("[AP] Unlocked: Monorail Track W!");
+	} else if (item.item_name == "Monorail Track: E") {
+		_ap_locked_track_dirs[2] &= ~(1u << 5);
+		AP_ShowNews("[AP] Unlocked: Monorail Track E!");
+	// Maglev (railtype=3)
+	} else if (item.item_name == "Maglev Track: NE-SW") {
+		_ap_locked_track_dirs[3] &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Maglev Track NE-SW!");
+	} else if (item.item_name == "Maglev Track: NW-SE") {
+		_ap_locked_track_dirs[3] &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Maglev Track NW-SE!");
+	} else if (item.item_name == "Maglev Track: N") {
+		_ap_locked_track_dirs[3] &= ~(1u << 2);
+		AP_ShowNews("[AP] Unlocked: Maglev Track N!");
+	} else if (item.item_name == "Maglev Track: S") {
+		_ap_locked_track_dirs[3] &= ~(1u << 3);
+		AP_ShowNews("[AP] Unlocked: Maglev Track S!");
+	} else if (item.item_name == "Maglev Track: W") {
+		_ap_locked_track_dirs[3] &= ~(1u << 4);
+		AP_ShowNews("[AP] Unlocked: Maglev Track W!");
+	} else if (item.item_name == "Maglev Track: E") {
+		_ap_locked_track_dirs[3] &= ~(1u << 5);
+		AP_ShowNews("[AP] Unlocked: Maglev Track E!");
+
+	/* ── ROAD DIRECTION UNLOCK ITEMS ────────────────────────────────── */
+	} else if (item.item_name == "Road: NE-SW") {
+		_ap_locked_road_dirs &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Road NE-SW!");
+	} else if (item.item_name == "Road: NW-SE") {
+		_ap_locked_road_dirs &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Road NW-SE!");
+
+	/* ── SIGNAL UNLOCK ITEMS ────────────────────────────────────────── */
+	} else if (item.item_name == "Signal: Block") {
+		_ap_locked_signals &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Block Signal!");
+	} else if (item.item_name == "Signal: Entry") {
+		_ap_locked_signals &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Entry Signal!");
+	} else if (item.item_name == "Signal: Exit") {
+		_ap_locked_signals &= ~(1u << 2);
+		AP_ShowNews("[AP] Unlocked: Exit Signal!");
+	} else if (item.item_name == "Signal: Combo") {
+		_ap_locked_signals &= ~(1u << 3);
+		AP_ShowNews("[AP] Unlocked: Combo Signal!");
+	} else if (item.item_name == "Signal: Path") {
+		_ap_locked_signals &= ~(1u << 4);
+		AP_ShowNews("[AP] Unlocked: Path Signal!");
+	} else if (item.item_name == "Signal: One-Way Path") {
+		_ap_locked_signals &= ~(1u << 5);
+		AP_ShowNews("[AP] Unlocked: One-Way Path Signal!");
+
+	/* ── BRIDGE UNLOCK ITEMS ────────────────────────────────────────── */
+	} else if (item.item_name == "Bridge: Wooden") {
+		_ap_locked_bridges &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Wooden Bridge!");
+	} else if (item.item_name == "Bridge: Concrete") {
+		_ap_locked_bridges &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Concrete Bridge!");
+	} else if (item.item_name == "Bridge: Girder Steel") {
+		_ap_locked_bridges &= ~(1u << 2);
+		AP_ShowNews("[AP] Unlocked: Girder Steel Bridge!");
+	} else if (item.item_name == "Bridge: Suspension Concrete") {
+		_ap_locked_bridges &= ~(1u << 3);
+		AP_ShowNews("[AP] Unlocked: Suspension Concrete Bridge!");
+	} else if (item.item_name == "Bridge: Suspension Steel (Short)") {
+		_ap_locked_bridges &= ~(1u << 4);
+		AP_ShowNews("[AP] Unlocked: Suspension Steel Bridge (Short)!");
+	} else if (item.item_name == "Bridge: Suspension Steel (Long)") {
+		_ap_locked_bridges &= ~(1u << 5);
+		AP_ShowNews("[AP] Unlocked: Suspension Steel Bridge (Long)!");
+	} else if (item.item_name == "Bridge: Cantilever Steel (Short)") {
+		_ap_locked_bridges &= ~(1u << 6);
+		AP_ShowNews("[AP] Unlocked: Cantilever Steel Bridge (Short)!");
+	} else if (item.item_name == "Bridge: Cantilever Steel (Medium)") {
+		_ap_locked_bridges &= ~(1u << 7);
+		AP_ShowNews("[AP] Unlocked: Cantilever Steel Bridge (Medium)!");
+	} else if (item.item_name == "Bridge: Cantilever Steel (Long)") {
+		_ap_locked_bridges &= ~(1u << 8);
+		AP_ShowNews("[AP] Unlocked: Cantilever Steel Bridge (Long)!");
+	} else if (item.item_name == "Bridge: Girder Steel (High)") {
+		_ap_locked_bridges &= ~(1u << 9);
+		AP_ShowNews("[AP] Unlocked: Girder Steel Bridge (High)!");
+	} else if (item.item_name == "Bridge: Tubular Steel (Short)") {
+		_ap_locked_bridges &= ~(1u << 10);
+		AP_ShowNews("[AP] Unlocked: Tubular Steel Bridge (Short)!");
+	} else if (item.item_name == "Bridge: Tubular Steel (Long)") {
+		_ap_locked_bridges &= ~(1u << 11);
+		AP_ShowNews("[AP] Unlocked: Tubular Steel Bridge (Long)!");
+	} else if (item.item_name == "Bridge: Tubular Silicon") {
+		_ap_locked_bridges &= ~(1u << 12);
+		AP_ShowNews("[AP] Unlocked: Tubular Silicon Bridge!");
+
+	/* ── TUNNEL UNLOCK ITEM ─────────────────────────────────────────── */
+	} else if (item.item_name == "Tunnel Construction") {
+		_ap_locked_tunnels = false;
+		AP_ShowNews("[AP] Unlocked: Tunnel Construction!");
+
+	/* ── AIRPORT UNLOCK ITEMS ───────────────────────────────────────── */
+	// AT_SMALL (bit 0) is always free — not an item
+	} else if (item.item_name == "Airport: Large") {
+		_ap_locked_airports &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Large Airport!");
+	} else if (item.item_name == "Airport: Heliport") {
+		_ap_locked_airports &= ~(1u << 2);
+		AP_ShowNews("[AP] Unlocked: Heliport!");
+	} else if (item.item_name == "Airport: Metropolitan") {
+		_ap_locked_airports &= ~(1u << 3);
+		AP_ShowNews("[AP] Unlocked: Metropolitan Airport!");
+	} else if (item.item_name == "Airport: International") {
+		_ap_locked_airports &= ~(1u << 4);
+		AP_ShowNews("[AP] Unlocked: International Airport!");
+	} else if (item.item_name == "Airport: Commuter") {
+		_ap_locked_airports &= ~(1u << 5);
+		AP_ShowNews("[AP] Unlocked: Commuter Airport!");
+	} else if (item.item_name == "Airport: Helidepot") {
+		_ap_locked_airports &= ~(1u << 6);
+		AP_ShowNews("[AP] Unlocked: Helidepot!");
+	} else if (item.item_name == "Airport: Intercontinental") {
+		_ap_locked_airports &= ~(1u << 7);
+		AP_ShowNews("[AP] Unlocked: Intercontinental Airport!");
+	} else if (item.item_name == "Airport: Helistation") {
+		_ap_locked_airports &= ~(1u << 8);
+		AP_ShowNews("[AP] Unlocked: Helistation!");
+
+	/* ── TREE UNLOCK ITEMS ──────────────────────────────────────────── */
+	} else if (item.item_name == "Trees: Temperate Pack 1") {
+		_ap_locked_trees &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Temperate Trees Pack 1!");
+	} else if (item.item_name == "Trees: Temperate Pack 2") {
+		_ap_locked_trees &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Temperate Trees Pack 2!");
+	} else if (item.item_name == "Trees: Temperate Pack 3") {
+		_ap_locked_trees &= ~(1u << 2);
+		AP_ShowNews("[AP] Unlocked: Temperate Trees Pack 3!");
+	} else if (item.item_name == "Trees: Arctic Pack 1") {
+		_ap_locked_trees &= ~(1u << 3);
+		AP_ShowNews("[AP] Unlocked: Arctic Trees Pack 1!");
+	} else if (item.item_name == "Trees: Arctic Pack 2") {
+		_ap_locked_trees &= ~(1u << 4);
+		AP_ShowNews("[AP] Unlocked: Arctic Trees Pack 2!");
+	} else if (item.item_name == "Trees: Arctic Pack 3") {
+		_ap_locked_trees &= ~(1u << 5);
+		AP_ShowNews("[AP] Unlocked: Arctic Trees Pack 3!");
+	} else if (item.item_name == "Trees: Tropical Pack 1") {
+		_ap_locked_trees &= ~(1u << 6);
+		AP_ShowNews("[AP] Unlocked: Tropical Trees Pack 1!");
+	} else if (item.item_name == "Trees: Tropical Pack 2") {
+		_ap_locked_trees &= ~(1u << 7);
+		AP_ShowNews("[AP] Unlocked: Tropical Trees Pack 2!");
+	} else if (item.item_name == "Trees: Tropical Pack 3") {
+		_ap_locked_trees &= ~(1u << 8);
+		AP_ShowNews("[AP] Unlocked: Tropical Trees Pack 3!");
+	} else if (item.item_name == "Trees: Toyland Pack") {
+		_ap_locked_trees &= ~(1u << 9);
+		AP_ShowNews("[AP] Unlocked: Toyland Trees Pack!");
+
+	/* ── TERRAFORM UNLOCK ITEMS ─────────────────────────────────────── */
+	} else if (item.item_name == "Terraform: Raise Land") {
+		_ap_locked_terraform &= ~(1u << 0);
+		/* Also auto-unlock Level Land (needs both raise+lower) */
+		AP_ShowNews("[AP] Unlocked: Raise Land!");
+	} else if (item.item_name == "Terraform: Lower Land") {
+		_ap_locked_terraform &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Lower Land!");
+
+	/* ── TOWN AUTHORITY ACTION UNLOCK ITEMS ─────────────────────────── */
+	} else if (item.item_name == "Town Action: Advertise Small") {
+		_ap_locked_town_actions &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Town Action - Advertise Small!");
+	} else if (item.item_name == "Town Action: Advertise Medium") {
+		_ap_locked_town_actions &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Town Action - Advertise Medium!");
+	} else if (item.item_name == "Town Action: Advertise Large") {
+		_ap_locked_town_actions &= ~(1u << 2);
+		AP_ShowNews("[AP] Unlocked: Town Action - Advertise Large!");
+	} else if (item.item_name == "Town Action: Fund Road Reconstruction") {
+		_ap_locked_town_actions &= ~(1u << 3);
+		AP_ShowNews("[AP] Unlocked: Town Action - Fund Road Reconstruction!");
+	} else if (item.item_name == "Town Action: Build Statue") {
+		_ap_locked_town_actions &= ~(1u << 4);
+		AP_ShowNews("[AP] Unlocked: Town Action - Build Statue!");
+	} else if (item.item_name == "Town Action: Fund Buildings") {
+		_ap_locked_town_actions &= ~(1u << 5);
+		AP_ShowNews("[AP] Unlocked: Town Action - Fund Buildings!");
+	} else if (item.item_name == "Town Action: Buy Exclusive Transport Rights") {
+		_ap_locked_town_actions &= ~(1u << 6);
+		AP_ShowNews("[AP] Unlocked: Town Action - Buy Exclusive Transport Rights!");
+	} else if (item.item_name == "Town Action: Bribe Authority") {
+		_ap_locked_town_actions &= ~(1u << 7);
+		AP_ShowNews("[AP] Unlocked: Town Action - Bribe Authority!");
+
+	/* ── Speed Boost ──────────────────────────────────────────────────── */
 	} else if (item.item_name == "Speed Boost") {
-		/* Increase fast-forward cap by 10%, up to a maximum of 300% */
 		if (_ap_ff_speed < 300) {
 			_ap_ff_speed = std::min(_ap_ff_speed + 10, 300);
 			_settings_client.gui.fast_forward_speed_limit = (uint16_t)_ap_ff_speed;
@@ -1660,10 +2943,21 @@ static void AP_OnItemReceived(const APItem &item)
 		} else {
 			AP_ShowNews("[AP] Speed Boost received (already at max 300%).");
 		}
+
 	} else {
 		AP_WARN("Unknown item: '" + item.item_name + "' — not handled");
 	}
+
+	/* After any infrastructure unlock, refresh all construction toolbars
+	 * so greyed-out buttons update immediately instead of staying grey
+	 * until the player closes and reopens the toolbar. */
+	InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_RAIL);
+	InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_ROAD);
+	InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_WATER);
+	InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_AIR);
+	InvalidateWindowClassesData(WC_BUILD_TREES);
 }
+
 
 static void AP_OnConnected()
 {
@@ -1680,6 +2974,8 @@ static void AP_OnDisconnected(const std::string &reason)
 	Debug(misc, 1, "[AP] Disconnected: {}", reason);
 	AP_WARN("Disconnected: " + reason);
 	_ap_world_started_this_session = false;
+	_ap_pending_load_save          = false;
+	_ap_waiting_for_start_choice   = false;
 	_ap_pending_world_start = false;
 	_ap_session_started = false;
 	AP_LOG("Session flags reset — next connect can start world");
@@ -1689,7 +2985,7 @@ static void AP_OnDisconnected(const std::string &reason)
 static void AP_OnPrint(const std::string &msg)
 {
 	Debug(misc, 0, "[AP] Server: {}", msg);
-	AP_ShowNews("[AP] " + msg);
+	AP_ShowNews("[AP] " + msg, false); /* server broadcast = other players */
 }
 
 /* -------------------------------------------------------------------------
@@ -1726,74 +3022,23 @@ static void AP_OnDeathReceived(const std::string &source)
 	/* Start 30-second cooldown (120 ticks × 250 ms) */
 	_ap_death_cooldown_ticks = 120;
 
+	/* Death penalty: lose 50% of current money */
 	CompanyID cid = _local_company;
+	Company *c = Company::GetIfValid(cid);
+	if (c != nullptr) {
+		Money penalty = c->money / 2;
+		c->money -= penalty;
 
-	/* Step 1 — Build a list of industries actively serviced by the player.
-	 * An industry is "active" if at least one of the player's stations has a
-	 * GoodsEntry rating for a cargo that this industry produces. */
-	std::vector<Industry *> active_industries;
-
-	for (Station *st : Station::Iterate()) {
-		if (st->owner != cid) continue;
-		for (Industry *ind : Industry::Iterate()) {
-			/* Check if industry is within station catchment area */
-			if (ind->location.tile == INVALID_TILE) continue;
-			bool already_added = false;
-			for (Industry *ai : active_industries) { if (ai == ind) { already_added = true; break; } }
-			if (already_added) continue;
-
-			/* Check if any cargo from this industry has a rating at this station */
-			for (const auto &produced : ind->produced) {
-				if (!IsValidCargoType(produced.cargo)) continue;
-				if (produced.cargo >= NUM_CARGO) continue;
-				const GoodsEntry &ge = st->goods[produced.cargo];
-				if (ge.HasRating()) {
-					active_industries.push_back(ind);
-					break;
-				}
-			}
-		}
-	}
-
-	if (!active_industries.empty()) {
-		/* Step 2 — Pick a random active industry and halt it */
-		size_t idx = RandomRange((uint32_t)active_industries.size());
-		Industry *victim = active_industries[idx];
-
-		/* Zero out production on all outputs */
-		for (auto &produced : victim->produced) {
-			produced.history[THIS_MONTH].production = 0;
-		}
-		victim->prod_level = 0;
-
-		/* Find the town name for the news message */
-		const Town *t = victim->town;
-		std::string town_name = (t != nullptr) ? "near " + std::string(t->name) : "";
-		/* Large newspaper-style news for death events so player can't miss it */
+		std::string msg = fmt::format("{} did not want to stay alive, "
+		    "and they are punishing you. Lost {}!", source, AP_Money(penalty));
 		AddNewsItem(
-			GetEncodedString(STR_ARCHIPELAGO_NEWS,
-			    fmt::format("DEATH LINK from {}! {} industry shut down!", source, town_name)),
+			GetEncodedString(STR_ARCHIPELAGO_NEWS, msg),
 			NewsType::General,
 			NewsStyle::Normal,
 			{}
 		);
-		IConsolePrint(CC_ERROR, fmt::format("[AP] DEATH LINK from {}! Industry closure {}!", source, town_name));
-		Debug(misc, 0, "[AP] Death received from {} — shut down industry {}", source, victim->index.base());
-	} else {
-		/* Fallback: no active industries yet — take a money penalty */
-		Company *c = Company::GetIfValid(cid);
-		if (c != nullptr) {
-			c->money -= (Money)std::max((int64_t)50000LL, (int64_t)(c->money / 10));
-		}
-		AddNewsItem(
-			GetEncodedString(STR_ARCHIPELAGO_NEWS,
-			    fmt::format("DEATH LINK from {}! Emergency costs drained your funds!", source)),
-			NewsType::General,
-			NewsStyle::Normal,
-			{}
-		);
-		IConsolePrint(CC_ERROR, fmt::format("[AP] DEATH LINK from {}! Emergency costs drained your funds!", source));
-		Debug(misc, 0, "[AP] Death received from {} — no active industries, money penalty applied", source);
+		IConsolePrint(CC_ERROR, fmt::format("[AP] {}", msg));
+		Debug(misc, 0, "[AP] Death received from {} — 50% money penalty ({})", source, (int64_t)penalty);
 	}
 }
 
@@ -1817,7 +3062,7 @@ void EnsureHandlersRegistered()
 }
 
 /* -------------------------------------------------------------------------
- * Win-condition check
+ * Win-condition check (multi-target — ALL 6 must be met simultaneously)
  * ---------------------------------------------------------------------- */
 
 APWinProgress AP_GetWinProgress()
@@ -1841,7 +3086,9 @@ APWinProgress AP_GetWinProgress()
 		total_cargo += AP_GetTotalCargo((CargoType)i);
 	p.cargo_delivered = (int64_t)total_cargo;
 
-	int64_t net = (int64_t)(c->cur_economy.income + c->cur_economy.expenses);
+	/* Use last COMPLETED period (old_economy[0]) — consistent with mission checks.
+	 * cur_economy is the in-progress period and fluctuates mid-month. */
+	int64_t net = (int64_t)(c->old_economy[0].income + c->old_economy[0].expenses);
 	p.monthly_profit  = net > 0 ? net : 0;
 
 	p.missions = (int64_t)AP_GetTotalMissionsCompleted();
@@ -1934,6 +3181,25 @@ void AP_ConsumeWorldStart()
 	/* ── Vehicles / Routing ──────────────────────────────────────── */
 	_settings_newgame.vehicle.road_side                = sd.road_side;
 
+	/* ── NewGRF: Archipelago Ruins ───────────────────────────────────── */
+	{
+		/* The ruins GRF is in baseset/ (copied by CMake). It defines 6
+		 * object types used to visualise ruin items on the map. We always
+		 * load it — the objects are inert unless AP sends ruin items. */
+		static const std::string RUINS_FILENAME = "archipelago_ruins.grf";
+		auto rg = std::make_unique<GRFConfig>(RUINS_FILENAME);
+		rg->SetSuitablePalette();
+
+		/* Try baseset dir first (next to openttd.exe), then newgrf dir */
+		if (!FillGRFDetails(*rg, false, BASESET_DIR) &&
+		    !FillGRFDetails(*rg, false, NEWGRF_DIR)) {
+			AP_WARN("archipelago_ruins.grf not found — ruin objects will not appear.");
+		} else if (rg->status != GCS_NOT_FOUND && rg->status != GCS_DISABLED) {
+			AppendToGRFConfigList(_grfconfig_newgame, std::move(rg));
+			AP_OK("Archipelago Ruins GRF activated for new game.");
+		}
+	}
+
 	/* ── NewGRF: Iron Horse ──────────────────────────────────────────── */
 	if (sd.enable_iron_horse) {
 		/* iron_horse.grf is bundled in the {exe}/newgrf/ subfolder of the
@@ -2015,6 +3281,25 @@ uint32_t AP_GetWorldSeed()
 	return _ap_world_seed_to_use;
 }
 
+/** Called from connect window when user clicks "Load Save".
+ *  Sets the session flag immediately so AP_OnSlotData won't generate a new world. */
+void AP_SetPendingLoadSave()
+{
+	_ap_pending_load_save          = true;
+	_ap_world_started_this_session = true; /* suppress world generation on slot_data */
+}
+
+/** Returns true once — consumed by intro_gui to open the save/load dialog. */
+bool AP_ShouldShowLoadDialog()
+{
+	if (!_ap_pending_load_save) return false;
+	_ap_pending_load_save = false;
+	return true;
+}
+
+bool AP_IsWaitingForStartChoice()        { return _ap_waiting_for_start_choice; }
+void AP_SetWaitingForStartChoice(bool v) { _ap_waiting_for_start_choice = v; }
+
 /* -------------------------------------------------------------------------
  * Shop and location check API
  * ---------------------------------------------------------------------- */
@@ -2049,11 +3334,10 @@ int AP_GetTierCompleted(const std::string &difficulty)
 	return 0;
 }
 
-/** Returns total missions completed across all difficulties, plus task Mission-Check rewards. */
+/** Returns total missions completed across all difficulties. */
 int AP_GetTotalMissionsCompleted()
 {
-	return _ap_easy_completed + _ap_medium_completed + _ap_hard_completed + _ap_extreme_completed
-	       + _ap_task_checks_completed;
+	return _ap_easy_completed + _ap_medium_completed + _ap_hard_completed + _ap_extreme_completed;
 }
 
 /**
@@ -2106,59 +3390,192 @@ bool AP_IsTierUnlocked(const std::string &difficulty)
 	return true;
 }
 
-/* =========================================================================
- * LOCAL TASK SYSTEM
- * ========================================================================= */
+/* ─── Track direction lock API ──────────────────────────────────────────── */
 
-/* Forward declarations needed by task system */
-static std::string AP_IndustryLabel(const Industry *ind);
-
-/** Compact money string for task descriptions and news messages. */
-static std::string AP_FormatMoneyCompact_Task(int64_t amount)
+bool AP_IsTrackDirLocked(uint8_t railtype, uint8_t track)
 {
-	const CurrencySpec &cs = GetCurrency();
-	int64_t scaled = amount * cs.rate;
-	std::string num;
-	if (scaled >= 1000000) num = fmt::format("{:.0f}M", scaled / 1000000.0);
-	else if (scaled >= 1000) num = fmt::format("{}k", scaled / 1000);
-	else num = fmt::format("{}", scaled);
-	if (cs.symbol_pos == 0) return cs.prefix + num + cs.suffix;
-	return num + cs.suffix;
+	if (railtype >= AP_NUM_RAILTYPES) return false;
+	const uint8_t mask = _ap_locked_track_dirs[railtype];
+	if (mask == 0) return false; /* fast path: this rail type fully unlocked */
+
+	/* Paired tracks share a toolbar button and unlock as a unit:
+	 *   TRACK_UPPER(2) + TRACK_LOWER(3)  → BUILD_EW button
+	 *   TRACK_LEFT(4)  + TRACK_RIGHT(5)  → BUILD_NS button
+	 * If either in a pair is unlocked, treat both as unlocked. */
+	if (track == 2 || track == 3) return (mask & (1u << 2)) != 0 && (mask & (1u << 3)) != 0;
+	if (track == 4 || track == 5) return (mask & (1u << 4)) != 0 && (mask & (1u << 5)) != 0;
+	return (mask & (1u << track)) != 0;
 }
 
-static constexpr int AP_TASK_MAX_ACTIVE = 5;
+/** Returns locked track dir bitmask for a given rail type (for saveload). */
+uint8_t AP_GetLockedTrackDirs(uint8_t railtype)
+{
+	if (railtype >= AP_NUM_RAILTYPES) return 0;
+	return _ap_locked_track_dirs[railtype];
+}
+/** Restores locked track dir bitmask for a given rail type from savegame. */
+void AP_SetLockedTrackDirs(uint8_t railtype, uint8_t mask)
+{
+	if (railtype < AP_NUM_RAILTYPES) _ap_locked_track_dirs[railtype] = mask;
+}
 
-/** Accessors for GUI and saveload. */
+// Back-compat shims — kept so any future callers don't break
+bool AP_IsRailDirectionLocked(uint8_t track) { return false; } /* deprecated — use AP_IsTrackDirLocked */
+uint8_t AP_GetLockedRailDirs()  { return 0; }
+void    AP_SetLockedRailDirs(uint8_t) {}
+
+/* ─── Road direction lock API ───────────────────────────────────────────── */
+
+bool AP_IsRoadDirLocked(uint8_t axis)
+{
+	if (_ap_locked_road_dirs == 0) return false;
+	return (_ap_locked_road_dirs & (1u << axis)) != 0;
+}
+
+uint8_t AP_GetLockedRoadDirs() { return _ap_locked_road_dirs; }
+void    AP_SetLockedRoadDirs(uint8_t mask) { _ap_locked_road_dirs = mask; }
+
+/* ─── Signal lock API ───────────────────────────────────────────────────── */
+
+bool AP_IsSignalLocked(uint8_t sigtype)
+{
+	if (sigtype > 5) return false;
+	if (_ap_locked_signals == 0) return false;
+	return (_ap_locked_signals & (1u << sigtype)) != 0;
+}
+
+uint8_t AP_GetLockedSignals() { return _ap_locked_signals; }
+void    AP_SetLockedSignals(uint8_t mask) { _ap_locked_signals = mask; }
+
+/* ─── Bridge lock API ───────────────────────────────────────────────────── */
+
+bool AP_IsBridgeLocked(uint8_t bridge_type)
+{
+	if (bridge_type > 12) return false;
+	if (_ap_locked_bridges == 0) return false;
+	return (_ap_locked_bridges & (1u << bridge_type)) != 0;
+}
+
+bool AP_IsBridgeLocked() { return _ap_locked_bridges != 0; }
+uint16_t AP_GetLockedBridges() { return _ap_locked_bridges; }
+void     AP_SetLockedBridges(uint16_t mask) { _ap_locked_bridges = mask; }
+
+/* ─── Tunnel lock API ───────────────────────────────────────────────────── */
+
+bool AP_IsTunnelLocked() { return _ap_locked_tunnels; }
+
+bool AP_GetLockedTunnels() { return _ap_locked_tunnels; }
+void AP_SetLockedTunnels(bool v) { _ap_locked_tunnels = v; }
+
+/* ─── Airport lock API ──────────────────────────────────────────────────── */
+
+bool AP_IsAirportLocked(uint8_t airport_type)
+{
+	if (airport_type == 0) return false; /* AT_SMALL always free */
+	if (airport_type > 8) return false;
+	if (_ap_locked_airports == 0) return false;
+	return (_ap_locked_airports & (1u << airport_type)) != 0;
+}
+
+uint16_t AP_GetLockedAirports() { return _ap_locked_airports; }
+void     AP_SetLockedAirports(uint16_t mask) { _ap_locked_airports = mask; }
+
+/* ─── Tree lock API ─────────────────────────────────────────────────────── */
+
+bool AP_IsTreeLocked(uint8_t tree_type)
+{
+	/* Map raw TreeType to pack index (0-9).
+	 * Temperate: 0-6 → packs 0,1,2 (3 trees each except last=1)
+	 * Sub-arctic: 7-13 → packs 3,4,5
+	 * Tropical: 14-20 → packs 6,7,8
+	 * Toyland: 21-32 → pack 9 */
+	uint8_t pack;
+	if (tree_type <= 6) {
+		pack = tree_type / 3; /* 0-2→0, 3-5→1, 6→2 */
+		if (pack > 2) pack = 2;
+	} else if (tree_type <= 13) {
+		pack = 3 + (tree_type - 7) / 3;
+		if (pack > 5) pack = 5;
+	} else if (tree_type <= 20) {
+		pack = 6 + (tree_type - 14) / 3;
+		if (pack > 8) pack = 8;
+	} else {
+		pack = 9; /* Toyland */
+	}
+	if (_ap_locked_trees == 0) return false;
+	return (_ap_locked_trees & (1u << pack)) != 0;
+}
+
+uint16_t AP_GetLockedTrees() { return _ap_locked_trees; }
+void     AP_SetLockedTrees(uint16_t mask) { _ap_locked_trees = mask; }
+
+/* ─── Terraform lock API ────────────────────────────────────────────────── */
+
+bool AP_IsTerraformRaiseLocked()
+{
+	return (_ap_locked_terraform & (1u << 0)) != 0;
+}
+
+bool AP_IsTerraformLowerLocked()
+{
+	return (_ap_locked_terraform & (1u << 1)) != 0;
+}
+
+uint8_t AP_GetLockedTerraform() { return _ap_locked_terraform; }
+void    AP_SetLockedTerraform(uint8_t mask) { _ap_locked_terraform = mask; }
+
+/* ── Town Authority action lock checks ─────────────────────────────── */
+bool AP_IsTownActionLocked(uint8_t action_idx)
+{
+	if (action_idx > 7) return false;
+	if (_ap_locked_town_actions == 0) return false;
+	return (_ap_locked_town_actions & (1u << action_idx)) != 0;
+}
+
+bool AP_IsTownActionLocked() { return _ap_locked_town_actions != 0; }
+
+uint8_t AP_GetLockedTownActions() { return _ap_locked_town_actions; }
+void    AP_SetLockedTownActions(uint8_t mask) { _ap_locked_town_actions = mask; }
+
+/* ── Speed Boost accessors ──────────────────────────────────────────── */
+int  AP_GetFfSpeed()  { return _ap_ff_speed; }
+void AP_SetFfSpeed(int v)
+{
+	_ap_ff_speed = std::clamp(v, 100, 300);
+	_settings_client.gui.fast_forward_speed_limit = (uint16_t)_ap_ff_speed;
+}
+
+/* ── Task System accessors ──────────────────────────────────────────── */
 std::vector<APTask> AP_GetTaskSnapshot()        { return _ap_tasks; }
 int AP_GetTaskChecksCompleted()                  { return _ap_task_checks_completed; }
 int AP_GetTaskChecksCompletedSaved()             { return _ap_task_checks_completed; }
-void AP_SetTaskChecksCompleted(int v)            { _ap_task_checks_completed = v; }
+void AP_SetTaskChecksCompleted(int v)            { _ap_staging_task_checks = v; _ap_staging_has_data = true; }
 
-/** Serialize active tasks to a packed string for saveload.
- *  Format: semicolon-separated records, each field comma-separated:
- *  id,type,amount,current,completed,expired,seeded,deadline_year,rtype,rcash,eid,cargo,etile,diff
- *  (entity_name is re-derived on load from eid)
- */
 std::string AP_GetTasksStr()
 {
 	std::string out;
 	for (const APTask &t : _ap_tasks) {
 		if (!out.empty()) out += ';';
-		out += fmt::format("{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+		out += fmt::format("{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
 		    t.id, t.type, t.amount, t.current_value,
 		    (int)t.completed, (int)t.expired, (int)t.monitor_seeded,
 		    t.deadline_year, (int)t.reward_type, t.reward_cash,
-		    t.entity_id, (int)t.cargo, t.entity_tile, t.difficulty);
+		    t.entity_id, (int)t.cargo, t.entity_tile, t.difficulty, t.removal_year);
 	}
 	return out;
 }
 
 void AP_SetTasksStr(const std::string &s)
 {
+	_ap_staging_tasks    = s;
+	_ap_staging_has_data = true;
+}
+
+static void AP_ApplyTasksStr(const std::string &s)
+{
 	_ap_tasks.clear();
 	if (s.empty()) return;
 
-	/* Split by ';' */
 	auto split = [](const std::string &str, char delim) -> std::vector<std::string> {
 		std::vector<std::string> v;
 		std::string tok;
@@ -2199,13 +3616,164 @@ void AP_SetTasksStr(const std::string &s)
 		t.cargo           = (uint8_t)parse_int(f[11]);
 		t.entity_tile     = (uint32_t)parse_i64(f[12]);
 		t.difficulty      = f[13];
-		/* entity_name and description re-derived on first game tick via AP_RefreshTaskNames */
+		if (f.size() >= 15) t.removal_year = parse_int(f[14]);
 		_ap_tasks.push_back(std::move(t));
 	}
 
-	/* Keep next_id above max of loaded ids */
 	for (const APTask &t : _ap_tasks)
 		if (t.id >= _ap_task_next_id) _ap_task_next_id = t.id + 1;
+}
+
+/* ── Ruin System save/load ──────────────────────────────────────────── */
+
+/** Pack ruin state into a single string for savegame.
+ *  Format: "spawned,completed,cooldown,initial#id;tile;variant;town_id;cargo0_type:cargo0_req:cargo0_del,..." */
+std::string AP_GetRuinsStr()
+{
+	/* Header: counters */
+	std::string out = fmt::format("{},{},{},{}",
+		_ap_ruins_spawned, _ap_ruins_completed, _ap_ruin_cooldown_months,
+		_ap_ruins_initial_spawned ? 1 : 0);
+
+	/* Active ruins separated by '#' */
+	for (const APRuin &r : _ap_active_ruins) {
+		out += '#';
+		out += fmt::format("{};{};{};{}", r.id, r.tile, r.object_variant, (int)r.town_id);
+		for (size_t i = 0; i < r.cargo_reqs.size(); i++) {
+			out += ';';
+			out += fmt::format("{}:{}:{}", (int)r.cargo_reqs[i].cargo,
+			       r.cargo_reqs[i].required, r.cargo_reqs[i].delivered);
+		}
+	}
+	return out;
+}
+
+void AP_SetRuinsStr(const std::string &s)
+{
+	_ap_active_ruins.clear();
+	_ap_ruins_spawned   = 0;
+	_ap_ruins_completed = 0;
+	_ap_ruin_cooldown_months = 0;
+	_ap_ruins_initial_spawned = false;
+	if (s.empty()) return;
+
+	auto split = [](const std::string &str, char delim) -> std::vector<std::string> {
+		std::vector<std::string> v;
+		std::string tok;
+		for (char c : str) {
+			if (c == delim) { v.push_back(tok); tok.clear(); }
+			else tok += c;
+		}
+		if (!tok.empty()) v.push_back(tok);
+		return v;
+	};
+	auto parse_int = [](const std::string &s2, int def = 0) -> int {
+		int r = def;
+		std::from_chars(s2.data(), s2.data() + s2.size(), r);
+		return r;
+	};
+	auto parse_i64 = [](const std::string &s2, int64_t def = 0) -> int64_t {
+		int64_t r = def;
+		std::from_chars(s2.data(), s2.data() + s2.size(), r);
+		return r;
+	};
+
+	auto parts = split(s, '#');
+	if (parts.empty()) return;
+
+	/* Parse header */
+	auto header = split(parts[0], ',');
+	if (header.size() >= 1) _ap_ruins_spawned        = parse_int(header[0]);
+	if (header.size() >= 2) _ap_ruins_completed       = parse_int(header[1]);
+	if (header.size() >= 3) _ap_ruin_cooldown_months  = parse_int(header[2]);
+	if (header.size() >= 4) _ap_ruins_initial_spawned = (parse_int(header[3]) != 0);
+
+	/* Parse active ruins */
+	for (size_t pi = 1; pi < parts.size(); pi++) {
+		auto fields = split(parts[pi], ';');
+		if (fields.size() < 4) continue;
+
+		APRuin r;
+		r.id              = parse_int(fields[0]);
+		r.tile            = (uint32_t)parse_i64(fields[1]);
+		r.object_variant  = parse_int(fields[2]);
+		r.town_id         = (uint16_t)parse_int(fields[3]);
+
+		/* Resolve location name from slot_data */
+		if (r.id >= 0 && r.id < (int)_ap_pending_sd.ruin_locations.size()) {
+			r.location_name = _ap_pending_sd.ruin_locations[r.id];
+		} else {
+			r.location_name = fmt::format("Ruin_{:03d}", r.id + 1);
+		}
+
+		/* Resolve town name */
+		Town *town = Town::GetIfValid((TownID)r.town_id);
+		if (town != nullptr) {
+			r.town_name = AP_TownName(town);
+		} else {
+			r.town_name = fmt::format("Town #{}", (int)r.town_id);
+		}
+
+		/* Parse cargo requirements (fields 4+) */
+		for (size_t fi = 4; fi < fields.size(); fi++) {
+			auto cargo_parts = split(fields[fi], ':');
+			if (cargo_parts.size() < 3) continue;
+			APRuinCargoReq req;
+			req.cargo     = (uint8_t)parse_int(cargo_parts[0]);
+			req.required  = parse_i64(cargo_parts[1]);
+			req.delivered = parse_i64(cargo_parts[2]);
+			/* Cargo name is resolved later when ruin functions are available;
+			 * for now just use a placeholder. */
+			req.cargo_name = fmt::format("cargo#{}", (int)req.cargo);
+			r.cargo_reqs.push_back(req);
+		}
+
+		_ap_active_ruins.push_back(std::move(r));
+	}
+
+	AP_OK(fmt::format("Loaded ruin state: {}/{} spawned, {} completed, {} active, {} cooldown months",
+	       _ap_ruins_spawned, _ap_pending_sd.ruin_pool_size, _ap_active_ruins.size(),
+	       _ap_ruins_completed, _ap_ruin_cooldown_months));
+}
+
+/** Re-resolve ruin location_name and cargo_name after slot_data/cargo-map
+ *  become available.  Called once after AP connect for loaded games. */
+static void AP_RefreshRuinNames()
+{
+	if (!_ap_cargo_map_built) BuildCargoMap();
+	for (auto &ruin : _ap_active_ruins) {
+		/* Fix location_name from slot_data */
+		if (ruin.id >= 0 && ruin.id < (int)_ap_pending_sd.ruin_locations.size()) {
+			ruin.location_name = _ap_pending_sd.ruin_locations[ruin.id];
+		}
+		/* Fix cargo_name via reverse cargo map lookup */
+		for (auto &req : ruin.cargo_reqs) {
+			for (const auto &[name, ct] : _ap_cargo_map) {
+				if (ct == (CargoType)req.cargo) { req.cargo_name = name; break; }
+			}
+		}
+	}
+	if (!_ap_active_ruins.empty()) {
+		AP_OK(fmt::format("Refreshed {} active ruin names from slot data", _ap_active_ruins.size()));
+	}
+}
+
+/* ── Task System implementation ─────────────────────────────────────── */
+
+/* Forward declaration needed by task system (defined later in this file) */
+static std::string AP_IndustryLabel(const Industry *ind);
+
+/** Compact money string for task descriptions and news messages. */
+static std::string AP_FormatMoneyCompact_Task(int64_t amount)
+{
+	const CurrencySpec &cs = GetCurrency();
+	int64_t scaled = amount * cs.rate;
+	std::string num;
+	if (scaled >= 1000000) num = fmt::format("{:.0f}M", scaled / 1000000.0);
+	else if (scaled >= 1000) num = fmt::format("{}k", scaled / 1000);
+	else num = fmt::format("{}", scaled);
+	if (cs.symbol_pos == 0) return cs.prefix + num + cs.suffix;
+	return num + cs.suffix;
 }
 
 /** Re-derive entity names + descriptions for tasks loaded from savegame. */
@@ -2226,20 +3794,20 @@ static void AP_RefreshTaskNames()
 					if (cs) cargo_n = GetString(cs->name);
 				}
 				if (t.reward_type == APTaskRewardType::MISSION_CHECK)
-					t.description = fmt::format("Pick up {} t of {} from {} [REWARD: Mission Check]", t.amount, cargo_n, t.entity_name);
+					t.description = fmt::format("Pick up {} t of {} from {} [REWARD: Mission Check]", AP_Num(t.amount), cargo_n, t.entity_name);
 				else
 					t.description = fmt::format("Pick up {} t of {} from {} [Reward: +{}]",
-					    t.amount, cargo_n, t.entity_name, AP_FormatMoneyCompact_Task(t.reward_cash));
+					    AP_Num(t.amount), cargo_n, t.entity_name, AP_FormatMoneyCompact_Task(t.reward_cash));
 			}
 		} else if (t.type == "passengers_to_town") {
 			const Town *town = Town::GetIfValid((TownID)t.entity_id);
 			if (town) {
 				t.entity_name = GetString(STR_TOWN_NAME, town->index);
 				if (t.reward_type == APTaskRewardType::MISSION_CHECK)
-					t.description = fmt::format("Deliver {} passengers to {} [REWARD: Mission Check]", t.amount, t.entity_name);
+					t.description = fmt::format("Deliver {} passengers to {} [REWARD: Mission Check]", AP_Num(t.amount), t.entity_name);
 				else
 					t.description = fmt::format("Deliver {} passengers to {} [Reward: +{}]",
-					    t.amount, t.entity_name, AP_FormatMoneyCompact_Task(t.reward_cash));
+					    AP_Num(t.amount), t.entity_name, AP_FormatMoneyCompact_Task(t.reward_cash));
 			}
 		}
 	}
@@ -2250,18 +3818,23 @@ static void AP_RefreshTaskNames()
 static void AP_SeedTaskMonitor(const APTask &t)
 {
 	CompanyID cid = _local_company;
-	if (!Company::IsValidID(cid)) return;
+	if (!Company::IsValidID(cid)) {
+		AP_WARN(fmt::format("[Task] Seed SKIPPED (no company) type={} eid={}", t.type, t.entity_id));
+		return;
+	}
 
 	if (t.type == "cargo_from_industry" && t.entity_id >= 0 && IsValidCargoType((CargoType)t.cargo)) {
 		IndustryID iid = (IndustryID)t.entity_id;
 		CargoMonitorID mon = EncodeCargoIndustryMonitor(cid, (CargoType)t.cargo, iid);
 		GetPickupAmount(mon, true); /* discard — start fresh */
+		AP_OK(fmt::format("[Task] Seeded pickup monitor: industry={} cargo={} monid={:08X}", t.entity_id, (int)t.cargo, mon));
 	} else if (t.type == "passengers_to_town" && t.entity_id >= 0) {
 		CargoType ct = AP_FindCargoType("passengers");
 		if (!IsValidCargoType(ct)) return;
 		TownID tid = (TownID)t.entity_id;
 		CargoMonitorID mon = EncodeCargoTownMonitor(cid, ct, tid);
 		GetDeliveryAmount(mon, true); /* discard */
+		AP_OK(fmt::format("[Task] Seeded delivery monitor: town={} cargo={} monid={:08X}", t.entity_id, (int)ct, mon));
 	}
 }
 
@@ -2361,9 +3934,9 @@ static bool AP_TryMakeTask(APTask &out)
 		out.entity_name    = AP_IndustryLabel(src);
 		out.difficulty     = diff;
 		if (rtype == APTaskRewardType::MISSION_CHECK)
-			out.description = fmt::format("Pick up {} t of {} from {} [REWARD: Mission Check]", amount, cargo_n, out.entity_name);
+			out.description = fmt::format("Pick up {} t of {} from {} [REWARD: Mission Check]", AP_Num(amount), cargo_n, out.entity_name);
 		else
-			out.description = fmt::format("Pick up {} t of {} from {} [Reward: +{}]", amount, cargo_n, out.entity_name, AP_FormatMoneyCompact_Task(reward_cash));
+			out.description = fmt::format("Pick up {} t of {} from {} [Reward: +{}]", AP_Num(amount), cargo_n, out.entity_name, AP_FormatMoneyCompact_Task(reward_cash));
 		return true;
 
 	} else {
@@ -2394,9 +3967,9 @@ static bool AP_TryMakeTask(APTask &out)
 		out.entity_name    = town_name;
 		out.difficulty     = diff;
 		if (rtype == APTaskRewardType::MISSION_CHECK)
-			out.description = fmt::format("Deliver {} passengers to {} [REWARD: Mission Check]", pass_amount, town_name);
+			out.description = fmt::format("Deliver {} passengers to {} [REWARD: Mission Check]", AP_Num(pass_amount), town_name);
 		else
-			out.description = fmt::format("Deliver {} passengers to {} [Reward: +{}]", pass_amount, town_name, AP_FormatMoneyCompact_Task(reward_cash));
+			out.description = fmt::format("Deliver {} passengers to {} [Reward: +{}]", AP_Num(pass_amount), town_name, AP_FormatMoneyCompact_Task(reward_cash));
 		return true;
 	}
 }
@@ -2428,7 +4001,8 @@ void AP_GenerateTasks()
 /** Apply task reward and mark completed. */
 static void AP_CompleteTask(APTask &t)
 {
-	t.completed = true;
+	t.completed    = true;
+	t.removal_year = (int32_t)TimerGameCalendar::year.base() + 1; /* remove ~1 in-game year after completion */
 	CompanyID cid = _local_company;
 	if (!Company::IsValidID(cid)) return;
 	Company *c = Company::Get(cid);
@@ -2452,6 +4026,16 @@ static void AP_UpdateTasks()
 
 	int32_t cur_year  = (int32_t)TimerGameCalendar::year.base();
 
+	/* Remove completed/expired tasks whose removal_year has passed */
+	_ap_tasks.erase(
+		std::remove_if(_ap_tasks.begin(), _ap_tasks.end(),
+			[cur_year](const APTask &t) {
+				return (t.completed || t.expired) &&
+				       t.removal_year > 0 &&
+				       cur_year >= t.removal_year;
+			}),
+		_ap_tasks.end());
+
 	for (APTask &t : _ap_tasks) {
 		if (t.completed || t.expired) continue;
 
@@ -2465,28 +4049,21 @@ static void AP_UpdateTasks()
 		/* Check expiry */
 		if (cur_year > t.deadline_year) {
 			t.expired = true;
+			t.removal_year = cur_year + 1; /* remove ~1 in-game year after expiry */
 			AP_ShowNews(fmt::format("[Task] Expired: {}", t.description.substr(0, 50)));
 			continue;
 		}
 
-		/* Update progress */
-		if (t.type == "cargo_from_industry") {
-			if (t.entity_id < 0 || !IsValidCargoType((CargoType)t.cargo)) continue;
-			IndustryID iid = (IndustryID)t.entity_id;
-			if (!Industry::IsValidID(iid)) { t.expired = true; continue; }
-			CargoMonitorID mon = EncodeCargoIndustryMonitor(cid, (CargoType)t.cargo, iid);
-			int32_t picked = GetPickupAmount(mon, true);
-			if (picked > 0) t.current_value += picked;
+		/* Progress is accumulated in AP_UpdateNamedMissions() every 250 ms.
+		 * Here we only check expiry and completion. */
 
+		/* Validate entity still exists (industry tasks only) */
+		if (t.type == "cargo_from_industry") {
+			IndustryID iid = (IndustryID)t.entity_id;
+			if (!Industry::IsValidID(iid)) { t.expired = true; t.removal_year = cur_year + 1; continue; }
 		} else if (t.type == "passengers_to_town") {
-			if (t.entity_id < 0) continue;
-			CargoType ct = AP_FindCargoType("passengers");
-			if (!IsValidCargoType(ct)) continue;
 			TownID tid = (TownID)t.entity_id;
-			if (!Town::IsValidID(tid)) { t.expired = true; continue; }
-			CargoMonitorID mon = EncodeCargoTownMonitor(cid, ct, tid);
-			int32_t delivered = GetDeliveryAmount(mon, true);
-			if (delivered > 0) t.current_value += delivered;
+			if (!Town::IsValidID(tid)) { t.expired = true; t.removal_year = cur_year + 1; continue; }
 		}
 
 		/* Check completion */
@@ -2504,11 +4081,6 @@ int AP_GetShopSlots()
 	/* Returns the total number of shop purchase locations for this game. */
 	const APSlotData &sd = AP_GetSlotData();
 	return sd.shop_slots > 0 ? sd.shop_slots : 100;
-}
-
-int AP_GetShopRefreshDays()
-{
-	return AP_GetSlotData().shop_refresh_days;
 }
 
 std::string AP_GetShopLocationLabel(const std::string &location_name)
@@ -2569,13 +4141,23 @@ std::string AP_GetSentShopStr()
 
 void AP_SetSentShopStr(const std::string &s)
 {
-	if (s.empty()) return;
+	/* Stage for application after AP_InitSessionStats (which clears _ap_sent_shop_locations) */
+	_ap_staging_shop_sent = s;
+	_ap_staging_shop_sent_valid = !s.empty();
+}
+
+static void AP_ApplyStagedShopSent()
+{
+	if (!_ap_staging_shop_sent_valid) return;
 	std::string token;
-	for (char c : s) {
+	for (char c : _ap_staging_shop_sent) {
 		if (c == ',') { if (!token.empty()) _ap_sent_shop_locations.insert(token); token.clear(); }
 		else token += c;
 	}
 	if (!token.empty()) _ap_sent_shop_locations.insert(token);
+	Debug(misc, 1, "[AP] Restored {} shop locations from savegame", _ap_sent_shop_locations.size());
+	_ap_staging_shop_sent.clear();
+	_ap_staging_shop_sent_valid = false;
 }
 
 void AP_DeductShopPrice(const std::string &location_name)
@@ -2618,16 +4200,12 @@ static int _ap_shop_page_offset  = 0;   ///< Unused — kept for savegame compat
 /* ── Savegame accessor functions (used by archipelago_sl.cpp) ────── */
 int  AP_GetShopPageOffset()  { return _ap_shop_page_offset; }
 void AP_SetShopPageOffset(int v) { _ap_shop_page_offset = v; }
-int  AP_GetFfSpeed()  { return _ap_ff_speed; }
-void AP_SetFfSpeed(int v)
-{
-	_ap_ff_speed = std::clamp(v, 100, 300);
-	_settings_client.gui.fast_forward_speed_limit = (uint16_t)_ap_ff_speed;
-}
 int  AP_GetShopDayCounter()  { return _ap_shop_day_counter; }
 void AP_SetShopDayCounter(int v) { _ap_shop_day_counter = v; }
 bool AP_GetGoalSent()        { return _ap_goal_sent; }
 void AP_SetGoalSent(bool v)  { _ap_goal_sent = v; }
+int64_t AP_GetItemsReceivedCount()         { return _ap_items_received_count; }
+void    AP_SetItemsReceivedCount(int64_t v){ _ap_staging_items_received = v; _ap_staging_stats = true; }
 
 void AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station, int *license_ticks, int *license_type)
 {
@@ -2674,6 +4252,21 @@ void AP_SetCompletedMissionsStr(const std::string &s)
     for (APMission &m : _ap_pending_sd.missions) {
         if (done.count(m.location)) m.completed = true;
     }
+
+    /* Rebuild per-difficulty counters from the now-updated mission structs.
+     * Without this the static counters stay at 0 after a save/load, causing
+     * the status window to show "0 / N" even though missions are completed. */
+    _ap_easy_completed    = 0;
+    _ap_medium_completed  = 0;
+    _ap_hard_completed    = 0;
+    _ap_extreme_completed = 0;
+    for (const APMission &m : _ap_pending_sd.missions) {
+        if (!m.completed) continue;
+        if      (m.location.rfind("Mission_Easy_",    0) == 0) _ap_easy_completed++;
+        else if (m.location.rfind("Mission_Medium_",  0) == 0) _ap_medium_completed++;
+        else if (m.location.rfind("Mission_Hard_",    0) == 0) _ap_hard_completed++;
+        else if (m.location.rfind("Mission_Extreme_", 0) == 0) _ap_extreme_completed++;
+    }
 }
 
 void AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out)
@@ -2685,10 +4278,11 @@ void AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out)
 
 void AP_SetCumulStats(const uint64_t *cargo_in, int num_cargo, int64_t profit_in)
 {
+    /* Stage for application after AP_InitSessionStats (which zeroes everything) */
     for (int i = 0; i < num_cargo && i < (int)NUM_CARGO; i++)
-        _ap_cumul_cargo[i] = cargo_in[i];
-    _ap_cumul_profit = (Money)profit_in;
-    _ap_stats_initialized = true;
+        _ap_staging_cargo[i] = cargo_in[i];
+    _ap_staging_profit = profit_in;
+    _ap_staging_stats  = true;
 }
 
 /* Returns "location=N:P,..." for all maintain missions.
@@ -2817,6 +4411,293 @@ static std::string AP_TownName(const Town *t)
 	return GetString(STR_TOWN_NAME, t->index);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+ * Ruin Gameplay System — implementation
+ * Placed here (after _ap_pending_sd, AP_ShowNews, AP_TownName) so all
+ * dependencies are available.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* Cargo types available per landscape (including passengers, mail, and goods). */
+static const std::vector<std::string> _ap_ruin_cargo_temperate = {
+	"passengers", "mail", "coal", "oil", "livestock", "goods", "grain", "wood", "iron ore", "steel", "valuables"
+};
+static const std::vector<std::string> _ap_ruin_cargo_arctic = {
+	"passengers", "mail", "coal", "oil", "livestock", "goods", "wheat", "wood", "paper", "food", "gold"
+};
+static const std::vector<std::string> _ap_ruin_cargo_tropical = {
+	"passengers", "mail", "oil", "goods", "maize", "wood", "rubber", "fruit", "copper ore", "water", "food", "diamonds"
+};
+static const std::vector<std::string> _ap_ruin_cargo_toyland = {
+	"passengers", "mail", "sugar", "toys", "batteries", "sweets", "cola", "candyfloss", "bubbles", "plastic", "fizzy drinks", "toffee"
+};
+
+static const std::vector<std::string> &AP_RuinCargoList()
+{
+	switch (_ap_pending_sd.landscape) {
+		case 1:  return _ap_ruin_cargo_arctic;
+		case 2:  return _ap_ruin_cargo_tropical;
+		case 3:  return _ap_ruin_cargo_toyland;
+		default: return _ap_ruin_cargo_temperate;
+	}
+}
+
+/** Difficulty-scaled cargo amount for a ruin requirement. */
+static int64_t AP_RuinCargoAmount()
+{
+	int diff = (int)_ap_pending_sd.win_difficulty;
+	struct Range { int64_t lo; int64_t hi; };
+	static const Range ranges[] = {
+		{  1000,   4000 }, // 0: casual
+		{  2000,   6000 }, // 1: easy
+		{  3000,   8000 }, // 2: normal
+		{  5000,  12000 }, // 3: medium
+		{  8000,  20000 }, // 4: hard
+		{ 12000,  30000 }, // 5: very hard
+		{ 18000,  45000 }, // 6: extreme
+		{ 25000,  60000 }, // 7: insane
+		{ 35000,  90000 }, // 8: nutcase
+		{ 50000, 150000 }, // 9: madness
+	};
+	int idx = std::clamp(diff, 0, 9);
+	int64_t lo = ranges[idx].lo;
+	int64_t hi = ranges[idx].hi;
+	return lo + (int64_t)(Random() % (uint32_t)(hi - lo + 1));
+}
+
+/** Spawn a new ruin on the map with random cargo requirements. */
+static bool AP_SpawnRuin()
+{
+	if (_ap_pending_sd.ruin_pool_size <= 0) return false;
+	if (_ap_ruins_spawned >= _ap_pending_sd.ruin_pool_size) return false;
+	if ((int)_ap_active_ruins.size() >= _ap_pending_sd.max_active_ruins) return false;
+	if (_ap_ruins_spawned >= (int)_ap_pending_sd.ruin_locations.size()) return false;
+
+	AP_ResolveRuinTypes();
+
+	int variant = Random() % AP_NUM_RUIN_TYPES;
+	ObjectType ot = _ap_ruin_types[variant];
+	if (ot == INVALID_OBJECT_TYPE) {
+		for (int i = 0; i < AP_NUM_RUIN_TYPES; i++) {
+			if (_ap_ruin_types[i] != INVALID_OBJECT_TYPE) { ot = _ap_ruin_types[i]; variant = i; break; }
+		}
+		if (ot == INVALID_OBJECT_TYPE) {
+			AP_WARN("Cannot spawn ruin — no ruin ObjectTypes resolved (GRF missing?)");
+			return false;
+		}
+	}
+
+	/* Spawn a 3×3 cluster of ruin objects so they're visible on the map.
+	 * We try to place the centre tile first, then fill the 3×3 around it. */
+	static constexpr int RUIN_RADIUS = 1; /* 1 = 3×3 cluster */
+	TileIndex placed_tile = INVALID_TILE;
+	for (int attempt = 0; attempt < 5000; attempt++) {
+		TileIndex tile = RandomTile();
+		if (!IsValidTile(tile)) continue;
+		uint x = TileX(tile), y = TileY(tile);
+		if (x < 6 || y < 6 || x >= Map::SizeX() - 6 || y >= Map::SizeY() - 6) continue;
+
+		bool too_close = false;
+		for (const auto &r : _ap_active_ruins) {
+			if (r.tile != UINT32_MAX && DistanceManhattan(tile, (TileIndex)r.tile) < 20) {
+				too_close = true; break;
+			}
+		}
+		if (too_close) continue;
+
+		/* OBJ_FLAG_ONLY_INGAME requires _current_company <= MAX_COMPANIES. */
+		CompanyID old_company = _current_company;
+		_current_company = _local_company;
+		CommandCost res = Command<CMD_BUILD_OBJECT>::Do(
+			DoCommandFlags{DoCommandFlag::Execute}, tile, ot, 0);
+		_current_company = old_company;
+
+		if (res.Succeeded()) {
+			placed_tile = tile;
+			/* Fill the surrounding ring with ruin objects (best-effort) */
+			for (int dx = -RUIN_RADIUS; dx <= RUIN_RADIUS; dx++) {
+				for (int dy = -RUIN_RADIUS; dy <= RUIN_RADIUS; dy++) {
+					if (dx == 0 && dy == 0) continue; /* centre already placed */
+					TileIndex t2 = TileXY(x + dx, y + dy);
+					if (!IsValidTile(t2)) continue;
+					ObjectType ot2 = _ap_ruin_types[Random() % AP_NUM_RUIN_TYPES];
+					if (ot2 == INVALID_OBJECT_TYPE) ot2 = ot;
+					_current_company = _local_company;
+					Command<CMD_BUILD_OBJECT>::Do(
+						DoCommandFlags{DoCommandFlag::Execute}, t2, ot2, 0);
+					_current_company = old_company;
+				}
+			}
+			break;
+		}
+	}
+
+	if (placed_tile == INVALID_TILE) {
+		AP_WARN("Failed to spawn ruin after 5000 attempts");
+		return false;
+	}
+
+	Town *town = ClosestTownFromTile(placed_tile, UINT_MAX);
+	if (town == nullptr) { AP_WARN("No town found near ruin tile"); return false; }
+
+	APRuin ruin;
+	ruin.id = _ap_ruins_spawned;
+	ruin.location_name = _ap_pending_sd.ruin_locations[_ap_ruins_spawned];
+	ruin.tile = placed_tile.base();
+	ruin.object_variant = variant;
+	ruin.town_id = town->index.base();
+	ruin.town_name = AP_TownName(town);
+
+	const auto &cargo_list = AP_RuinCargoList();
+	int cargo_min = std::max(1, _ap_pending_sd.ruin_cargo_min);
+	int cargo_max = std::max(cargo_min, _ap_pending_sd.ruin_cargo_max);
+	int num_reqs = cargo_min + (int)(Random() % (uint32_t)(cargo_max - cargo_min + 1));
+	if (num_reqs > (int)cargo_list.size()) num_reqs = (int)cargo_list.size();
+
+	std::vector<int> indices(cargo_list.size());
+	for (int i = 0; i < (int)indices.size(); i++) indices[i] = i;
+	for (int i = (int)indices.size() - 1; i > 0; i--) {
+		int j = Random() % (uint32_t)(i + 1);
+		std::swap(indices[i], indices[j]);
+	}
+
+	/* Soft-lock prevention: guarantee at least one "basic" cargo (passengers
+	 * or mail) so the player can always make partial progress with starter
+	 * vehicles even before unlocking specialised cargo transport. */
+	{
+		int basic_idx = -1; /* index in cargo_list for passengers or mail */
+		bool found_basic = false;
+		for (int i = 0; i < num_reqs; i++) {
+			const std::string &name = cargo_list[indices[i]];
+			if (name == "passengers" || name == "mail") { found_basic = true; break; }
+		}
+		if (!found_basic) {
+			/* Find a basic cargo in the un-selected tail and swap it in */
+			for (int i = num_reqs; i < (int)indices.size(); i++) {
+				const std::string &name = cargo_list[indices[i]];
+				if (name == "passengers" || name == "mail") { basic_idx = i; break; }
+			}
+			if (basic_idx >= 0) {
+				/* Swap it with a random non-first slot in the selected range */
+				int swap_pos = (num_reqs > 1) ? (int)(Random() % (uint32_t)num_reqs) : 0;
+				std::swap(indices[swap_pos], indices[basic_idx]);
+			}
+		}
+	}
+
+	for (int i = 0; i < num_reqs; i++) {
+		APRuinCargoReq req;
+		const std::string &cargo_name = cargo_list[indices[i]];
+		req.cargo = (uint8_t)AP_FindCargoType(cargo_name);
+		req.cargo_name = cargo_name;
+		req.required = AP_RuinCargoAmount();
+		req.delivered = 0;
+		if (IsValidCargoType((CargoType)req.cargo)) ruin.cargo_reqs.push_back(req);
+	}
+
+	if (ruin.cargo_reqs.empty()) { AP_WARN("No valid cargo types for ruin"); return false; }
+
+	_ap_active_ruins.push_back(ruin);
+	_ap_ruins_spawned++;
+	_ap_ruin_cooldown_months = AP_RUIN_SPAWN_COOLDOWN;
+
+	std::string cargo_text;
+	for (size_t i = 0; i < ruin.cargo_reqs.size(); i++) {
+		if (i > 0) cargo_text += (i == ruin.cargo_reqs.size() - 1) ? " and " : ", ";
+		cargo_text += fmt::format("{} {}", AP_Num(ruin.cargo_reqs[i].required), ruin.cargo_reqs[i].cargo_name);
+	}
+	AP_ShowNews(fmt::format("The God of Wacken has cursed the land near {}! Deliver {} to lift the curse.",
+	            ruin.town_name, cargo_text));
+	AP_OK(fmt::format("Ruin {} spawned at tile {} near {} ({})", ruin.location_name, placed_tile,
+	      ruin.town_name, cargo_text));
+	return true;
+}
+
+/** Check ruin cargo delivery progress.  Called from AP_UpdateNamedMissions(). */
+static void AP_UpdateRuinProgress(CompanyID cid, std::set<CargoMonitorID> &drained)
+{
+	for (auto it = _ap_active_ruins.begin(); it != _ap_active_ruins.end(); ) {
+		APRuin &ruin = *it;
+		if (ruin.completed) { ++it; continue; }
+
+		for (auto &req : ruin.cargo_reqs) {
+			if (req.delivered >= req.required) continue;
+			if (!IsValidCargoType((CargoType)req.cargo)) continue;
+
+			TownID tid = (TownID)ruin.town_id;
+			if (!Town::IsValidID(tid)) continue;
+
+			CargoMonitorID monitor = EncodeCargoTownMonitor(cid, (CargoType)req.cargo, tid);
+			int32_t delivered = 0;
+			if (!drained.count(monitor)) {
+				delivered = GetDeliveryAmount(monitor, true);
+				drained.insert(monitor);
+			}
+			if (delivered > 0) req.delivered += (int64_t)delivered;
+		}
+
+		bool all_met = true;
+		for (const auto &req : ruin.cargo_reqs) {
+			if (req.delivered < req.required) { all_met = false; break; }
+		}
+
+		if (all_met) {
+			ruin.completed = true;
+			AP_SendCheckByName(ruin.location_name);
+
+			/* Clear the 3×3 cluster of ruin objects around the centre tile */
+			TileIndex centre = (TileIndex)ruin.tile;
+			uint cx = TileX(centre), cy = TileY(centre);
+			CompanyID old_company = _current_company;
+			_current_company = _local_company;
+			for (int dx = -1; dx <= 1; dx++) {
+				for (int dy = -1; dy <= 1; dy++) {
+					TileIndex t = TileXY(cx + dx, cy + dy);
+					if (!IsValidTile(t)) continue;
+					if (IsTileType(t, MP_OBJECT)) {
+						Command<CMD_LANDSCAPE_CLEAR>::Do(
+							DoCommandFlags{DoCommandFlag::Execute}, t);
+					}
+				}
+			}
+			_current_company = old_company;
+
+			AP_ShowNews(fmt::format("Ruins near {} cleared! The God of Wacken retreats.", ruin.town_name));
+			AP_OK(fmt::format("Ruin {} completed and removed", ruin.location_name));
+			_ap_ruins_completed++;
+			it = _ap_active_ruins.erase(it);
+
+			if (_ap_ruins_completed >= _ap_pending_sd.ruin_pool_size) {
+				AP_ShowNews("All ruins have been banished! The land is free from the God of Wacken's curse.");
+			}
+		} else {
+			++it;
+		}
+	}
+}
+
+/** Monthly tick for ruin spawn control. */
+static void AP_RuinMonthlyTick()
+{
+	if (_ap_pending_sd.ruin_pool_size <= 0) return;
+	if (!_ap_session_started) return;
+
+	if (!_ap_ruins_initial_spawned) {
+		_ap_ruins_initial_spawned = true;
+		int initial = std::min(_ap_pending_sd.max_active_ruins, _ap_pending_sd.ruin_pool_size - _ap_ruins_spawned);
+		for (int i = 0; i < initial; i++) AP_SpawnRuin();
+		return;
+	}
+
+	if (_ap_ruin_cooldown_months > 0) { _ap_ruin_cooldown_months--; return; }
+
+	if ((int)_ap_active_ruins.size() < _ap_pending_sd.max_active_ruins &&
+	    _ap_ruins_spawned < _ap_pending_sd.ruin_pool_size) {
+		AP_SpawnRuin();
+	}
+}
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+
 /** Get "IndustryType near TownName" label. */
 static std::string AP_IndustryLabel(const Industry *ind)
 {
@@ -2927,7 +4808,7 @@ static void AP_AssignNamedEntities()
 
 		if (m.type == "passengers_to_town" || m.type == "mail_to_town") {
 			while (ti < towns.size() && used_towns.count((int32_t)towns[ti]->index.base())) ti++;
-			if (ti >= towns.size()) ti = 0;
+			if (ti >= towns.size()) { ti = 0; used_towns.clear(); /* allow reuse on wrap */ }
 			const Town *t           = towns[ti++];
 			m.named_entity.id       = (int32_t)t->index.base();
 			m.named_entity.name     = AP_TownName(t);
@@ -2941,7 +4822,7 @@ static void AP_AssignNamedEntities()
 
 		} else if (m.type == "cargo_from_industry") {
 			while (pi < prod_inds.size() && used_inds.count((int32_t)prod_inds[pi]->index.base())) pi++;
-			if (pi >= prod_inds.size()) pi = 0;
+			if (pi >= prod_inds.size()) { pi = 0; used_inds.clear(); }
 			const Industry *ind        = prod_inds[pi++];
 			m.named_entity.id          = (int32_t)ind->index.base();
 			m.named_entity.name        = AP_IndustryLabel(ind);
@@ -2956,7 +4837,7 @@ static void AP_AssignNamedEntities()
 
 		} else if (m.type == "cargo_to_industry") {
 			while (ai < acc_inds.size() && used_inds.count((int32_t)acc_inds[ai]->index.base())) ai++;
-			if (ai >= acc_inds.size()) ai = 0;
+			if (ai >= acc_inds.size()) { ai = 0; /* used_inds already cleared above or allow reuse */ }
 			const Industry *ind        = acc_inds[ai++];
 			m.named_entity.id          = (int32_t)ind->index.base();
 			m.named_entity.name        = AP_IndustryLabel(ind);
@@ -2976,11 +4857,28 @@ static void AP_AssignNamedEntities()
  * Called monthly: accumulate named-entity progress and protect industries
  * from random closure while their mission is active.
  */
+/**
+ * Called every 250 ms: accumulate named-entity progress for missions AND tasks,
+ * and protect mission industries from random closure.
+ *
+ * Root-cause fix for task progress bug:
+ *   Missions and tasks share the same CargoMonitorID key
+ *   (company + cargo + town/industry).  GetDeliveryAmount() resets the
+ *   counter to 0 on every call.  AP_UpdateNamedMissions() runs every 250 ms
+ *   and drained mission monitors before the monthly AP_UpdateTasks() could
+ *   read them — tasks always saw 0.
+ *   Fix: accumulate BOTH mission and task progress in one pass so each
+ *   monitor is only drained once per tick.
+ */
 static void AP_UpdateNamedMissions()
 {
 	CompanyID cid = _local_company;
 	if (cid >= MAX_COMPANIES) return;
 
+	/* Track monitors already drained this tick so tasks don't double-drain. */
+	std::set<CargoMonitorID> drained;
+
+	/* ── Mission progress ─────────────────────────────────────────────── */
 	for (APMission &m : _ap_pending_sd.missions) {
 		if (m.completed)           continue;
 		if (m.named_entity.id < 0) continue;
@@ -2989,17 +4887,22 @@ static void AP_UpdateNamedMissions()
 		CargoType ct = (CargoType)m.named_entity.cargo_type;
 
 		if (m.type == "passengers_to_town" || m.type == "mail_to_town") {
-			/* Use cargomonitor: company-specific deliveries to this town only */
 			TownID tid = (TownID)m.named_entity.id;
 			if (!Town::IsValidID(tid)) { m.named_entity.cumulative = (uint64_t)m.amount; continue; }
 			CargoMonitorID monitor = EncodeCargoTownMonitor(cid, ct, tid);
-			int32_t delivered = GetDeliveryAmount(monitor, true); /* true = keep monitoring */
-			if (delivered > 0) m.named_entity.cumulative += (uint64_t)delivered;
+			int32_t delivered = GetDeliveryAmount(monitor, true);
+			drained.insert(monitor);
+			if (delivered > 0) {
+				m.named_entity.cumulative += (uint64_t)delivered;
+				/* Credit any tasks sharing this exact monitor (same town + cargo). */
+				for (APTask &t : _ap_tasks) {
+					if (t.completed || t.expired || !t.monitor_seeded) continue;
+					if (t.type == "passengers_to_town" && t.entity_id == m.named_entity.id)
+						t.current_value += delivered;
+				}
+			}
 
 		} else if (m.type == "cargo_from_industry") {
-			/* Use cargomonitor: company-specific pickups from this industry.
-			 * Sum ALL produced cargo slots — some industries produce multiple
-			 * cargo types (e.g. Oil Refinery produces both Goods and Oil). */
 			IndustryID iid = (IndustryID)m.named_entity.id;
 			Industry *ind = Industry::GetIfValid(iid);
 			if (ind == nullptr) { m.named_entity.cumulative = (uint64_t)m.amount; continue; }
@@ -3008,14 +4911,18 @@ static void AP_UpdateNamedMissions()
 				if (!IsValidCargoType(slot.cargo)) continue;
 				CargoMonitorID monitor = EncodeCargoIndustryMonitor(cid, slot.cargo, iid);
 				int32_t picked_up = GetPickupAmount(monitor, true);
-				if (picked_up > 0) m.named_entity.cumulative += (uint64_t)picked_up;
+				drained.insert(monitor);
+				if (picked_up > 0) {
+					m.named_entity.cumulative += (uint64_t)picked_up;
+					for (APTask &t : _ap_tasks) {
+						if (t.completed || t.expired || !t.monitor_seeded) continue;
+						if (t.type == "cargo_from_industry" && t.entity_id == m.named_entity.id)
+							t.current_value += picked_up;
+					}
+				}
 			}
 
 		} else if (m.type == "cargo_to_industry") {
-			/* Use cargomonitor: company-specific deliveries to this industry.
-			 * Sum ALL accepted cargo slots — industries like Cadton Factory
-			 * accept Livestock + Grain + Steel; only counting slot 0 (Livestock)
-			 * meant Steel and Grain deliveries never registered. */
 			IndustryID iid = (IndustryID)m.named_entity.id;
 			Industry *ind = Industry::GetIfValid(iid);
 			if (ind == nullptr) { m.named_entity.cumulative = (uint64_t)m.amount; continue; }
@@ -3024,10 +4931,59 @@ static void AP_UpdateNamedMissions()
 				if (!IsValidCargoType(slot.cargo)) continue;
 				CargoMonitorID monitor = EncodeCargoIndustryMonitor(cid, slot.cargo, iid);
 				int32_t delivered = GetDeliveryAmount(monitor, true);
+				drained.insert(monitor);
 				if (delivered > 0) m.named_entity.cumulative += (uint64_t)delivered;
 			}
 		}
 	}
+
+	/* ── Task progress (monitors NOT already drained by a mission above) ── */
+	CargoType pass_ct = AP_FindCargoType("passengers");
+	bool any_task_updated = false;
+	for (APTask &t : _ap_tasks) {
+		if (t.completed || t.expired || !t.monitor_seeded) continue;
+
+		if (t.type == "passengers_to_town") {
+			if (!IsValidCargoType(pass_ct)) continue;
+			TownID tid = (TownID)t.entity_id;
+			if (!Town::IsValidID(tid)) continue;
+			CargoMonitorID mon = EncodeCargoTownMonitor(cid, pass_ct, tid);
+			if (drained.count(mon)) continue; /* already credited above */
+			int32_t delivered = GetDeliveryAmount(mon, true);
+			if (delivered > 0) {
+				t.current_value += delivered;
+				any_task_updated = true;
+				AP_OK(fmt::format("[Task] passengers_to_town id={}: +{} -> {}/{}", t.entity_id, AP_Num(delivered), AP_Num(t.current_value), AP_Num(t.amount)));
+			}
+
+		} else if (t.type == "cargo_from_industry") {
+			if (!IsValidCargoType((CargoType)t.cargo)) continue;
+			IndustryID iid = (IndustryID)t.entity_id;
+			Industry *ind = Industry::GetIfValid(iid);
+			if (!ind) continue;
+			for (const auto &slot : ind->produced) {
+				if (!IsValidCargoType(slot.cargo)) continue;
+				CargoMonitorID mon = EncodeCargoIndustryMonitor(cid, slot.cargo, iid);
+				if (drained.count(mon)) continue;
+				int32_t picked_up = GetPickupAmount(mon, true);
+				if (picked_up > 0) {
+					t.current_value += picked_up;
+					any_task_updated = true;
+					AP_OK(fmt::format("[Task] cargo_from_industry id={} cargo={}: +{} -> {}/{}", t.entity_id, (int)slot.cargo, AP_Num(picked_up), AP_Num(t.current_value), AP_Num(t.amount)));
+				}
+			}
+		}
+	}
+
+	/* Check task completion here (250 ms cadence) so rewards fire promptly.
+	 * AP_UpdateTasks (monthly) also checks, but that's too slow to be responsive. */
+	for (APTask &t : _ap_tasks) {
+		if (t.completed || t.expired) continue;
+		if (t.current_value >= t.amount) AP_CompleteTask(t);
+	}
+
+	/* ── Ruin cargo delivery progress ──────────────────────────────── */
+	AP_UpdateRuinProgress(cid, drained);
 }
 
 
@@ -3040,6 +4996,9 @@ static void AP_UpdateNamedMissions()
 static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 	{ TimerGameCalendar::MONTH, TimerGameCalendar::Priority::NONE },
 	[](auto) {
+		/* Day/Night cycle — check every month */
+		AP_DayNightTick();
+
 		if (!_ap_session_started) return;
 
 		CompanyID cid = _local_company;
@@ -3091,6 +5050,9 @@ static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 
 		/* ── Monthly task update ── */
 		AP_UpdateTasks();
+
+		/* ── Ruin spawn control ── */
+		AP_RuinMonthlyTick();
 	}
 );
 
@@ -3191,15 +5153,50 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Reset session statistics for mission evaluation */
 			AP_InitSessionStats();
 
+				/* Apply cumul stats staged by saveload (must run after AP_InitSessionStats) */
+				if (_ap_staging_stats) {
+					for (CargoType ci = 0; ci < NUM_CARGO; ci++)
+						_ap_cumul_cargo[ci] = _ap_staging_cargo[ci];
+					_ap_cumul_profit = (Money)_ap_staging_profit;
+					if (_ap_staging_items_received >= 0)
+						_ap_items_received_count = _ap_staging_items_received;
+					_ap_stats_initialized = true;
+					/* Clear staging */
+					for (CargoType ci = 0; ci < NUM_CARGO; ci++) _ap_staging_cargo[ci] = 0;
+					_ap_staging_profit = 0;
+					_ap_staging_items_received = -1;
+					_ap_staging_stats = false;
+					Debug(misc, 1, "[AP] Restored cumul stats from savegame (profit={}, items={})",
+					      (int64_t)_ap_cumul_profit, _ap_items_received_count);
+				}
+
+				/* Apply shop sent locations staged by saveload (must run after AP_InitSessionStats) */
+				AP_ApplyStagedShopSent();
+
+				/* Apply task data staged by saveload (must run after AP_InitSessionStats) */
+				if (_ap_staging_has_data) {
+					AP_ApplyTasksStr(_ap_staging_tasks);
+					if (_ap_staging_task_checks >= 0)
+						_ap_task_checks_completed = _ap_staging_task_checks;
+					_ap_staging_tasks.clear();
+					_ap_staging_task_checks = -1;
+					_ap_staging_has_data = false;
+				}
+
 				/* Assign named map entities to named-destination missions */
 				AP_AssignNamedEntities();
 				/* Refresh names for missions restored from savegame (deferred from Load()) */
 				if (_ap_named_entity_refresh_needed) AP_RefreshNamedEntityNames();
 				/* Refresh task entity names (deferred from savegame load) */
 				AP_RefreshTaskNames();
+				/* Refresh ruin location_name and cargo_name (deferred from savegame load) */
+				AP_RefreshRuinNames();
 				/* Generate initial tasks (safe to call: only adds if room) */
 				AP_GenerateTasks();
 				_ap_status_dirty.store(true); /* refresh GUI to show resolved [Town]/[Industry] names */
+
+				/* Rename towns using multiworld player names or custom list */
+				AP_RenameTowns();
 
 				/* Colby Event — initialise town selection and cargo type */
 				_ap_colby_enabled    = _ap_pending_sd.colby_event;
@@ -3208,13 +5205,21 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				_ap_colby_cargo_name = _ap_pending_sd.colby_cargo;
 				AP_ColbyInit();
 
+				/* Demigod system (God of Wackens) */
+				AP_DemigodInit(_ap_pending_sd);
+
+				/* Wrath of the God of Wackens */
+				AP_WrathInit(_ap_pending_sd);
+
 			/* AP settings: vehicle/airport expiry already disabled above (before
 			 * BuildEngineMap).  No additional setting needed here. */
 
 			/* Strip the local company from every ENGINE that was auto-unlocked
 			 * by StartupOneEngine() at game start.
-			 * WAGONS are excluded — they are always freely available so the
+			 * WAGONS are excluded by default — they are always freely available so the
 			 * player can use any locomotive they receive from AP.
+			 * BUT: if enable_wagon_unlocks is true, wagons are also locked and must
+			 * be unlocked via AP items.
 			 *
 			 * SELECTIVE LOCKING: if the APWorld sent a locked_vehicles list,
 			 * only lock engines whose English name is in that list.  Engines
@@ -3224,26 +5229,18 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			_ap_unlocked_engine_ids.clear();
 
 			const bool has_lock_list = !_ap_pending_sd.locked_vehicles.empty();
-			static const std::string ih_prefix = "IH: ";
+			const bool lock_wagons  = _ap_pending_sd.enable_wagon_unlocks;
 			int locked_count = 0;
 			for (Engine *e : Engine::Iterate()) {
 				if (!e->company_avail.Test(cid)) { continue; }
 				bool is_wagon = (e->type == VEH_TRAIN &&
 				                 e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON);
-				if (is_wagon) { continue; }
-				if (has_lock_list) {
-					std::string eng_name = GetString(STR_ENGINE_NAME,
-						PackEngineNameDParam(e->index, EngineNameContext::PurchaseList));
-					if (eng_name.empty()) eng_name = GetString(e->info.string_id);
-					/* Iron Horse engines are stored in locked_vehicles with "IH: " prefix
-					 * (matching items.py), but GetString returns the plain name (e.g.
-					 * "4-4-2 Lark").  Try both: plain name first, then prefixed. */
-					bool in_list = (_ap_pending_sd.locked_vehicles.count(eng_name) > 0) ||
-					               (_ap_pending_sd.locked_vehicles.count(ih_prefix + eng_name) > 0);
-					if (!in_list) {
-						continue;
-					}
-				}
+				if (is_wagon && !lock_wagons) { continue; }
+				/* When we have a lock list (new-style AP), lock ALL engines.
+				 * The player only gets engines that AP gives them.  This is
+				 * robust regardless of GRF callback names or missing entries
+				 * in IRON_HORSE_ENGINES — every engine starts locked, and
+				 * AP_UnlockEngineByName selectively unlocks them. */
 				e->company_avail.Reset(cid);
 				locked_count++;
 			}
@@ -3316,14 +5313,122 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				int tier = std::clamp(_ap_pending_sd.starting_cash_bonus, 0, 4);
 				if (tier > 0) {
 					c->money += bonus_amounts[tier];
-					AP_ShowNews(fmt::format("[AP] Starting bonus: \xc2\xa3{} added to your account!",
-					    (long long)bonus_amounts[tier]));
-					AP_OK(fmt::format("[AP] Starting cash bonus tier {} = +\xc2\xa3{}",
-					    tier, (long long)bonus_amounts[tier]));
+					AP_ShowNews(fmt::format("[AP] Starting bonus: {} added to your account!",
+					    AP_Money(bonus_amounts[tier])));
+					AP_OK(fmt::format("[AP] Starting cash bonus tier {} = +{}",
+					    tier, AP_Money(bonus_amounts[tier])));
 				}
 			}
 
 			/* Flush items that arrived before GM_NORMAL */
+			/* ── Track direction locks: initialise BEFORE flushing pending items.
+			 * _ap_track_dirs_inited guards against re-locking on reconnect:
+			 *   - First session start: flag is false → lock all types → set flag.
+			 *   - Save/load restore: SL chunk sets bytes → flag still false, but
+			 *     at least one byte will be non-zero → 'any_loaded' path skips reset.
+			 *   - Reconnect (AP_OnSlotData resets _ap_session_started to false but
+			 *     does NOT reset the flag): flag is true → skip init entirely.
+			 *     Item replay via flush restores any missing unlocks automatically. */
+			if (_ap_pending_sd.enable_rail_direction_unlocks && !_ap_track_dirs_inited) {
+				bool any_loaded = false;
+				for (int rt = 0; rt < AP_NUM_RAILTYPES; rt++) {
+					if (_ap_locked_track_dirs[rt] != 0) { any_loaded = true; break; }
+				}
+				if (!any_loaded) {
+					for (int rt = 0; rt < AP_NUM_RAILTYPES; rt++)
+						_ap_locked_track_dirs[rt] = 0x3Fu;
+				}
+				_ap_track_dirs_inited = true;
+				Debug(misc, 1, "[AP] Track dir locks init: Normal=0x{:02X} Elec=0x{:02X} Mono=0x{:02X} Maglev=0x{:02X}",
+				      (unsigned)_ap_locked_track_dirs[0], (unsigned)_ap_locked_track_dirs[1],
+				      (unsigned)_ap_locked_track_dirs[2], (unsigned)_ap_locked_track_dirs[3]);
+			} else if (!_ap_pending_sd.enable_rail_direction_unlocks) {
+				for (int rt = 0; rt < AP_NUM_RAILTYPES; rt++)
+					_ap_locked_track_dirs[rt] = 0;
+				_ap_track_dirs_inited = false;
+			}
+
+			/* ── Road direction locks ────────────────────────────────────── */
+			if (_ap_pending_sd.enable_road_direction_unlocks && !_ap_road_dirs_inited) {
+				if (_ap_locked_road_dirs == 0) _ap_locked_road_dirs = 0x03u; /* bits 0-1 */
+				_ap_road_dirs_inited = true;
+				Debug(misc, 1, "[AP] Road dir locks init: 0x{:02X}", (unsigned)_ap_locked_road_dirs);
+			} else if (!_ap_pending_sd.enable_road_direction_unlocks) {
+				_ap_locked_road_dirs = 0;
+				_ap_road_dirs_inited = false;
+			}
+
+			/* ── Signal locks ────────────────────────────────────────────── */
+			if (_ap_pending_sd.enable_signal_unlocks && !_ap_signals_inited) {
+				if (_ap_locked_signals == 0) _ap_locked_signals = 0x3Fu; /* bits 0-5 */
+				_ap_signals_inited = true;
+				Debug(misc, 1, "[AP] Signal locks init: 0x{:02X}", (unsigned)_ap_locked_signals);
+			} else if (!_ap_pending_sd.enable_signal_unlocks) {
+				_ap_locked_signals = 0;
+				_ap_signals_inited = false;
+			}
+
+			/* ── Bridge locks ────────────────────────────────────────────── */
+			if (_ap_pending_sd.enable_bridge_unlocks && !_ap_bridges_inited) {
+				if (_ap_locked_bridges == 0) _ap_locked_bridges = 0x1FFFu; /* bits 0-12 */
+				_ap_bridges_inited = true;
+				Debug(misc, 1, "[AP] Bridge locks init: 0x{:04X}", (unsigned)_ap_locked_bridges);
+			} else if (!_ap_pending_sd.enable_bridge_unlocks) {
+				_ap_locked_bridges = 0;
+				_ap_bridges_inited = false;
+			}
+
+			/* ── Tunnel lock ─────────────────────────────────────────────── */
+			if (_ap_pending_sd.enable_tunnel_unlocks && !_ap_tunnels_inited) {
+				if (!_ap_locked_tunnels) _ap_locked_tunnels = true;
+				_ap_tunnels_inited = true;
+				Debug(misc, 1, "[AP] Tunnel lock init: {}", _ap_locked_tunnels ? "LOCKED" : "unlocked");
+			} else if (!_ap_pending_sd.enable_tunnel_unlocks) {
+				_ap_locked_tunnels = false;
+				_ap_tunnels_inited = false;
+			}
+
+			/* ── Airport locks ───────────────────────────────────────────── */
+			if (_ap_pending_sd.enable_airport_unlocks && !_ap_airports_inited) {
+				/* AT_SMALL (bit 0) is always free; lock bits 1-8 */
+				if (_ap_locked_airports == 0) _ap_locked_airports = 0x01FEu; /* bits 1-8 */
+				_ap_airports_inited = true;
+				Debug(misc, 1, "[AP] Airport locks init: 0x{:04X}", (unsigned)_ap_locked_airports);
+			} else if (!_ap_pending_sd.enable_airport_unlocks) {
+				_ap_locked_airports = 0;
+				_ap_airports_inited = false;
+			}
+
+			/* ── Tree locks ──────────────────────────────────────────────── */
+			if (_ap_pending_sd.enable_tree_unlocks && !_ap_trees_inited) {
+				if (_ap_locked_trees == 0) _ap_locked_trees = 0x03FFu; /* bits 0-9 */
+				_ap_trees_inited = true;
+				Debug(misc, 1, "[AP] Tree locks init: 0x{:04X}", (unsigned)_ap_locked_trees);
+			} else if (!_ap_pending_sd.enable_tree_unlocks) {
+				_ap_locked_trees = 0;
+				_ap_trees_inited = false;
+			}
+
+			/* ── Terraform locks ─────────────────────────────────────────── */
+			if (_ap_pending_sd.enable_terraform_unlocks && !_ap_terraform_inited) {
+				if (_ap_locked_terraform == 0) _ap_locked_terraform = 0x03u; /* bits 0-1 */
+				_ap_terraform_inited = true;
+				Debug(misc, 1, "[AP] Terraform locks init: 0x{:02X}", (unsigned)_ap_locked_terraform);
+			} else if (!_ap_pending_sd.enable_terraform_unlocks) {
+				_ap_locked_terraform = 0;
+				_ap_terraform_inited = false;
+			}
+
+			/* ── Town Authority action locks ─────────────────────────── */
+			if (_ap_pending_sd.enable_town_action_unlocks && !_ap_town_actions_inited) {
+				if (_ap_locked_town_actions == 0) _ap_locked_town_actions = 0xFFu; /* bits 0-7 */
+				_ap_town_actions_inited = true;
+				Debug(misc, 1, "[AP] Town Action locks init: 0x{:02X}", (unsigned)_ap_locked_town_actions);
+			} else if (!_ap_pending_sd.enable_town_action_unlocks) {
+				_ap_locked_town_actions = 0;
+				_ap_town_actions_inited = false;
+			}
+
 			for (const APItem &item : _ap_pending_items) AP_OnItemReceived(item);
 			_ap_pending_items.clear();
 
@@ -3436,31 +5541,18 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			 * distinguish "AP-unlocked" from "re-introduced by StartupEngines". */
 			CompanyID lock_cid = _local_company;
 			if (lock_cid < MAX_COMPANIES) {
-				const bool has_lock_list = !_ap_pending_sd.locked_vehicles.empty();
-				static const std::string ih_prefix = "IH: ";
 				bool need_invalidate = false;
+				const bool lock_wagons = _ap_pending_sd.enable_wagon_unlocks;
 				for (Engine *e : Engine::Iterate()) {
-					/* Wagons always stay available */
+					/* Wagons stay available unless wagon unlocks are enabled */
 					if (e->type == VEH_TRAIN &&
-					    e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON) continue;
+					    e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON &&
+					    !lock_wagons) continue;
 
 					/* If AP has explicitly unlocked this engine this session, leave it alone */
 					if (_ap_unlocked_engine_ids.count(e->index) > 0) continue;
-					if (has_lock_list) {
-						std::string eng_name = GetString(STR_ENGINE_NAME,
-							PackEngineNameDParam(e->index, EngineNameContext::PurchaseList));
-						if (eng_name.empty()) eng_name = GetString(e->info.string_id);
-						/* Iron Horse engines are stored in locked_vehicles with "IH: " prefix
-						 * (matching items.py), but GetString returns the plain name.
-						 * Try both: plain name first, then prefixed. */
-						bool in_list = (_ap_pending_sd.locked_vehicles.count(eng_name) > 0) ||
-						               (_ap_pending_sd.locked_vehicles.count(ih_prefix + eng_name) > 0);
-						if (!in_list) continue;
-					}
 
-					/* Otherwise suppress company_avail — do NOT clear EngineFlag::Available,
-					 * as that would cause CalendarEnginesMonthlyLoop to re-introduce
-					 * the engine for all companies via NewVehicleAvailable(). */
+					/* Lock everything else — robust against GRF name mismatches */
 					if (e->company_avail.Test(lock_cid)) {
 						e->company_avail.Reset(lock_cid);
 						need_invalidate = true;
@@ -3485,6 +5577,12 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 
 			/* Drive Colby Event progression */
 			if (_ap_colby_enabled && !_ap_colby_done) AP_ColbyTick();
+
+			/* Drive Demigod (God of Wackens) system */
+			AP_DemigodTick();
+
+			/* Wrath yearly evaluation (checks for year boundary) */
+			AP_WrathYearlyEval();
 		}
 
 		if (_ap_realtime_ticks >= 40 &&
@@ -3498,6 +5596,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				Debug(misc, 0, "[AP] Win condition reached! Goal sent.");
 				AP_OK("*** WIN CONDITION REACHED! Goal sent to server! ***");
 				AP_ShowNews("[AP] WIN CONDITION REACHED! Goal sent to server!");
+				ShowAPVictoryScreen();
 			}
 		}
 	}
@@ -3576,5 +5675,168 @@ void AP_EnsureBasesets()
 		if (BaseMusic::SetSetByName("OpenMSX")) {
 			BaseMusic::ini_set = "OpenMSX";
 		}
+	}
+}
+
+/* =========================================================================
+ * Community Vehicle Names
+ * When AP is active and the local company builds a vehicle, give it a random
+ * name drawn from the Discord community pool.
+ * ========================================================================= */
+
+/** Discord community name pool — base names (no suffix). */
+static const char * const kCommunityNames[] = {
+	/* Core community — Discord regulars */
+	"Rafcor",      "Boo",         "DainBread",   "Game Falor",  "Solida",
+	"Aginah",      "WackenGuard", "Kiri",         "Mira",        "Fenix",
+	"Cobalt",      "Dusk",        "Oryn",         "Patch",       "Tinker",
+	"Rusk",        "Sable",       "Lumen",        "Ash",         "Flint",
+	"Vex",         "Cog",         "Drift",        "Pebble",      "Grit",
+	"Slate",       "Briar",       "Hollow",       "Stave",       "Brine",
+	/* More community names */
+	"Zephyr",      "Torque",      "Wren",         "Sprocket",    "Ferrum",
+	"Nadir",       "Volta",       "Lark",         "Smolt",       "Cinder",
+	"Gravel",      "Mote",        "Haze",         "Tallow",      "Silt",
+	"Crest",       "Fern",        "Bivouac",      "Caulk",       "Shunt",
+	"Buffer",      "Rivet",       "Bogie",        "Axle",        "Coupling",
+	"Hopper",      "Tender",      "Footplate",    "Firebox",      "Smokebox",
+	/* OpenTTD-themed handles */
+	"Bridgemaster","Signalman",   "Stationmaster","Tracklay",    "Pointsman",
+	"Dispatcher",  "Conductor",   "Brakesman",    "Shunter",     "Platelayer",
+	/* Beta testers & thread regulars */
+	"Killeroid",   "Wizard Brandon","Ty",          "Lil David",   "Leftywalle",
+	"Arathorrn",   "Nixill",      "Buchstabensalat","Energymaster","Kbab",
+	"Sanron",      "RoobyRoo",    "Crazycolbster","Super Star Earth","Dogveloper",
+};
+
+/** Transport suffixes appended with ~60% probability. */
+static const char * const kNameSuffixes[] = {
+	" Express",  " Freight",  " Logistics", " Transport",
+	" Rail",     " Lines",    " Co.",       " Ltd.",
+	" Services", " Haulage",  " Transit",   " Cargo",
+	" Junction", " & Sons",
+};
+
+/** Rare special names (~5% chance, drawn from separate pool). */
+static const char * const kRareNames[] = {
+	"The Wagon God",          "DeathLink Express",      "The Bug Finder",
+	"Curse of WackenGuard",   "Speed Boost Special",    "AP Test Vehicle",
+	"Archipelago One",        "The Colby Incident",     "404 Train Not Found",
+	"NaN Express",            "Undefined Behaviour",    "Segfault Special",
+	"Off By One Express",     "This Is Fine",           "Please Rebase",
+	"Git Blame Engine",       "Works On My Machine",    "The Loan Shark",
+	"Cascading Failure",      "Feature Not Bug",
+};
+
+/**
+ * Shuffled index pool — we exhaust the community list before repeating.
+ * Rebuilt automatically when empty.
+ */
+static std::vector<int> _ap_name_pool;
+static std::set<int>    _ap_used_rare;   ///< Indices into kRareNames already assigned
+
+/** Next suffix index (cycles round-robin, offset by current vehicle count). */
+static int _ap_suffix_index = 0;
+
+/** Build / rebuild the name pool (shuffled order, no repeats until exhausted). */
+static void RebuildNamePool()
+{
+	constexpr int N = (int)(sizeof(kCommunityNames) / sizeof(kCommunityNames[0]));
+	_ap_name_pool.resize(N);
+	for (int i = 0; i < N; i++) _ap_name_pool[i] = i;
+	/* Fisher-Yates using OpenTTD's Random() */
+	for (int i = N - 1; i > 0; i--) {
+		int j = (int)(RandomRange((uint32_t)(i + 1)));
+		std::swap(_ap_name_pool[i], _ap_name_pool[j]);
+	}
+}
+
+/**
+ * Called by each vehicle build command (train / road vehicle / ship / aircraft)
+ * after the vehicle has been fully constructed.
+ *
+ * Only applies when:
+ *  - AP is connected (session active)
+ *  - The vehicle belongs to the local company (not AI or multiplayer opponent)
+ *  - The vehicle is a front engine / primary vehicle (not a wagon or shadow unit)
+ */
+void AP_OnVehicleCreated(Vehicle *v)
+{
+	if (v == nullptr)                         return;
+	if (!AP_IsConnected())                    return;
+	if (v->owner != _local_company)           return;
+	/* Skip wagons, tenders, shadows, rotors — only rename the primary unit */
+	if (!v->IsPrimaryVehicle())               return;
+	/* Respect the "Community Vehicle Names" option */
+	if (!AP_GetSlotData().community_vehicle_names) return;
+
+	/* ~5% chance of a rare/funny name */
+	constexpr int kRareCount   = (int)(sizeof(kRareNames)   / sizeof(kRareNames[0]));
+	constexpr int kSuffixCount = (int)(sizeof(kNameSuffixes) / sizeof(kNameSuffixes[0]));
+
+	std::string chosen;
+
+	if (RandomRange(100) < 5 && (int)_ap_used_rare.size() < kRareCount) {
+		/* Rare name — no suffix, no repeats */
+		int ri = RandomRange(kRareCount);
+		int tries = kRareCount;
+		while (_ap_used_rare.count(ri) && tries-- > 0) ri = (ri + 1) % kRareCount;
+		if (!_ap_used_rare.count(ri)) {
+			_ap_used_rare.insert(ri);
+			chosen = kRareNames[ri];
+		}
+	}
+	if (chosen.empty()) {
+		/* Draw from community pool (no-repeat until exhausted) */
+		if (_ap_name_pool.empty()) RebuildNamePool();
+		int idx = _ap_name_pool.back();
+		_ap_name_pool.pop_back();
+		chosen = kCommunityNames[idx];
+
+		/* ~60% chance: append a suffix (round-robin to spread them evenly) */
+		if (RandomRange(100) < 60) {
+			chosen += kNameSuffixes[_ap_suffix_index % kSuffixCount];
+			_ap_suffix_index++;
+		}
+	}
+
+	v->name = chosen;
+}
+
+/* Save/load helpers for name pool persistence */
+std::string AP_GetNamePoolStr()
+{
+	std::string s;
+	s += fmt::format("{}", _ap_suffix_index);
+	for (int idx : _ap_name_pool) {
+		s += ',';
+		s += fmt::format("{}", idx);
+	}
+	return s;
+}
+
+void AP_SetNamePoolStr(const std::string &s)
+{
+	_ap_name_pool.clear();
+	_ap_suffix_index = 0;
+	if (s.empty()) return;
+
+	const char *p   = s.data();
+	const char *end = p + s.size();
+
+	/* First value = suffix index */
+	auto [p2, ec] = std::from_chars(p, end, _ap_suffix_index);
+	if (ec != std::errc()) return;
+	p = p2;
+	if (p < end && *p == ',') p++;
+
+	/* Remaining values = pool indices */
+	while (p < end) {
+		int idx = 0;
+		auto [p3, ec2] = std::from_chars(p, end, idx);
+		if (ec2 != std::errc()) break;
+		_ap_name_pool.push_back(idx);
+		p = p3;
+		if (p < end && *p == ',') p++;
 	}
 }

@@ -105,6 +105,7 @@ extern std::string  _ap_last_host;
 extern uint16_t     _ap_last_port;
 extern std::string  _ap_last_slot;
 extern std::string  _ap_last_pass;
+extern bool         _ap_last_ssl;
 
 std::string  AP_GetCompletedMissionsStr();
 void         AP_SetCompletedMissionsStr(const std::string &s);
@@ -114,8 +115,8 @@ int          AP_GetShopDayCounter();
 void         AP_SetShopDayCounter(int v);
 bool         AP_GetGoalSent();
 void         AP_SetGoalSent(bool v);
-int          AP_GetFfSpeed();
-void         AP_SetFfSpeed(int v);
+int64_t      AP_GetItemsReceivedCount();
+void         AP_SetItemsReceivedCount(int64_t v);
 void         AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out);
 void         AP_SetCumulStats(const uint64_t *cargo_in, int num_cargo, int64_t profit_in);
 std::string  AP_GetMaintainCountersStr();
@@ -126,12 +127,49 @@ std::string  AP_GetNamedEntityStr();
 void         AP_SetNamedEntityStr(const std::string &s);
 std::string  AP_GetSentShopStr();
 void         AP_SetSentShopStr(const std::string &s);
+uint8_t      AP_GetLockedTrackDirs(uint8_t railtype);
+void         AP_SetLockedTrackDirs(uint8_t railtype, uint8_t mask);
+// back-compat shims (deprecated)
+uint8_t      AP_GetLockedRailDirs();
+void         AP_SetLockedRailDirs(uint8_t mask);
 void         AP_GetColbyState(int *step, int64_t *delivered, int *target_town, bool *escaped, int *escape_ticks, bool *done, bool *popup_shown);
 void         AP_SetColbyState(int step, int64_t delivered, int target_town, bool escaped, int escape_ticks, bool done, bool popup_shown);
+bool         AP_GetTownsRenamed();
+void         AP_SetTownsRenamed(bool v);
+uint8_t      AP_GetLockedRoadDirs();
+void         AP_SetLockedRoadDirs(uint8_t mask);
+uint8_t      AP_GetLockedSignals();
+void         AP_SetLockedSignals(uint8_t mask);
+uint16_t     AP_GetLockedBridges();
+void         AP_SetLockedBridges(uint16_t mask);
+bool         AP_GetLockedTunnels();
+void         AP_SetLockedTunnels(bool v);
+uint16_t     AP_GetLockedAirports();
+void         AP_SetLockedAirports(uint16_t mask);
+uint16_t     AP_GetLockedTrees();
+void         AP_SetLockedTrees(uint16_t mask);
+uint8_t      AP_GetLockedTerraform();
+void         AP_SetLockedTerraform(uint8_t mask);
+uint8_t      AP_GetLockedTownActions();
+void         AP_SetLockedTownActions(uint8_t mask);
+int          AP_GetFfSpeed();
+void         AP_SetFfSpeed(int v);
 std::string  AP_GetTasksStr();
 void         AP_SetTasksStr(const std::string &s);
 int          AP_GetTaskChecksCompletedSaved();
 void         AP_SetTaskChecksCompleted(int v);
+std::string  AP_GetRuinsStr();
+void         AP_SetRuinsStr(const std::string &s);
+std::string  AP_GetNamePoolStr();
+void         AP_SetNamePoolStr(const std::string &s);
+void         AP_GetDemigodState(std::string *defeated, int *active_idx, int *company,
+                                int *next_year, bool *veh_saved, bool *sv_train,
+                                bool *sv_road, bool *sv_air, bool *sv_ship);
+void         AP_SetDemigodState(const std::string &defeated, int active_idx, int company,
+                                int next_year, bool veh_saved, bool sv_train,
+                                bool sv_road, bool sv_air, bool sv_ship);
+void         AP_GetWrathState(int *anger, int *houses, int *roads, int *terrain, int *trees, int *last_eval_year);
+void         AP_SetWrathState(int anger, int houses, int roads, int terrain, int trees, int last_eval_year);
 
 /* ── Scratch variable — single string holds all AP state ────────────── */
 static std::string _ap_sl_blob;
@@ -152,13 +190,18 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "port",  IStr(_ap_last_port));
         KVSet(_ap_sl_blob, "slot",  _ap_last_slot);
         KVSet(_ap_sl_blob, "pass",  _ap_last_pass);
+        KVSet(_ap_sl_blob, "ssl",   IStr(_ap_last_ssl));
 
         KVSet(_ap_sl_blob, "completed",   AP_GetCompletedMissionsStr());
         KVSet(_ap_sl_blob, "shop_offset", IStr(AP_GetShopPageOffset()));
         KVSet(_ap_sl_blob, "shop_days",   IStr(AP_GetShopDayCounter()));
         KVSet(_ap_sl_blob, "shop_sent",   AP_GetSentShopStr());
         KVSet(_ap_sl_blob, "goal_sent",   IStr(AP_GetGoalSent()));
-        KVSet(_ap_sl_blob, "ff_speed",    IStr(AP_GetFfSpeed()));
+        KVSet(_ap_sl_blob, "items_recv",  IStr(AP_GetItemsReceivedCount()));
+        KVSet(_ap_sl_blob, "rail_dir_locks_0", IStr((int)AP_GetLockedTrackDirs(0)));
+        KVSet(_ap_sl_blob, "rail_dir_locks_1", IStr((int)AP_GetLockedTrackDirs(1)));
+        KVSet(_ap_sl_blob, "rail_dir_locks_2", IStr((int)AP_GetLockedTrackDirs(2)));
+        KVSet(_ap_sl_blob, "rail_dir_locks_3", IStr((int)AP_GetLockedTrackDirs(3)));
 
         constexpr int NC = 64;
         uint64_t cargo[NC] = {};
@@ -190,9 +233,56 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "co_done",   IStr(co_done));
         KVSet(_ap_sl_blob, "co_pop",    IStr(co_pop));
 
-        /* Local tasks */
+        KVSet(_ap_sl_blob, "towns_renamed", IStr(AP_GetTownsRenamed()));
+
+        /* Infrastructure lock states */
+        KVSet(_ap_sl_blob, "road_dir_locks",  IStr((int)AP_GetLockedRoadDirs()));
+        KVSet(_ap_sl_blob, "signal_locks",    IStr((int)AP_GetLockedSignals()));
+        KVSet(_ap_sl_blob, "bridge_locks",    IStr((int)AP_GetLockedBridges()));
+        KVSet(_ap_sl_blob, "tunnel_locks",    IStr(AP_GetLockedTunnels()));
+        KVSet(_ap_sl_blob, "airport_locks",   IStr((int)AP_GetLockedAirports()));
+        KVSet(_ap_sl_blob, "tree_locks",      IStr((int)AP_GetLockedTrees()));
+        KVSet(_ap_sl_blob, "terraform_locks", IStr((int)AP_GetLockedTerraform()));
+        KVSet(_ap_sl_blob, "town_action_locks", IStr((int)AP_GetLockedTownActions()));
+
+        /* Speed Boost & Task System */
+        KVSet(_ap_sl_blob, "ff_speed",    IStr(AP_GetFfSpeed()));
         KVSet(_ap_sl_blob, "tasks",       AP_GetTasksStr());
         KVSet(_ap_sl_blob, "task_checks", IStr(AP_GetTaskChecksCompletedSaved()));
+
+        /* Ruins */
+        KVSet(_ap_sl_blob, "ruins",       AP_GetRuinsStr());
+
+        /* Vehicle name pool */
+        KVSet(_ap_sl_blob, "name_pool",   AP_GetNamePoolStr());
+
+        /* Demigods (God of Wackens) */
+        {
+            std::string defeated; int aidx, acomp, nyear;
+            bool vs, st, sr, sa, ss;
+            AP_GetDemigodState(&defeated, &aidx, &acomp, &nyear, &vs, &st, &sr, &sa, &ss);
+            KVSet(_ap_sl_blob, "dg_defeated",  defeated);
+            KVSet(_ap_sl_blob, "dg_active",    IStr(aidx));
+            KVSet(_ap_sl_blob, "dg_company",   IStr(acomp));
+            KVSet(_ap_sl_blob, "dg_next_yr",   IStr(nyear));
+            KVSet(_ap_sl_blob, "dg_veh_saved", IStr(vs));
+            KVSet(_ap_sl_blob, "dg_sv_train",  IStr(st));
+            KVSet(_ap_sl_blob, "dg_sv_road",   IStr(sr));
+            KVSet(_ap_sl_blob, "dg_sv_air",    IStr(sa));
+            KVSet(_ap_sl_blob, "dg_sv_ship",   IStr(ss));
+        }
+
+        /* Wrath of the God of Wackens */
+        {
+            int anger, houses, roads, terrain, trees, eval_yr;
+            AP_GetWrathState(&anger, &houses, &roads, &terrain, &trees, &eval_yr);
+            KVSet(_ap_sl_blob, "wr_anger",   IStr(anger));
+            KVSet(_ap_sl_blob, "wr_houses",  IStr(houses));
+            KVSet(_ap_sl_blob, "wr_roads",   IStr(roads));
+            KVSet(_ap_sl_blob, "wr_terrain", IStr(terrain));
+            KVSet(_ap_sl_blob, "wr_trees",   IStr(trees));
+            KVSet(_ap_sl_blob, "wr_eval_yr", IStr(eval_yr));
+        }
 
         SlTableHeader(_ap_desc);
         SlSetArrayIndex(0);
@@ -218,6 +308,7 @@ struct APSTChunkHandler : ChunkHandler {
             _ap_last_port = ParseU16(KVGet(_ap_sl_blob, "port", "38281"), 38281);
             _ap_last_slot = KVGet(_ap_sl_blob, "slot");
             _ap_last_pass = KVGet(_ap_sl_blob, "pass");
+            _ap_last_ssl  = KVGet(_ap_sl_blob, "ssl", "0") == "1";
 
             AP_SetCompletedMissionsStr(KVGet(_ap_sl_blob, "completed"));
 
@@ -232,7 +323,33 @@ struct APSTChunkHandler : ChunkHandler {
             AP_SetShopDayCounter(getint("shop_days"));
             AP_SetSentShopStr(KVGet(_ap_sl_blob, "shop_sent"));
             AP_SetGoalSent(KVGet(_ap_sl_blob, "goal_sent", "0") == "1");
-            AP_SetFfSpeed(getint("ff_speed"));  /* 0 = not saved yet → AP_SetFfSpeed clamps to 100 */
+            AP_SetItemsReceivedCount(ParseI64(KVGet(_ap_sl_blob, "items_recv", "0")));
+            /* Track direction locks: read per-railtype bytes (new format).
+             * Fallback: if new keys absent but old 'rail_dir_locks' present,
+             * apply old global value to Normal Rail only (safe migration). */
+            {
+                std::string old_key = KVGet(_ap_sl_blob, "rail_dir_locks", "");
+                for (int rt = 0; rt < 4; rt++) {
+                    std::string key = fmt::format("rail_dir_locks_{}", rt);
+                    std::string val = KVGet(_ap_sl_blob, key, "");
+                    if (!val.empty()) {
+                        AP_SetLockedTrackDirs((uint8_t)rt, (uint8_t)ParseInt(val));
+                    } else if (rt == 0 && !old_key.empty()) {
+                        /* Migration from patch_exp_2_0_6: apply old single mask to Normal Rail */
+                        AP_SetLockedTrackDirs(0, (uint8_t)ParseInt(old_key));
+                    }
+                }
+            }
+
+            /* Infrastructure lock states */
+            AP_SetLockedRoadDirs((uint8_t)getint("road_dir_locks"));
+            AP_SetLockedSignals((uint8_t)getint("signal_locks"));
+            AP_SetLockedBridges((uint16_t)ParseU16(KVGet(_ap_sl_blob, "bridge_locks", "0")));
+            AP_SetLockedTunnels(KVGet(_ap_sl_blob, "tunnel_locks", "0") == "1");
+            AP_SetLockedAirports((uint16_t)ParseU16(KVGet(_ap_sl_blob, "airport_locks", "0")));
+            AP_SetLockedTrees((uint16_t)ParseU16(KVGet(_ap_sl_blob, "tree_locks", "0")));
+            AP_SetLockedTerraform((uint8_t)getint("terraform_locks"));
+            AP_SetLockedTownActions((uint8_t)getint("town_action_locks"));
 
             constexpr int NC = 64;
             uint64_t cargo[NC] = {};
@@ -257,9 +374,41 @@ struct APSTChunkHandler : ChunkHandler {
                 KVGet(_ap_sl_blob, "co_pop",  "0") == "1"
             );
 
-            /* Local tasks */
+            AP_SetTownsRenamed(KVGet(_ap_sl_blob, "towns_renamed", "0") == "1");
+
+            /* Speed Boost & Task System */
+            AP_SetFfSpeed(getint("ff_speed"));
             AP_SetTasksStr(KVGet(_ap_sl_blob, "tasks"));
             AP_SetTaskChecksCompleted(getint("task_checks"));
+
+            /* Ruins */
+            AP_SetRuinsStr(KVGet(_ap_sl_blob, "ruins"));
+
+            /* Vehicle name pool */
+            AP_SetNamePoolStr(KVGet(_ap_sl_blob, "name_pool"));
+
+            /* Demigods (God of Wackens) */
+            AP_SetDemigodState(
+                KVGet(_ap_sl_blob, "dg_defeated"),
+                getint("dg_active"),
+                getint("dg_company"),
+                getint("dg_next_yr"),
+                KVGet(_ap_sl_blob, "dg_veh_saved", "0") == "1",
+                KVGet(_ap_sl_blob, "dg_sv_train", "0") == "1",
+                KVGet(_ap_sl_blob, "dg_sv_road", "0") == "1",
+                KVGet(_ap_sl_blob, "dg_sv_air", "0") == "1",
+                KVGet(_ap_sl_blob, "dg_sv_ship", "0") == "1"
+            );
+
+            /* Wrath of the God of Wackens */
+            AP_SetWrathState(
+                getint("wr_anger"),
+                getint("wr_houses"),
+                getint("wr_roads"),
+                getint("wr_terrain"),
+                getint("wr_trees"),
+                getint("wr_eval_yr")
+            );
         } catch (...) {
             /* Parsing failed — AP progress lost but game loads. */
         }

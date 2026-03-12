@@ -282,6 +282,14 @@ target_link_libraries(openttd
     openttd::basesets
 )
 
+# Archipelago: copy baseset files to data/baseset/ next to the exe so the
+# self-contained personal directory (<exe_dir>/data/) can find them.
+add_custom_command(TARGET openttd POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:openttd>/data/baseset"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/baseset" "$<TARGET_FILE_DIR:openttd>/data/baseset"
+    COMMENT "Copying baseset to self-contained data directory"
+)
+
 target_link_libraries(openttd_test PRIVATE openttd_lib)
 if(ANDROID)
     target_link_libraries(openttd_test PRIVATE log)

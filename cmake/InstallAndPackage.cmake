@@ -52,7 +52,7 @@ install(FILES
                 ${CMAKE_SOURCE_DIR}/CREDITS.md
                 ${CMAKE_SOURCE_DIR}/CONTRIBUTING.md
                 ${CMAKE_SOURCE_DIR}/changelog.md
-                ${CMAKE_SOURCE_DIR}/known-bugs.md
+                ${CMAKE_SOURCE_DIR}/KNOWN_BUGS.md
         DESTINATION ${DOCS_DESTINATION_DIR}
         COMPONENT docs)
 

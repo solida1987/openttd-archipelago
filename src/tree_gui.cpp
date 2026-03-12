@@ -22,6 +22,7 @@
 #include "tree_cmd.h"
 
 #include "widgets/tree_widget.h"
+#include "archipelago.h"
 
 #include "table/sprites.h"
 #include "table/strings.h"
@@ -121,6 +122,15 @@ class BuildTreesWindow : public Window
 			case PM_FOREST_SM: this->LowerWidget(WID_BT_MODE_FOREST_SM); break;
 			case PM_FOREST_LG: this->LowerWidget(WID_BT_MODE_FOREST_LG); break;
 			default: NOT_REACHED();
+		}
+
+		/* AP tree locks: grey out locked tree type buttons */
+		if (AP_IsActive()) {
+			for (int i = 0; i < 33; i++) {
+				if (AP_IsTreeLocked((uint8_t)i)) {
+					this->SetWidgetDisabledState(WID_BT_TYPE_BUTTON_FIRST + i, true);
+				}
+			}
 		}
 
 		this->SetDirty();

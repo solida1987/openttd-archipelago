@@ -40,6 +40,7 @@
 #include "object_cmd.h"
 
 #include "widgets/terraform_widget.h"
+#include "archipelago.h"
 
 #include "table/strings.h"
 
@@ -169,7 +170,30 @@ struct TerraformToolbarWindow : Window {
 		/* Don't show the place object button when there are no objects to place. */
 		NWidgetStacked *show_object = this->GetWidget<NWidgetStacked>(WID_TT_SHOW_PLACE_OBJECT);
 		show_object->SetDisplayedPlane(ObjectClass::GetUIClassCount() != 0 ? 0 : SZSP_NONE);
+
+		ApplyAPLocks();
 	}
+
+	void OnInvalidateData([[maybe_unused]] int data = 0, [[maybe_unused]] bool gui_scope = true) override
+	{
+		if (!gui_scope) return;
+		ApplyAPLocks();
+	}
+
+private:
+	void ApplyAPLocks()
+	{
+		/* AP terraform locks: grey out raise/lower/level buttons */
+		if (AP_IsActive()) {
+			bool raise_locked = AP_IsTerraformRaiseLocked();
+			bool lower_locked = AP_IsTerraformLowerLocked();
+			this->SetWidgetDisabledState(WID_TT_RAISE_LAND, raise_locked);
+			this->SetWidgetDisabledState(WID_TT_LOWER_LAND, lower_locked);
+			this->SetWidgetDisabledState(WID_TT_LEVEL_LAND, raise_locked || lower_locked);
+		}
+	}
+
+public:
 
 	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
 	{

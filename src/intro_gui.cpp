@@ -205,13 +205,27 @@ struct SelectGameWindow : public Window {
 			EnsureHandlersRegistered();
 			_ap_client->Tick();
 
-			/* If slot data arrived, start the world now (same tick). */
-			if (AP_ShouldStartWorld()) {
-				AP_ConsumeWorldStart();
-				uint32_t seed = AP_GetWorldSeed();
-				IConsolePrint(CC_WHITE, fmt::format("[AP] Generating world (seed={})...", seed));
-				StartNewGameWithoutGUI(seed);
-				return; /* window is destroyed by StartNewGameWithoutGUI */
+			/* If slot data arrived, ask whether to generate a new world or load a save. */
+			if (AP_ShouldStartWorld() && !AP_IsWaitingForStartChoice()) {
+				AP_SetWaitingForStartChoice(true);
+				ShowQuery(
+					GetEncodedString(STR_ARCHIPELAGO_START_CHOICE_CAPTION),
+					GetEncodedString(STR_ARCHIPELAGO_START_CHOICE_MESSAGE),
+					nullptr,
+					[](Window *, bool confirmed) {
+						AP_SetWaitingForStartChoice(false);
+						if (confirmed) {
+							/* Yes — generate new world */
+							AP_ConsumeWorldStart();
+							uint32_t seed = AP_GetWorldSeed();
+							IConsolePrint(CC_WHITE, fmt::format("[AP] Generating world (seed={})...", seed));
+							StartNewGameWithoutGUI(seed);
+						} else {
+							/* No — load existing save */
+							AP_SetPendingLoadSave();
+							ShowSaveLoadDialog(FT_SAVEGAME, SLO_LOAD);
+						}
+					});
 			}
 		}
 

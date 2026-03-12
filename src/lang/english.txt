@@ -2272,29 +2272,72 @@ STR_ARCHIPELAGO_BTN_CONNECT                                     :{BLACK}Connect
 STR_ARCHIPELAGO_BTN_DISCONNECT                                  :{BLACK}Disconnect
 STR_ARCHIPELAGO_BTN_NEWGRF                                      :{BLACK}NewGRF
 STR_ARCHIPELAGO_BTN_CLOSE                                       :{BLACK}Close
+STR_ARCHIPELAGO_LABEL_TOWNS                                     :{BLACK}Town names:
+STR_ARCHIPELAGO_TOWNS_AUTO                                      :{BLACK}Players
+STR_ARCHIPELAGO_TOWNS_AUTO_TIP                                  :{BLACK}Rename towns after the players in this Archipelago multiworld. Each player gets one town named after them when a new world is generated.
+STR_ARCHIPELAGO_TOWNS_CUSTOM                                    :{BLACK}Custom
+STR_ARCHIPELAGO_TOWNS_CUSTOM_TIP                                :{BLACK}Rename towns using your own list of names. Enter names separated by commas in the field below.
+STR_ARCHIPELAGO_TOWNS_OFF                                       :{BLACK}Off
+STR_ARCHIPELAGO_TOWNS_OFF_TIP                                   :{BLACK}Towns keep their original generated names. No renaming will occur.
+STR_ARCHIPELAGO_LABEL_CUSTOM_NAMES                              :{BLACK}Names (csv):
+STR_ARCHIPELAGO_CUSTOM_NAMES_HINT                               :{BLACK}Enter names separated by commas, e.g: London, Paris, Berlin. Towns are renamed when a new world is generated.
 STR_ARCHIPELAGO_STATUS_CAPTION                                  :Archipelago Status
 STR_ARCHIPELAGO_BTN_RECONNECT                                   :{BLACK}Reconnect
 STR_ARCHIPELAGO_BTN_SETTINGS                                    :{BLACK}Settings
 STR_ARCHIPELAGO_BTN_MISSIONS                                    :{BLACK}Missions
 STR_ARCHIPELAGO_BTN_SHOP                                        :{BLACK}Shop
 STR_ARCHIPELAGO_MISSIONS_CAPTION                                :Archipelago - Missions
-STR_ARCHIPELAGO_TAB_MISSIONS                                    :{BLACK}Missions
-STR_ARCHIPELAGO_TAB_TASKS                                       :{BLACK}Tasks
 STR_ARCHIPELAGO_FILTER_ALL                                      :{BLACK}All
 STR_ARCHIPELAGO_FILTER_EASY                                     :{BLACK}Easy
 STR_ARCHIPELAGO_FILTER_MEDIUM                                   :{BLACK}Medium
 STR_ARCHIPELAGO_FILTER_HARD                                     :{BLACK}Hard
 STR_ARCHIPELAGO_FILTER_EXTREME                                  :{BLACK}Extreme
+STR_ARCHIPELAGO_TAB_TASKS                                       :{BLACK}Tasks
 STR_ARCHIPELAGO_NEWS                                            :{RAW_STRING}
+STR_ARCHIPELAGO_START_CHOICE_CAPTION                            :{BLACK}Archipelago
+STR_ARCHIPELAGO_START_CHOICE_MESSAGE                            :{BLACK}Connected! Generate a new world?{}{}Yes = New Game     No = Load Save
 STR_ARCHIPELAGO_SHOP_CAPTION                                    :Archipelago - Shop
 STR_ARCHIPELAGO_SHOP_BUY                                        :{BLACK}Buy Selected Item
 STR_ARCHIPELAGO_GUIDE_CAPTION                                   :Archipelago - Guide & Tips
 STR_ARCHIPELAGO_BTN_GUIDE                                       :{BLACK}Guide
 STR_ARCHIPELAGO_BTN_COLBY                                       :{BLACK}Events
+STR_ARCHIPELAGO_NEWS_LABEL                                      :{BLACK}News:
+STR_ARCHIPELAGO_NEWS_OFF                                        :{BLACK}Off
+STR_ARCHIPELAGO_NEWS_SELF                                       :{BLACK}Self
+STR_ARCHIPELAGO_NEWS_ALL                                        :{BLACK}All
+STR_ARCHIPELAGO_BTN_DEMIGOD                                     :{BLACK}Demigods
+STR_ARCHIPELAGO_DEMIGOD_CAPTION                                 :God of Wackens - Demigods
+STR_ARCHIPELAGO_DEMIGOD_PAY_TRIBUTE                             :{BLACK}Pay Tribute
+STR_ARCHIPELAGO_DEMIGOD_CLOSE                                   :{BLACK}Close
+STR_ARCHIPELAGO_RUIN_CAPTION                                    :{WHITE}Ancient Ruin
+STR_ARCHIPELAGO_RUIN_LOCATION                                   :{BLACK}Location: {STRING}
+STR_ARCHIPELAGO_RUIN_TOWN                                       :{BLACK}Near: {STRING}
+STR_ARCHIPELAGO_RUIN_CARGO_HEADER                               :{BLACK}Cargo required to cleanse this ruin:
+STR_ARCHIPELAGO_RUIN_CARGO_LINE                                 :{BLACK}  {STRING}: {NUM} / {NUM}
+STR_ARCHIPELAGO_RUIN_CARGO_DONE                                 :{GREEN}  {STRING}: {NUM} / {NUM} (done!)
+STR_ARCHIPELAGO_RUIN_STATUS_ACTIVE                              :{RED}Deliver the required cargo to a station covering this ruin.
+STR_ARCHIPELAGO_RUIN_STATUS_COMPLETE                            :{GREEN}This ruin has been cleansed! The AP check has been sent.
 STR_ARCHIPELAGO_COLBY_CAPTION                                   :Archipelago - Events
 STR_ARCHIPELAGO_GUIDE_TAB_COMMANDS                              :{BLACK}AP Commands
 STR_ARCHIPELAGO_GUIDE_TAB_HOTKEYS                               :{BLACK}Hotkeys
 STR_ARCHIPELAGO_GUIDE_TAB_TIPS                                  :{BLACK}Tips
+STR_ARCHIPELAGO_BTN_INDEX                                       :{BLACK}Index
+STR_ARCHIPELAGO_INDEX_CAPTION                                   :Archipelago - Vehicle Index
+STR_ARCHIPELAGO_INDEX_TAB_TRAINS                                :{BLACK}Trains
+STR_ARCHIPELAGO_INDEX_TAB_ROAD                                  :{BLACK}Road Vehicles
+STR_ARCHIPELAGO_INDEX_TAB_AIRCRAFT                              :{BLACK}Aircraft
+STR_ARCHIPELAGO_INDEX_TAB_SHIPS                                 :{BLACK}Ships
+STR_ARCHIPELAGO_INDEX_TAB_WAGONS                                :{BLACK}Wagons
+STR_ARCHIPELAGO_BTN_RUINS                                       :{BLACK}Ruins
+STR_ARCHIPELAGO_RUINS_CAPTION                                   :Archipelago - Ruins Tracker
+STR_ERROR_ARCHIPELAGO_RAIL_DIR_LOCKED                           :This track direction is locked. Unlock it via Archipelago.
+STR_ERROR_ARCHIPELAGO_ROAD_DIR_LOCKED                           :This road direction is locked. Unlock it via Archipelago.
+STR_ERROR_ARCHIPELAGO_SIGNAL_LOCKED                             :This signal type is locked. Unlock it via Archipelago.
+STR_ERROR_ARCHIPELAGO_BRIDGE_LOCKED                             :This bridge type is locked. Unlock it via Archipelago.
+STR_ERROR_ARCHIPELAGO_TUNNEL_LOCKED                             :Tunnel construction is locked. Unlock it via Archipelago.
+STR_ERROR_ARCHIPELAGO_AIRPORT_LOCKED                            :This airport type is locked. Unlock it via Archipelago.
+STR_ERROR_ARCHIPELAGO_TREE_LOCKED                               :This tree type is locked. Unlock it via Archipelago.
+STR_ERROR_ARCHIPELAGO_TERRAFORM_LOCKED                          :Terraforming in this direction is locked. Unlock it via Archipelago.
 
 STR_INTRO_BASESET                                               :{BLACK}The currently selected base graphics set is missing {NUM} sprite{P "" s}. Please check for updates for the baseset.
 STR_INTRO_TRANSLATION                                           :{BLACK}This translation misses {NUM} string{P "" s}. Please help make OpenTTD better by signing up as translator. See readme.txt for details.

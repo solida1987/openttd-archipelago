@@ -391,6 +391,8 @@ void ArchipelagoClient::SendDeath(const std::string &cause)
 	 * Protocol: {"cmd":"Bounce","data":{"type":"DeathLink","time":<unix>,"source":"<slot>","cause":"<cause>"}} */
 	double now = std::chrono::duration<double>(
 		std::chrono::system_clock::now().time_since_epoch()).count();
+	/* Record timestamp BEFORE sending so the Bounced echo is deduplicated */
+	last_death_link_time = now;
 	json pkt = json::array();
 	pkt.push_back({
 		{"cmd",  "Bounce"},
@@ -482,7 +484,6 @@ static APSlotData ParseSlotData(const json &msg)
 	} else {
 		sd.shop_slots = d.value("shop_slots", 5) * 20;
 	}
-	sd.shop_refresh_days    = d.value("shop_refresh_days", 90);
 	sd.starting_vehicle     = d.value("starting_vehicle", "");
 	sd.starting_vehicle_type = d.value("starting_vehicle_type", "");
 	/* starting_vehicles list — present for one_of_each mode.
@@ -505,7 +506,7 @@ static APSlotData ParseSlotData(const json &msg)
 	sd.landscape            = (uint8_t)d.value("landscape", 0);
 	sd.land_generator       = (uint8_t)d.value("land_generator", 1);
 
-	/* Win condition */
+	/* Win condition (multi-target — all 6 must be met simultaneously) */
 	sd.win_target_company_value   = d.value("win_target_company_value",   (int64_t)8'000'000);
 	sd.win_target_town_population = d.value("win_target_town_population", (int64_t)100'000);
 	sd.win_target_vehicle_count   = d.value("win_target_vehicle_count",   (int64_t)30);
@@ -564,11 +565,62 @@ static APSlotData ParseSlotData(const json &msg)
 	/* NewGRF options */
 	sd.enable_iron_horse         = (bool)d.value("enable_iron_horse", 0);
 
+	/* Item Pool unlock options */
+	sd.enable_rail_direction_unlocks = d.value("enable_rail_direction_unlocks", false);
+	sd.enable_road_direction_unlocks = d.value("enable_road_direction_unlocks", false);
+	sd.enable_signal_unlocks         = d.value("enable_signal_unlocks", false);
+	sd.enable_bridge_unlocks         = d.value("enable_bridge_unlocks", false);
+	sd.enable_tunnel_unlocks         = d.value("enable_tunnel_unlocks", false);
+	sd.enable_airport_unlocks        = d.value("enable_airport_unlocks", false);
+	sd.enable_tree_unlocks           = d.value("enable_tree_unlocks", false);
+	sd.enable_terraform_unlocks      = d.value("enable_terraform_unlocks", false);
+	sd.enable_town_action_unlocks    = d.value("enable_town_action_unlocks", false);
+	sd.enable_wagon_unlocks          = d.value("enable_wagon_unlocks", false);
+
+	/* Funny Stuff */
+	sd.community_vehicle_names   = d.value("community_vehicle_names", true);
+
 	/* Colby Event */
 	sd.colby_event      = d.value("colby_event",      false);
 	sd.colby_start_year = d.value("colby_start_year",  0);
 	sd.colby_town_seed  = (uint32_t)d.value("colby_town_seed", (uint32_t)0);
 	sd.colby_cargo      = d.value("colby_cargo",       std::string("coal"));
+
+	/* Ruins */
+	sd.ruin_pool_size   = d.value("ruin_pool_size", 0);
+	sd.max_active_ruins = d.value("max_active_ruins", 6);
+	sd.ruin_cargo_min   = std::max(1, d.value("ruin_cargo_types_min", 2));
+	sd.ruin_cargo_max   = std::max(sd.ruin_cargo_min, d.value("ruin_cargo_types_max", 4));
+	if (d.contains("ruin_locations") && d["ruin_locations"].is_array()) {
+		for (const auto &v : d["ruin_locations"]) {
+			if (v.is_string()) sd.ruin_locations.push_back(v.get<std::string>());
+		}
+	}
+
+	/* Demigods (God of Wackens) */
+	sd.demigod_enabled            = d.value("demigod_enabled", false);
+	sd.demigod_count              = d.value("demigod_count", 0);
+	sd.demigod_spawn_interval_min = d.value("demigod_spawn_interval_min", 5);
+	sd.demigod_spawn_interval_max = d.value("demigod_spawn_interval_max", 15);
+	if (d.contains("demigods") && d["demigods"].is_array()) {
+		for (const auto &dg : d["demigods"]) {
+			APDemigodDef def;
+			def.location       = dg.value("location",     "");
+			def.name           = dg.value("name",         "");
+			def.president_name = dg.value("president",    "");
+			def.theme          = dg.value("theme",        "mixed");
+			def.tribute_cost   = dg.value("tribute_cost", (int64_t)500000);
+			if (!def.location.empty()) sd.demigods.push_back(std::move(def));
+		}
+		Debug(misc, 0, "[AP] SlotData: {} demigods loaded (enabled={})", sd.demigods.size(), sd.demigod_enabled);
+	}
+
+	/* Wrath of the God of Wackens */
+	sd.wrath_enabled       = d.value("wrath_enabled", false);
+	sd.wrath_limit_houses  = d.value("wrath_limit_houses", 2);
+	sd.wrath_limit_roads   = d.value("wrath_limit_roads", 2);
+	sd.wrath_limit_terrain = d.value("wrath_limit_terrain", 25);
+	sd.wrath_limit_trees   = d.value("wrath_limit_trees", 10);
 
 	/* Tier unlock requirements — how many of prev tier needed before next tier opens */
 	if (d.contains("tier_unlock_requirements") && d["tier_unlock_requirements"].is_object()) {
@@ -584,8 +636,10 @@ static APSlotData ParseSlotData(const json &msg)
 	Debug(misc, 0, "[AP] SlotData: map={}x{} landscape={} seed={} traps={}",
 	      (1 << sd.map_x), (1 << sd.map_y), (int)sd.landscape,
 	      sd.world_seed, sd.enable_traps);
-	Debug(misc, 0, "[AP] SlotData: win='{}' target={}",
-	      "win_difficulty", (int)sd.win_difficulty);
+	Debug(misc, 0, "[AP] SlotData: win_difficulty={} cv={} pop={} veh={} cargo={} profit={} missions={}",
+	      (int)sd.win_difficulty, sd.win_target_company_value, sd.win_target_town_population,
+	      sd.win_target_vehicle_count, sd.win_target_cargo_delivered,
+	      sd.win_target_monthly_profit, sd.win_target_missions);
 
 	/* item_id_to_name — APWorld sends this so we can resolve item IDs to names */
 	if (d.contains("item_id_to_name") && d["item_id_to_name"].is_object()) {
@@ -985,7 +1039,7 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				{"password",      password},
 				{"uuid",          "openttd-archipelago-01"},
 				{"version",       {{"major",0},{"minor",6},{"build",0},{"class","Version"}}},
-				{"tags",          json::array({"DeathLink"})},  /* Always include DeathLink so AP server routes Bounce packets to us. C++ guards (death_link == true) control actual behaviour. */
+				{"tags",          json::array({"DeathLink"})},
 				{"items_handling", 7}
 			});
 			std::lock_guard<std::mutex> lg(outbound_mutex);
@@ -1065,7 +1119,23 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			has_slot_data.store(true);
 			AP_OK(fmt::format("Slot data parsed: {} missions, start_year={}, vehicle='{}'",
 			      sd.mission_count, sd.start_year, sd.starting_vehicle));
-			AP_OK(fmt::format("Win difficulty={} cv={} pop={} veh={} cargo={} profit={} missions={}", (int)sd.win_difficulty, sd.win_target_company_value, sd.win_target_town_population, sd.win_target_vehicle_count, sd.win_target_cargo_delivered, sd.win_target_monthly_profit, sd.win_target_missions));
+			AP_OK(fmt::format("Win difficulty={} cv={} pop={} veh={} cargo={} profit={} missions={}",
+			      (int)sd.win_difficulty, sd.win_target_company_value, sd.win_target_town_population,
+			      sd.win_target_vehicle_count, sd.win_target_cargo_delivered,
+			      sd.win_target_monthly_profit, sd.win_target_missions));
+
+			/* Send ConnectUpdate to set correct DeathLink tag now that we know slot_data.
+			 * The initial Connect packet sends empty tags; this corrects them. */
+			{
+				json cup = json::array();
+				cup.push_back({
+					{"cmd",  "ConnectUpdate"},
+					{"tags", sd.death_link ? json::array({"DeathLink"}) : json::array()}
+				});
+				std::lock_guard<std::mutex> lg2(outbound_mutex);
+				outbound_queue.push_back({ cup.dump() });
+				AP_LOG(fmt::format("ConnectUpdate sent: DeathLink={}", sd.death_link ? "true" : "false"));
+			}
 
 			PushEvent({ InboundEvent::CONNECTED, {}, {}, {} });
 
@@ -1081,15 +1151,19 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			if (msg.contains("errors") && msg["errors"].is_array()) {
 				for (auto &e : msg["errors"]) reason += e.get<std::string>() + " ";
 			}
-			last_error = "Connection refused: " + reason;
+			SetLastErrorInternal("Connection refused: " + reason);
 			AP_ERR("Server refused connection: " + reason);
 			state.store(APState::AP_ERROR);
 			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
 
 		} else if (cmd == "ReceivedItems") {
 			/* AP protocol sends item_id, not item_name.
-			 * We resolve the name from the item_id_to_name map built in ParseSlotData. */
+			 * We resolve the name from the item_id_to_name map built in ParseSlotData.
+			 * The top-level "index" field is the server-side start index for this batch —
+			 * used to skip already-processed items on reconnect. */
 			if (!msg.contains("items") || !msg["items"].is_array()) continue;
+
+			int64_t batch_start = msg.value("index", (int64_t)0);
 
 			APSlotData current_sd;
 			{
@@ -1097,9 +1171,12 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				current_sd = slot_data;
 			}
 
+			int64_t batch_i = 0;
 			for (auto &item : msg["items"]) {
 				APItem ap_item;
-				ap_item.item_id = item.value("item", (int64_t)0);
+				ap_item.item_id      = item.value("item", (int64_t)0);
+				ap_item.server_index = batch_start + batch_i;
+				batch_i++;
 
 				/* Resolve name from our id->name map */
 				auto name_it = current_sd.item_id_to_name.find(ap_item.item_id);
@@ -1192,16 +1269,23 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			if (!text_out.empty()) PushEvent({ InboundEvent::PRINT, text_out, {}, {} });
 
 		} else if (cmd == "Bounced") {
-			/* AP server echoes Bounce packets back as "Bounced" (with 'd') to all clients
-			 * that registered the matching tag in their Connect packet. */
-			if (msg.contains("data") && msg["data"].is_object()) {
-				std::string dtype = msg["data"].value("type", "");
-				if (dtype == "DeathLink") {
-					std::string source = msg["data"].value("source", "unknown");
-					/* Don't receive our own deaths back */
-					if (source != slot_name) {
-						PushEvent({ InboundEvent::DEATH_RECEIVED, source, {}, {} });
+			/* Death Link: server sends back "Bounced" (not "Bounce") packets.
+			 * Use timestamp-based deduplication to ignore our own deaths. */
+			bool is_deathlink = false;
+			if (msg.contains("tags") && msg["tags"].is_array()) {
+				for (const auto &t : msg["tags"]) {
+					if (t.is_string() && t.get<std::string>() == "DeathLink") {
+						is_deathlink = true;
+						break;
 					}
+				}
+			}
+			if (is_deathlink && msg.contains("data") && msg["data"].is_object()) {
+				double death_time = msg["data"].value("time", 0.0);
+				if (death_time != last_death_link_time) {
+					last_death_link_time = std::max(death_time, last_death_link_time);
+					std::string source = msg["data"].value("source", "unknown");
+					PushEvent({ InboundEvent::DEATH_RECEIVED, source, {}, {} });
 				}
 			}
 		}
@@ -1250,7 +1334,7 @@ void ArchipelagoClient::WorkerThread()
 
 	AP_LOG(fmt::format("Resolving host {}:{}...", host, port));
 	if (getaddrinfo(host.c_str(), port_str.c_str(), &hints, &res) != 0 || res == nullptr) {
-		last_error = "Could not resolve host: " + host;
+		SetLastErrorInternal("Could not resolve host: " + host);
 		AP_ERR("DNS lookup failed for " + host);
 		state.store(APState::AP_ERROR);
 		PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
@@ -1260,7 +1344,7 @@ void ArchipelagoClient::WorkerThread()
 	sock_t s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
 	if (s == SOCK_INVALID) {
 		freeaddrinfo(res);
-		last_error = "Socket creation failed";
+		SetLastErrorInternal("Socket creation failed");
 		state.store(APState::AP_ERROR);
 		PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
 		return;
@@ -1270,7 +1354,7 @@ void ArchipelagoClient::WorkerThread()
 	if (connect(s, res->ai_addr, (int)res->ai_addrlen) != 0) {
 		freeaddrinfo(res);
 		sock_close(s);
-		last_error = "Could not connect to " + host + ":" + fmt::format("{}", port);
+		SetLastErrorInternal("Could not connect to " + host + ":" + fmt::format("{}", port));
 		AP_ERR("TCP connection refused — is the AP server running?");
 		state.store(APState::AP_ERROR);
 		PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
@@ -1323,7 +1407,7 @@ void ArchipelagoClient::WorkerThread()
 		hints2.ai_family   = AF_UNSPEC;
 		hints2.ai_socktype = SOCK_STREAM;
 		if (getaddrinfo(host.c_str(), port_str.c_str(), &hints2, &res2) != 0 || res2 == nullptr) {
-			last_error = "Could not resolve host: " + host;
+			SetLastErrorInternal("Could not resolve host: " + host);
 			state.store(APState::AP_ERROR);
 			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
 			return;
@@ -1331,7 +1415,7 @@ void ArchipelagoClient::WorkerThread()
 		s = socket(res2->ai_family, res2->ai_socktype, res2->ai_protocol);
 		if (s == SOCK_INVALID) {
 			freeaddrinfo(res2);
-			last_error = "Socket creation failed (WS retry)";
+			SetLastErrorInternal("Socket creation failed (WS retry)");
 			state.store(APState::AP_ERROR);
 			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
 			return;
@@ -1340,7 +1424,7 @@ void ArchipelagoClient::WorkerThread()
 		if (connect(s, res2->ai_addr, (int)res2->ai_addrlen) != 0) {
 			freeaddrinfo(res2);
 			sock_close(s);
-			last_error = "Could not connect to " + host + ":" + fmt::format("{}", port);
+			SetLastErrorInternal("Could not connect to " + host + ":" + fmt::format("{}", port));
 			state.store(APState::AP_ERROR);
 			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
 			return;
@@ -1349,7 +1433,7 @@ void ArchipelagoClient::WorkerThread()
 		AP_LOG("TCP reconnected — trying plain WebSocket...");
 		if (!DoWebSocketHandshake((int)s, host, port)) {
 			sock_close(s);
-			last_error = "WebSocket handshake failed (both WSS and WS attempted)";
+			SetLastErrorInternal("WebSocket handshake failed (both WSS and WS attempted)");
 			AP_ERR("Both WSS and WS failed — check server address.");
 			state.store(APState::AP_ERROR);
 			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
@@ -1361,7 +1445,7 @@ void ArchipelagoClient::WorkerThread()
 	/* Non-Windows: plain WS only */
 	if (!DoWebSocketHandshake((int)s, host, port)) {
 		sock_close(s);
-		last_error = "WebSocket handshake failed";
+		SetLastErrorInternal("WebSocket handshake failed");
 		state.store(APState::AP_ERROR);
 		PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
 		return;

@@ -21,6 +21,7 @@
 #include "landscape_cmd.h"
 
 #include "table/strings.h"
+#include "archipelago.h"
 
 #include "safeguards.h"
 
@@ -168,6 +169,12 @@ static std::tuple<CommandCost, TileIndex> TerraformTileHeight(TerraformerState *
  */
 std::tuple<CommandCost, Money, TileIndex> CmdTerraformLand(DoCommandFlags flags, TileIndex tile, Slope slope, bool dir_up)
 {
+	/* AP terraform lock: block raising/lowering while locked */
+	if (AP_IsActive()) {
+		if (dir_up && AP_IsTerraformRaiseLocked()) return { CommandCost(STR_ERROR_ARCHIPELAGO_TERRAFORM_LOCKED), 0, INVALID_TILE };
+		if (!dir_up && AP_IsTerraformLowerLocked()) return { CommandCost(STR_ERROR_ARCHIPELAGO_TERRAFORM_LOCKED), 0, INVALID_TILE };
+	}
+
 	CommandCost total_cost(EXPENSES_CONSTRUCTION);
 	int direction = (dir_up ? 1 : -1);
 	TerraformerState ts;
@@ -281,6 +288,8 @@ std::tuple<CommandCost, Money, TileIndex> CmdTerraformLand(DoCommandFlags flags,
 	}
 
 	if (flags.Test(DoCommandFlag::Execute)) {
+		if (AP_IsActive() && Company::IsValidID(_current_company)) AP_WrathTrackTerrain();
+
 		/* Mark affected areas dirty. */
 		for (const auto &t : ts.dirty_tiles) {
 			MarkTileDirtyByTile(t);
@@ -315,6 +324,11 @@ std::tuple<CommandCost, Money, TileIndex> CmdTerraformLand(DoCommandFlags flags,
 std::tuple<CommandCost, Money, TileIndex> CmdLevelLand(DoCommandFlags flags, TileIndex tile, TileIndex start_tile, bool diagonal, LevelMode lm)
 {
 	if (start_tile >= Map::Size()) return { CMD_ERROR, 0, INVALID_TILE };
+
+	/* AP terraform lock: Level Land requires both raise and lower unlocked */
+	if (AP_IsActive() && (AP_IsTerraformRaiseLocked() || AP_IsTerraformLowerLocked())) {
+		return { CommandCost(STR_ERROR_ARCHIPELAGO_TERRAFORM_LOCKED), 0, INVALID_TILE };
+	}
 
 	/* remember level height */
 	uint oldh = TileHeight(start_tile);

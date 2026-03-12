@@ -65,6 +65,7 @@
 
 #include "table/strings.h"
 #include "table/town_land.h"
+#include "archipelago.h"
 
 #include "safeguards.h"
 
@@ -742,6 +743,7 @@ static CommandCost ClearTile_Town(TileIndex tile, DoCommandFlags flags)
 
 	ChangeTownRating(t, -rating, RATING_HOUSE_MINIMUM, flags);
 	if (flags.Test(DoCommandFlag::Execute)) {
+		if (AP_IsActive() && Company::IsValidID(_current_company)) AP_WrathTrackHouse();
 		ClearTownHouse(t, tile);
 	}
 
@@ -3682,6 +3684,9 @@ TownActions GetMaskOfTownActions(CompanyID cid, const Town *t)
 		/* Check the action bits for validity and
 		 * if they are valid add them */
 		for (TownAction cur = {}; cur != TownAction::End; ++cur) {
+
+			/* Archipelago: skip locked town actions */
+			if (AP_IsActive() && AP_IsTownActionLocked((uint8_t)to_underlying(cur))) continue;
 
 			/* Is the company prohibited from bribing ? */
 			if (cur == TownAction::Bribe) {

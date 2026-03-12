@@ -43,6 +43,7 @@
 
 #include "table/strings.h"
 #include "table/bridge_land.h"
+#include "archipelago.h"
 
 #include "safeguards.h"
 
@@ -319,6 +320,11 @@ CommandCost CmdBuildBridge(DoCommandFlags flags, TileIndex tile_end, TileIndex t
 		/* User cannot modify height of tiles with one coordinate equal to zero, they are always at the sea level, and you can't build bridge in the sea.
 		 * Furthermore, they are void tiles unless map is infinite water. If we don't return for them here, we will still fail as their slope is invalid. */
 		if (TileX(t) == 0 || TileY(t) == 0) return CommandCost(transport_type == TRANSPORT_WATER ? STR_ERROR_BRIDGE_THROUGH_MAP_BORDER : STR_ERROR_TOO_CLOSE_TO_EDGE_OF_MAP);
+	}
+
+	/* AP bridge lock: block building locked bridge types */
+	if (AP_IsActive() && AP_IsBridgeLocked(bridge_type)) {
+		return CommandCost(STR_ERROR_ARCHIPELAGO_BRIDGE_LOCKED);
 	}
 
 	/* type of bridge */
@@ -651,6 +657,12 @@ CommandCost CmdBuildTunnel(DoCommandFlags flags, TileIndex start_tile, Transport
 	RailType railtype = INVALID_RAILTYPE;
 	RoadType roadtype = INVALID_ROADTYPE;
 	_build_tunnel_endtile = TileIndex{};
+
+	/* AP tunnel lock: block tunnel construction while locked */
+	if (AP_IsActive() && AP_IsTunnelLocked()) {
+		return CommandCost(STR_ERROR_ARCHIPELAGO_TUNNEL_LOCKED);
+	}
+
 	switch (transport_type) {
 		case TRANSPORT_RAIL:
 			railtype = (RailType)road_rail_type;

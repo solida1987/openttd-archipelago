@@ -47,6 +47,7 @@
 #include "tunnelbridge_map.h"
 
 #include "widgets/rail_widget.h"
+#include "archipelago.h"
 
 #include "table/strings.h"
 
@@ -483,6 +484,34 @@ struct BuildRailToolbarWindow : Window {
 			CloseWindowById(WC_BUILD_DEPOT, TRANSPORT_RAIL);
 			CloseWindowById(WC_BUILD_WAYPOINT, TRANSPORT_RAIL);
 			CloseWindowById(WC_SELECT_STATION, 0);
+		}
+
+		/* AP track direction locks: grey out toolbar buttons for locked directions.
+		 *
+		 * Button → VPM mode → HT_DIR → Track enum (direct cast in HandleAutodirPlacement):
+		 *   BUILD_NS  → VPM_FIX_VERTICAL   → HT_DIR_VL(4)/VR(5) → TRACK_LEFT / TRACK_RIGHT
+		 *   BUILD_X   → VPM_FIX_Y          → HT_DIR_X(0)        → TRACK_X  (NE-SW)
+		 *   BUILD_EW  → VPM_FIX_HORIZONTAL → HT_DIR_HU(2)/HL(3) → TRACK_UPPER / TRACK_LOWER
+		 *   BUILD_Y   → VPM_FIX_X          → HT_DIR_Y(1)        → TRACK_Y  (NW-SE)
+		 */
+		if (can_build && AP_IsActive()) {
+			uint8_t rt = (uint8_t)this->railtype;
+			uint8_t mask = AP_GetLockedTrackDirs(rt);
+			if (mask != 0) {
+				/* NS button → TRACK_LEFT (bit 4) + TRACK_RIGHT (bit 5) — disable if both locked */
+				if ((mask & (1u << 4)) && (mask & (1u << 5))) this->SetWidgetDisabledState(WID_RAT_BUILD_NS, true);
+				/* X button → TRACK_X (bit 0, NE-SW) */
+				if (mask & (1u << 0)) this->SetWidgetDisabledState(WID_RAT_BUILD_X, true);
+				/* EW button → TRACK_UPPER (bit 2) + TRACK_LOWER (bit 3) — disable if both locked */
+				if ((mask & (1u << 2)) && (mask & (1u << 3))) this->SetWidgetDisabledState(WID_RAT_BUILD_EW, true);
+				/* Y button → TRACK_Y (bit 1, NW-SE) */
+				if (mask & (1u << 1)) this->SetWidgetDisabledState(WID_RAT_BUILD_Y, true);
+				/* Autorail — disable only if ALL 6 directions are locked */
+				if (mask == 0x3F) this->SetWidgetDisabledState(WID_RAT_AUTORAIL, true);
+			}
+			/* AP tunnel / bridge locks */
+			if (AP_IsTunnelLocked()) this->SetWidgetDisabledState(WID_RAT_BUILD_TUNNEL, true);
+			if (AP_IsBridgeLocked()) this->SetWidgetDisabledState(WID_RAT_BUILD_BRIDGE, true);
 		}
 	}
 
@@ -1626,6 +1655,16 @@ public:
 
 		this->SetWidgetDisabledState(WID_BS_DRAG_SIGNALS_DENSITY_DECREASE, _settings_client.gui.drag_signals_density == 1);
 		this->SetWidgetDisabledState(WID_BS_DRAG_SIGNALS_DENSITY_INCREASE, _settings_client.gui.drag_signals_density == 20);
+
+		/* AP signal locks: grey out locked signal types (both semaphore + electric) */
+		if (AP_IsActive()) {
+			for (uint st = 0; st <= SIGTYPE_LAST; st++) {
+				if (AP_IsSignalLocked((uint8_t)st)) {
+					this->SetWidgetDisabledState(WID_BS_SEMAPHORE_NORM + st, true);
+					this->SetWidgetDisabledState(WID_BS_ELECTRIC_NORM + st, true);
+				}
+			}
+		}
 	}
 };
 

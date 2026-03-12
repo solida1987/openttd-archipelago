@@ -38,6 +38,8 @@
 #include "table/railtypes.h"
 #include "table/track_land.h"
 
+#include "archipelago.h"
+
 #include "safeguards.h"
 
 /** Helper type for lists/vectors of trains */
@@ -425,6 +427,11 @@ CommandCost CmdBuildSingleRail(DoCommandFlags flags, TileIndex tile, RailType ra
 	CommandCost cost(EXPENSES_CONSTRUCTION);
 
 	if (!ValParamRailType(railtype) || !ValParamTrackOrientation(track)) return CMD_ERROR;
+
+	/* AP track direction lock: block building locked directions (single tile) */
+	if (AP_IsActive() && AP_IsTrackDirLocked((uint8_t)railtype, (uint8_t)track)) {
+		return CommandCost(STR_ERROR_ARCHIPELAGO_RAIL_DIR_LOCKED);
+	}
 
 	Slope tileh = GetTileSlope(tile);
 	TrackBits trackbit = TrackToTrackBits(track);
@@ -877,6 +884,14 @@ static CommandCost CmdRailTrackHelper(DoCommandFlags flags, TileIndex tile, Tile
 	if ((!remove && !ValParamRailType(railtype)) || !ValParamTrackOrientation(track)) return CMD_ERROR;
 	if (end_tile >= Map::Size() || tile >= Map::Size()) return CMD_ERROR;
 
+	/* AP track direction lock: block building (not removal) of locked directions.
+	 * The check is per-rail-type: Normal/Electric/Monorail/Maglev each have
+	 * independent bitmasks, so unlocking Normal Track NE-SW doesn't unlock
+	 * Monorail Track NE-SW. */
+	if (!remove && AP_IsActive() && AP_IsTrackDirLocked((uint8_t)railtype, (uint8_t)track)) {
+		return CommandCost(STR_ERROR_ARCHIPELAGO_RAIL_DIR_LOCKED);
+	}
+
 	Trackdir trackdir = TrackToTrackdir(track);
 
 	CommandCost ret = ValidateAutoDrag(&trackdir, tile, end_tile);
@@ -1050,6 +1065,11 @@ CommandCost CmdBuildSingleSignal(DoCommandFlags flags, TileIndex tile, Track tra
 {
 	if (sigtype > SIGTYPE_LAST || sigvar > SIG_SEMAPHORE) return CMD_ERROR;
 	if (cycle_start > cycle_stop || cycle_stop > SIGTYPE_LAST) return CMD_ERROR;
+
+	/* AP signal lock: block placing locked signal types */
+	if (AP_IsActive() && AP_IsSignalLocked((uint8_t)sigtype)) {
+		return CommandCost(STR_ERROR_ARCHIPELAGO_SIGNAL_LOCKED);
+	}
 
 	if (ctrl_pressed) sigvar = (SignalVariant)(sigvar ^ SIG_SEMAPHORE);
 

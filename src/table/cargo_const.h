@@ -92,6 +92,8 @@ static const CargoSpec _default_cargo[] = {
 	MK(  24, CT_BUBBLES,       10,  1, 0x100, 5077, 20,  80,  true,       TAE_NONE,      BUBBLES,       BUBBLE,      STR_ITEMS, CargoClasses({CargoClass::PieceGoods})),
 	MK(  25, CT_PLASTIC,      202, 16, 0x100, 4664, 30, 255,  true,       TAE_NONE,      PLASTIC,      PLASTIC,     STR_LITERS, CargoClasses({CargoClass::Liquid})),
 	MK(  26, CT_FIZZY_DRINKS,  48,  2, 0x100, 6250, 30,  50,  true,       TAE_FOOD, FIZZY_DRINKS,  FIZZY_DRINK,      STR_ITEMS, CargoClasses({CargoClass::PieceGoods})),
+	/* AP Colby Event cargo — available in all climates, accepted by towns like Goods */
+	MK(  27, CT_COLBY_PACKAGE, 194,  8, 0x200, 6144,  5,  28,  true,      TAE_GOODS,     PACKAGES,     PACKAGES,     STR_ITEMS, CargoClasses({CargoClass::Express})),
 
 	/* Void slot in temperate */
 	MK(0xFF, CT_INVALID,        1,  0, 0x100, 5688,  0,  30,  true,       TAE_NONE,      NOTHING,      NOTHING,       STR_TONS, CargoClasses({})),
@@ -102,8 +104,11 @@ static const CargoSpec _default_cargo[] = {
 
 /** Table of cargo types available in each climate, by default */
 static const std::variant<CargoLabel, int> _default_climate_cargo[NUM_LANDSCAPE][NUM_ORIGINAL_CARGO] = {
-	{ CT_PASSENGERS, CT_COAL,   CT_MAIL, CT_OIL,  CT_LIVESTOCK, CT_GOODS, CT_GRAIN,  CT_WOOD, CT_IRON_ORE,     CT_STEEL,   CT_VALUABLES, 33, },
-	{ CT_PASSENGERS, CT_COAL,   CT_MAIL, CT_OIL,  CT_LIVESTOCK, CT_GOODS, CT_WHEAT,  CT_WOOD, 34,              CT_PAPER,   CT_GOLD,      CT_FOOD, },
+	/* Slot 11 = CT_COLBY_PACKAGE (AP): replaces former void slot in Temperate */
+	{ CT_PASSENGERS, CT_COAL,   CT_MAIL, CT_OIL,  CT_LIVESTOCK, CT_GOODS, CT_GRAIN,  CT_WOOD, CT_IRON_ORE,     CT_STEEL,   CT_VALUABLES, CT_COLBY_PACKAGE, },
+	/* Slot 8 = CT_COLBY_PACKAGE (AP): replaces former void slot in Arctic */
+	{ CT_PASSENGERS, CT_COAL,   CT_MAIL, CT_OIL,  CT_LIVESTOCK, CT_GOODS, CT_WHEAT,  CT_WOOD, CT_COLBY_PACKAGE, CT_PAPER,   CT_GOLD,      CT_FOOD, },
+	/* Tropic: no void slots — slot 3=Oil(subtropic), slot 7=Wood(subtropic). No room for CLBY. */
 	{ CT_PASSENGERS, CT_RUBBER, CT_MAIL, 4,       CT_FRUIT,     CT_GOODS, CT_MAIZE,  11,      CT_COPPER_ORE,   CT_WATER,   CT_DIAMONDS,  CT_FOOD, },
 	{ CT_PASSENGERS, CT_SUGAR,  CT_MAIL, CT_TOYS, CT_BATTERIES, CT_CANDY, CT_TOFFEE, CT_COLA, CT_COTTON_CANDY, CT_BUBBLES, CT_PLASTIC,   CT_FIZZY_DRINKS, },
 };

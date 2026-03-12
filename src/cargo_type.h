@@ -63,6 +63,7 @@ static constexpr CargoLabel CT_COTTON_CANDY{'CTCD'};
 static constexpr CargoLabel CT_BUBBLES{'BUBL'};
 static constexpr CargoLabel CT_PLASTIC{'PLST'};
 static constexpr CargoLabel CT_FIZZY_DRINKS{'FZDR'};
+static constexpr CargoLabel CT_COLBY_PACKAGE{'CLBY'}; ///< AP Colby Event special package cargo
 
 /** Dummy label for engines that carry no cargo; they actually carry 0 passengers. */
 static constexpr CargoLabel CT_NONE = CT_PASSENGERS;

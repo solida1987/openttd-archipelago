@@ -30,6 +30,7 @@
 #include "table/strings.h"
 #include "table/tree_land.h"
 #include "table/clear_land.h"
+#include "archipelago.h"
 
 #include "safeguards.h"
 
@@ -510,6 +511,11 @@ CommandCost CmdPlantTree(DoCommandFlags flags, TileIndex tile, TileIndex start_t
 	/* Check the tree type within the current climate */
 	if (tree_to_plant != TREE_INVALID && !IsInsideBS(tree_to_plant, _tree_base_by_landscape[to_underlying(_settings_game.game_creation.landscape)], _tree_count_by_landscape[to_underlying(_settings_game.game_creation.landscape)])) return CMD_ERROR;
 
+	/* AP tree lock: block planting locked tree types */
+	if (tree_to_plant != TREE_INVALID && AP_IsActive() && AP_IsTreeLocked(tree_to_plant)) {
+		return CommandCost(STR_ERROR_ARCHIPELAGO_TREE_LOCKED);
+	}
+
 	Company *c = (_game_mode != GM_EDITOR) ? Company::GetIfValid(_current_company) : nullptr;
 	int limit = (c == nullptr ? INT32_MAX : GB(c->tree_limit, 16, 16));
 
@@ -727,7 +733,10 @@ static CommandCost ClearTile_Trees(TileIndex tile, DoCommandFlags flags)
 	num = GetTreeCount(tile);
 	if (IsInsideMM(GetTreeType(tile), TREE_RAINFOREST, TREE_CACTUS)) num *= 4;
 
-	if (flags.Test(DoCommandFlag::Execute)) DoClearSquare(tile);
+	if (flags.Test(DoCommandFlag::Execute)) {
+		if (AP_IsActive() && Company::IsValidID(_current_company)) AP_WrathTrackTree();
+		DoClearSquare(tile);
+	}
 
 	return CommandCost(EXPENSES_CONSTRUCTION, num * _price[PR_CLEAR_TREES]);
 }

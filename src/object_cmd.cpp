@@ -38,6 +38,11 @@
 #include "landscape_cmd.h"
 #include "pathfinder/water_regions.h"
 
+/* Archipelago ruin functions — defined in archipelago_manager.cpp / archipelago_gui.cpp */
+extern bool AP_GetRuinCargoAcceptance(uint32_t tile_index, CargoArray &acceptance, CargoTypes &always_accepted);
+extern bool AP_IsRuinTile(uint32_t tile_index);
+extern void ShowArchipelagoRuinWindow(uint32_t tile_index);
+
 #include "table/strings.h"
 #include "table/object_land.h"
 
@@ -620,6 +625,9 @@ static CommandCost ClearTile_Object(TileIndex tile, DoCommandFlags flags)
 
 static void AddAcceptedCargo_Object(TileIndex tile, CargoArray &acceptance, CargoTypes &always_accepted)
 {
+	/* Archipelago: check if this tile is an active ruin needing cargo */
+	AP_GetRuinCargoAcceptance(tile.base(), acceptance, always_accepted);
+
 	if (!IsObjectType(tile, OBJECT_HQ)) return;
 
 	/* HQ accepts passenger and mail; but we have to divide the values
@@ -732,6 +740,12 @@ static TrackStatus GetTileTrackStatus_Object(TileIndex, TransportType, uint, Dia
 
 static bool ClickTile_Object(TileIndex tile)
 {
+	/* Archipelago: clicking a ruin opens its detail window */
+	if (AP_IsRuinTile(tile.base())) {
+		ShowArchipelagoRuinWindow(tile.base());
+		return true;
+	}
+
 	if (!IsObjectType(tile, OBJECT_HQ)) return false;
 
 	ShowCompany(GetTileOwner(tile));

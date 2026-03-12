@@ -40,6 +40,7 @@
 #include <charconv>
 
 #include "table/strings.h"
+#include "archipelago.h"
 
 #include "safeguards.h"
 
@@ -209,6 +210,9 @@ std::tuple<CommandCost, VehicleID, uint, uint16_t, CargoArray> CmdBuildVehicle(D
 			}
 
 			Company::Get(v->owner)->freeunits[v->type].UseID(v->unitnumber);
+
+			/* Archipelago: assign a community name to the vehicle */
+			AP_OnVehicleCreated(v);
 		}
 
 

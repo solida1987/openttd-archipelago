@@ -45,6 +45,7 @@
 
 #include "table/strings.h"
 #include "table/roadtypes.h"
+#include "archipelago.h"
 
 #include "safeguards.h"
 
@@ -348,6 +349,11 @@ static CommandCost RemoveRoad(TileIndex tile, DoCommandFlags flags, RoadBits pie
 	CommandCost ret = CheckAllowRemoveRoad(tile, pieces, GetRoadOwner(tile, rtt), rtt, flags, town_check);
 	if (ret.Failed()) return ret;
 
+	/* Track town road destruction for the Wrath system */
+	if (flags.Test(DoCommandFlag::Execute) && AP_IsActive() && Company::IsValidID(_current_company)) {
+		if (GetRoadOwner(tile, rtt) == OWNER_TOWN) AP_WrathTrackRoad();
+	}
+
 	if (!IsTileType(tile, MP_ROAD)) {
 		/* If it's the last roadtype, just clear the whole tile */
 		if (GetRoadType(tile, OtherRoadTramType(rtt)) == INVALID_ROADTYPE) return Command<CMD_LANDSCAPE_CLEAR>::Do(flags, tile);
@@ -624,6 +630,12 @@ CommandCost CmdBuildRoad(DoCommandFlags flags, TileIndex tile, RoadBits pieces, 
 	/* do not allow building 'zero' road bits, code wouldn't handle it */
 	if (pieces == ROAD_NONE || !IsValidRoadBits(pieces) || !IsValidDisallowedRoadDirections(toggle_drd)) return CMD_ERROR;
 	if (!ValParamRoadType(rt)) return CMD_ERROR;
+
+	/* AP road direction lock: block building locked road axes (trams are unaffected) */
+	if (AP_IsActive() && RoadTypeIsRoad(rt)) {
+		if ((pieces & ROAD_X) && AP_IsRoadDirLocked(0)) return CommandCost(STR_ERROR_ARCHIPELAGO_ROAD_DIR_LOCKED);
+		if ((pieces & ROAD_Y) && AP_IsRoadDirLocked(1)) return CommandCost(STR_ERROR_ARCHIPELAGO_ROAD_DIR_LOCKED);
+	}
 
 	Slope tileh = GetTileSlope(tile);
 	RoadTramType rtt = GetRoadTramType(rt);

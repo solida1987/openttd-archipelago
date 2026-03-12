@@ -1,196 +1,150 @@
 # Changelog — OpenTTD Archipelago
 
-## [1.0.0-beta6] — 2026-03-07
+## [exp-1.1] — patch_exp_1_1_30 — 2026-03-10
+
+### Fixed
+- **Task progress line: missing cargo unit label** — Progress now shows the correct OpenTTD unit for the cargo type (`tons`, `bags`, `litres`, `items`, etc.) by looking up `CargoSpec->units_volume` via `GetString()`. Previously showed raw numbers with no unit (e.g. `0 / 500 (0%)`); now shows `0 / 500 tons  (0%)`.
+- **Task progress line: bullet characters rendered as empty boxes** — The bullet separator `•` (Unicode U+2022) is not present in OpenTTD's pixel font and rendered as □. Replaced with ASCII `-` throughout the task stats line.
+
+---
+
+## [exp-1.1] — patch_exp_1_1_29 — 2026-03-10
+
+### Fixed
+- **Phantom navigation links when clicking the mission/task list (three root causes):**
+  - **C++ integer division on header row** — Clicking the header row (abs_row = 0) computed `task_idx = (0-1)/4 = 0` due to C++ truncating toward zero rather than -1, causing header clicks to navigate to the first task's map location. Fixed by guarding `if (abs_row <= 0) break` before the division.
+  - **Stale `visible_missions` when switching to the Tasks filter** — `visible_missions` was never cleared when switching to Tasks. Clicks on the list fell through to mission navigation even though no missions were displayed. Fixed by calling `visible_missions.clear()` on every switch to Tasks, and `cached_tasks.clear()` on every switch away from Tasks.
+  - **Scrollbar position not reset on filter switch** — If the user had scrolled to position 10 on "All" then switched to "Easy" (5 missions), the scrollbar stayed at position 10, causing clicks to hit invisible rows. Fixed by calling `this->scrollbar->SetPosition(0)` on every `SetFilterButton()` call.
+
+---
+
+## [exp-1.1] — patch_exp_1_1_28 — 2026-03-10
+
+### Fixed
+- **Negative expenses counted as positive profit (all 6 occurrences)** — OpenTTD stores `expenses` as a **negative number**. The correct formula is `income + expenses` (as used by OpenTTD's own `economy.cpp` line 189). All 6 occurrences in `archipelago_manager.cpp` used `income - expenses`, which converted a loss (e.g. income=£100, expenses=-£800) into a large positive number (£900) instead of the correct -£700. The `if (period_profit > 0)` guard was therefore bypassed. Fixed in: snapshot init (line 211), period-change detection (line 225), period accumulation (line 234), `AP_GetTotalProfit` current period (line 258), earn-monthly mission evaluation (line 417), win condition MONTHLY_PROFIT check (line 1758).
+
+  > **Note:** `patch_exp_1_1_26` claimed to contain this fix but the zip was verified to still contain `income - expenses` at all 6 locations. This patch is the first to actually deliver the fix.
+
+---
+
+## [exp-1.1] — patch_exp_1_1_27 — 2026-03-10
+
+### Changed
+- **Tab layout replaced with a single filter row** — Removed the two-tab row (`[Missions] / [Tasks]`) that sat above the filter buttons. Tasks is now a sixth button in the single filter row: `[All] [Easy] [Medium] [Hard] [Extreme] [Tasks]`. Tasks behaves like any other filter with no disabled buttons and no confusing two-tier layout. Removed widget IDs: `WAPM_TAB_MISSIONS`, `WAPM_TAB_TASKS`, `WAPM_FILTER_PANEL`. Added: `WAPM_FILTER_TASKS`.
+
+### Fixed
+- **Clicking a link on one filter triggered navigation from a different filter** — `OnClick(WAPM_LIST)` always looked up `visible_missions[row]` regardless of the active filter. Clicking the same screen position after switching filters would fire navigation from the previous filter's list. Fixed by splitting list click logic into `if (show_tasks)` / `else` branches routing to the correct backing list (`cached_tasks` vs. `visible_missions`).
+
+---
+
+## [exp-1.1] — patch_exp_1_1_26 — 2026-03-10
 
 ### Added
-- **Iron Horse 4.14.1 support** — 164 verified locomotives from the Iron Horse NewGRF
-  are now part of the item pool when the NewGRF is active. Engine names sourced
-  directly from the GRF NFO (Action 4 feature 0x00) — no invented names.
-  Enable via the NewGRF button in the AP Connect window before generating a world.
-- **`one_of_each` starting vehicle option** — start with one safe vehicle per transport
-  type (bus, train, small plane, passenger ferry) instead of a single random pick.
-
-### Fixed
-- **Mission text crushed at UI scale ≥2** — row height is now recomputed at draw
-  time using the current font/scale rather than cached at window construction.
-  Mission list is now fully readable at all interface sizes.
-- **Currency shows £ on non-GBP games** — mission descriptions now replace the
-  hardcoded £ symbol with the game's active currency prefix (e.g. $ for USD) at
-  render time, matching the rest of the UI.
-- **`random` starting vehicle could give unusable cargo wagon** — added a multi-level
-  fallback: (1) road cargo trucks → bus substitute, (2) engine map rebuild + retry,
-  (3) emergency fallback to first available locomotive. A starting vehicle is now
-  always unlocked regardless of edge cases.
-- **Shop shows fewer items than configured `shop_slots`** — `_compute_pool_size()`
-  previously computed its own slot count and ignored the player's YAML `shop_slots`
-  setting entirely. It now reads `self.options.shop_slots.value` directly. Setting
-  `shop_slots: 5` in your YAML now reliably shows 5 items in the shop.
-- **AP status window could not be dragged / was jammed in UI** — window placement
-  changed from `WDP_MANUAL` (hardcoded top-right) to `WDP_AUTO` with persistence key
-  `"ap_status"`. Position is now remembered between sessions and the window can be
-  freely dragged.
-- **"Unknown item: not handled" for vanilla engines** — `BuildEngineMap()` was called
-  before `never_expire_vehicles = true`, so expired/not-yet-introduced engines returned
-  empty names and were never indexed. Fix: expire flags set before map build + direct
-  `string_id` fallback for any engine still returning empty from purchase list context.
-- **Oil Tanker only unlocked one of three wagon variants** — `std::map` stored one
-  `EngineID` per name; the Rail/Monorail/Maglev Oil Tanker variants share a name.
-  Extras are now tracked in a parallel `_ap_engine_extras` map and all variants are
-  unlocked together.
-- **IH engine prefix mismatch in lock check** — Iron Horse engine names in slot_data
-  carry an `IH: ` prefix; the C++ lock lookup now strips it before map lookup.
-
-### Changed
-- Default trap settings toned down — Bank Loan and Recession traps are now **off** by
-  default; enable in YAML if desired.
-- DeathLink is now **off** by default.
-- Shop items sorted by price ascending so cheapest options are always visible first.
+- **Task card multi-line layout** — Each task in the Tasks view now renders as 4 rows:
+  ```
+  [ ] EASY  Pick up 500 t of Iron Ore
+      -> from Breningbury Iron Ore Mine near Breningbury
+      0 / 500  (0%)   -   By 1951   -   +£25k
+      -------------------------------------------------
+  ```
+  Row 0: status badge + colour-coded difficulty tag + action description. Row 1: location with entity name highlighted in white. Row 2: progress + deadline + reward in grey. Row 3: separator line.
 
 ---
 
-## [1.0.0-beta5] — 2026-03-06
+## [exp-1.1] — patch_exp_1_1_25 — 2026-03-10
 
 ### Fixed
-- **Toyland missions on non-Toyland maps** — mission generator now uses a
-  climate-filtered cargo list. Temperate/Arctic/Tropical maps will never
-  generate missions referencing Candyfloss, Cola, Toffee or other
-  Toyland-exclusive cargos.
-- **Toyland vehicles in item pool on non-Toyland maps** — Toyland-only
-  vehicles (Choo-Choos, Ploddyphut buses, all Toyland trucks/aircraft) are
-  now excluded from the randomised item pool when the map is not Toyland.
-  Previously these would appear as received items that silently did nothing.
-- **"Service X towns" impossible on small maps** — mission amounts for
-  town-service missions are now capped based on map dimensions so the
-  generated count cannot exceed a realistic number of towns on the map.
-- **Bank Loan Forced trap — 500M hardcoded amount** — the forced loan is now
-  scaled to the session's configured `max_loan` value rather than a fixed
-  £500,000,000 that was impossible to repay in early game.
-- **Shop refusing purchases / price display wrong** — shop slots that have
-  already been purchased this session are now tracked and filtered out of the
-  shop list immediately after purchase, preventing the UI from showing bought
-  slots as still available.
+- **Build error: `_ap_tasks` / `_ap_task_next_id` / `_ap_task_checks_completed` undeclared** — Static variables were declared after `AP_InitSessionStats()` which referenced them. Declarations moved before the function.
+- **Build error: `GetCurrency` / `CurrencySpec` not found** — Added `#include "currency.h"` to `archipelago_manager.cpp`.
+- **Build error: `int rh` redeclared in `DrawWidget`** — Two separate `int rh` declarations existed in the same function scope. Wrapped the missions section in an extra `{ }` block scope to isolate the variable.
+
+---
+
+## [exp-1.1] — patch_exp_1_1_22 — 2026-03-10
 
 ### Added
-- **"Start with one of each" option** — new `Starting Vehicle Type` choice
-  `one_of_each` gives the player one safe starting vehicle from every transport
-  type at game start (bus, train, small plane, passenger ferry), so all four
-  types are immediately available regardless of what gets randomised into the pool.
+- **Speed Boost item (x20)** — Fast forward is now an Archipelago item. The FF button starts locked at 100% (normal speed — no speedup). Each "Speed Boost" item received adds +10% FF speed, up to a maximum of 300% (20 items). Items are placed in missions and shops like all other utility items and can land in other players' games in multiworld.
+- **Settings lockdown during AP session** — The following settings categories are hidden while an AP session is active (players cannot change gameplay parameters mid-run): Accounting, Vehicles, Limitations, Disasters, World Generation, Environment, AI/Competitors. Graphics, sound, interface and localisation settings remain accessible.
 
 ### Changed
-- **Trap intensity slider** — new `Trap Intensity (%)` YAML option (0–100,
-  default 30) controls what share of the item pool consists of traps.
-  Replaces the implicit 15% hardcoded rate. Higher = more traps.
-- **DeathLink default changed to off** — DeathLink was on by default, which
-  surprised players who hadn't explicitly opted in to shared deaths. Now off by
-  default; enable in your YAML if you want it.
-- **Shop sorted by price ascending** — cheapest items now always appear at the
-  top of the shop list, making it readable early-game when money is limited.
-- **Default trap settings toned down** — `Trap: Bank Loan` and
-  `Trap: Recession` both default to **off**. These two traps are the most
-  punishing and are now opt-in rather than opt-out.
+- `gfx.cpp ChangeGameSpeed()` now uses `_settings_client.gui.fast_forward_speed_limit` instead of a hardcoded 2500%.
+- `_ap_ff_speed` resets to 100 on session start and is saved/loaded in the savegame (KV key `ff_speed`).
 
 ---
 
-## [1.0.0-beta4] — 2026-03-06
-
-### Fixed
-- **Wine incompatibility** — Beta 3's WSS/WS auto-detection used Windows Schannel
-  (`Secur32.dll`) which Wine does not implement correctly, preventing connection.
-  Wine is now detected at runtime via `HKLM\Software\Wine`; the WSS probe is skipped
-  entirely and the client connects via plain WS directly (matching Beta 2 behaviour).
-- **"Missing 140 sprites" warning on main menu** — false positive caused by the build
-  not being tagged as a vanilla released version. The warning widget is now
-  unconditionally hidden; the bundled baseset is complete.
-- **Starting vehicle locked on non-Toyland maps** — Toyland-only trains
-  (`Ploddyphut Choo-Choo`, `Powernaut Choo-Choo`, `MightyMover Choo-Choo`) could be
-  selected as starting vehicle on Temperate/Arctic/Tropical maps where they do not
-  exist, leaving the player with nothing unlocked.
-- **Unviable starting road vehicles** — cargo trucks (goods, coal, etc.) could be
-  selected as starting vehicle despite requiring specific industries near a depot.
-  Players could find themselves unable to earn any money at game start.
+## [exp-1.1] — patch_exp_1_1_21 — 2026-03-10
 
 ### Changed
-- **Starting vehicle pools tightened** — each transport type now only draws from
-  vehicles that are always viable from day one regardless of map industries:
-  - **Trains:** steam + early diesel only (passengers/mail always available)
-  - **Road vehicles:** buses and mail trucks only (no cargo trucks)
-  - **Aircraft:** first 5 small props only (work on basic airport)
-  - **Ships:** passenger ferries only (no cargo ships or oil tankers)
+- **Real-time tracking (250 ms)** — `CheckMissions()`, `AP_UpdateSessionStats()`, `AP_UpdateNamedMissions()` and `AP_ColbyTick()` now run every 250 ms instead of ~5 seconds. The missions window updates continuously instead of waiting 5 sec per tick. Named-destination progress (town/industry deliveries) now accumulates in real time instead of monthly.
+- Engine lock sweep still runs ~5 sec (too expensive to run every 250 ms — iterates all engines).
+- Win condition check still runs ~10 sec (rarely relevant, cheap guard).
 
 ---
 
-## [1.0.0-beta3] — 2026-03-06
+## [exp-1.1] — patch_exp_1_1_14 — 2026-03-10
+
+### Changed
+- **Vehicle missions split by category** — "Have X vehicles" is now split into separate missions per vehicle type: trains, road vehicles, ships and aircraft. Ships and aircraft are introduced from medium difficulty; they do not appear in easy. All types use +7 progression (10 -> 17 -> 24 -> 31 -> 38 on easy; 45/80/150 starting value on medium/hard/extreme).
+- **Active vehicle requirement** — A vehicle only counts toward "Have X active trains/ships/etc." if it has been running for at least 30 calendar days AND has earned money (i.e. made at least one delivery). Vehicles bought and left in a depot do not count. Implemented in `AP_CountActiveVehicles()` via `v->age >= 30` and `profit_this_year / profit_last_year > 0`.
+- **Station missions split by type** — "Build X stations" is now expanded into separate mission types: train stations, bus stops, truck stops, docks and airports. Docks and airports are introduced from medium difficulty. Adds ~16-20 extra entries per difficulty to the pool.
+- **Active station requirement** — A station only counts toward a station mission if cargo has ever been delivered to it (`GoodsEntry::State::EverAccepted`). Players cannot just build stations and leave them empty. Implemented in `AP_CountStations(facility, require_active)`.
+- **Pool sizes** — easy: 83, medium: 98, hard: 92, extreme: 77 entries.
+
+---
+
+## [exp-1.1] — patch_exp_1_1_13 — 2026-03-10
+
+### Changed
+- **Vehicle count missions: +7 progression, all types** — All "Have X vehicles/trains/road vehicles/ships/aircraft" missions now start at 10 (easy) and increase by 7 per step. Replaces the old uneven intervals (2->3->5->8->...). Applies to all difficulties and all vehicle types.
+
+---
+
+## [exp-1.1] — patch_exp_1_1_12 — 2026-03-10
+
+### Changed
+- **Predefined mission pools** — `_generate_missions()` now uses fixed, predefined missions instead of a random generator with min/max ranges. Eliminates duplicates and near-duplicates (e.g. "Have 2 trains" + "Have 3 trains" in the same session). The pool is shuffled and the first N missions are selected. If a session requires more missions than the pool contains, the pool is reshuffled and reused.
+- **Shop tier locking** — The first 5 shop slots are always unlocked. Each additional group of 5 slots requires 5 more completed missions (any difficulty). Slots 6-10 require 5 total missions, slots 11-15 require 10, etc. Shown in the GUI as grey `[LOCKED] Complete X missions to unlock`. Purchasing locked items is blocked with a console message.
+
+---
+
+## [exp-1.1] — 2026-03-10
 
 ### Fixed
-- **"Maintain X% rating for N months" missions** — now correctly tracks consecutive months
-  where ALL rated stations meet the threshold. Any station falling below threshold resets
-  the counter to zero. Previously approximated by counting qualifying stations.
-- **DeathLink notification** — inbound deaths now show a full newspaper popup
-  (`NewsStyle::Normal`) instead of the small corner notification, making them impossible
-  to miss. Error is also printed in red to the console.
-- **Server field placeholder** — default no longer shows `wss://` prefix; auto-detection
-  handles protocol selection transparently.
+- **"Unknown item" on AP hints** — Items and locations shared the same base ID (`6_100_000`). When other players used `!hint` on an OpenTTD item, the AP server looked up the ID and found a *location* instead of an item name, displaying "Unknown item (ID:...)". Fix: item base ID moved to `6_200_000` (items.py). Locations remain at `6_100_000+`. No overlap is possible.
+- **Console shows all missions as Easy / wrong mission numbers** — Location IDs were assigned sequentially from `6100000` based on the total mission count at runtime. The AP server's data package used the class-level table with the maximum count — both counted from the same base and ended up with different ID-to-name mappings. Result: `Mission_Medium_001` had a different ID in the data package vs. the active session, so the console and tracker showed everything as Easy. Fix: fixed per-difficulty ID blocks, independent of total mission count (Python + C++ synchronised):
+  - Easy: `6100000-6101999`
+  - Medium: `6102000-6103999`
+  - Hard: `6104000-6105999`
+  - Extreme: `6106000-6107999`
+  - Shop: `6108000-6109999`
+  - Victory: `6110000`
+- **DeathLink ConnectUpdate error** — The `ConnectUpdate` packet contained `"items_handling": 7`, which is not a valid field in the ConnectUpdate protocol. AP 0.6.6 silently rejected the entire packet, meaning the DeathLink tag was never registered. Fix: `ConnectUpdate` now only sends `{"cmd": "ConnectUpdate", "tags": [...]}`.
 
 ### Added
-- **Savegame persistence (APST chunk)** — AP session state now survives save/load:
-  - Connection credentials (host, port, slot, password)
-  - Completed mission list
-  - Shop page offset and day counter
-  - Cumulative cargo and profit statistics
-  - "Maintain rating" month counters
-- **Maintain rating counter persistence** — month counters for rating missions are saved
-  and restored, so long-running missions are not reset by a save/load cycle.
-
-### Changed
-- Dead code cleanup: removed unused `bool fin` warning (C4189), unused `bool all_pass`
-  variable in maintain timer, and unreachable `WAPGUI_BTN_MISSIONS` click handler.
+- **Mission Tier Gating** — Players must complete N missions of the previous tier before the next tier unlocks. Default N=5; can be set to 0 for no gating. New YAML option `mission_tier_unlock_count` (range 0-20). Easy is always available. Medium requires N easy, Hard requires N medium, Extreme requires N hard. Locked tiers are shown in grey in the missions window as `[LOCKED] Medium - Complete 3 more easy missions to unlock`.
+- **Starting Vehicle Count adjusted** — `starting_vehicle_count` range changed to 1-5 (was 1-20); default 2.
 
 ---
 
-## [1.0.0-beta2] — 2026-03-05
+## [exp-1.1] — 2026-03-09
 
 ### Fixed
-- **WSS/WS auto-detection** — client now probes WSS first and falls back to plain WS
-  automatically; users never need to type a scheme prefix
-- **Build fix** — zlib dependency is now optional (`#ifdef WITH_ZLIB`); build succeeds
-  without it and falls back to uncompressed WebSocket frames
+- **DeathLink not working** — The Connect packet always sent `["DeathLink"]` tag regardless of the setting. Fix: Connect now sends empty tags; a `ConnectUpdate` packet is sent immediately after slot_data is received with the correct tags based on the `death_link` value from the YAML. `AP_OnDeathReceived` and `AP_SendDeath` both now guard against `death_link == false`.
+- **InvalidGame on connect** — C++ sent `game: "OpenTTD"` but the exp APWorld is named `OpenTTD-Exp`. Fix: default game name in `archipelago.h` corrected to `"OpenTTD-Exp"`.
+- **CMake install error** — `known-bugs.md` not found during build because the file is actually named `KNOWN_BUGS.md`. Fix: `InstallAndPackage.cmake` corrected to match the actual filename.
 
-### Changed
-- Server field placeholder changed to `archipelago.gg:38281` — scheme is handled
-  automatically and no longer shown in the input field
-- Reconnect button uses the same auto-detection logic
+### Added
+- **Trap: Vehicle License Revoke** — New trap that suspends a random vehicle category (Trains / Road Vehicles / Aircraft / Ships) for 1-2 in-game years. All engines of that type are hidden via `company_hidden` and automatically restored when the timer expires. Saved/loaded in savegame via `lic_ticks` + `lic_type` in the APST chunk. Toggle option `trap_license_revoke` in the APWorld.
+- **Wagon Pool Mode** — New YAML option `wagon_pool_mode` with three states: `all_wagons` (default — wagons in pool as normal), `no_wagons` (all wagons available from the start, none in pool), `start_with_one` (one random wagon per climate group given for free, rest removed from pool).
 
 ---
 
-## [1.0.0-beta1] — 2026-03-05
-
-First public beta release.
+## [exp-1.0] — 2026-03-09
 
 ### Added
+- First experimental release based on stable v1.0.0.
+- Separate APWorld (`openttd_exp.apworld`) with game name `OpenTTD-Exp` — can sit side by side with stable in `custom_worlds/`.
+- Separate GitHub repository: `github.com/solida1987/openttd-archipelago-exp`.
 
-**Game client (C++ / OpenTTD 15.2)**
-- WebSocket connection to Archipelago server with auto-reconnect
-- Engine lock system — all 202 vanilla vehicles locked at game start, unlocked via received items
-- `AP Connect` button in main menu and in-game toolbar
-- Missions window showing current checks with progress bars
-- Shop window with page rotation (refreshes every N in-game days per YAML setting)
-
-**Item system**
-- 202 vehicles across all climates: 35 trains, 27 wagons, 88 road vehicles, 41 aircraft, 11 ships
-- 7 trap items: Breakdown Wave, Recession, Maintenance Surge, Signal Failure, Fuel Shortage, Forced Bank Loan, Industry Closure
-- 8 utility items: Cash Injection ×3 tiers, Loan Reduction, Cargo Bonus 2×, Reliability Boost 90d, Station Upgrade 30d, Town Growth Boost
-
-**Mission system**
-- 11 mission types with procedural generation (no duplicates, spacing rules enforced)
-- Dynamic pool scaling: 347 locations (solo) → 1095 locations (16 players)
-
-**Death Link**
-- Train collision, road vehicle hit by train, aircraft crash — all send deaths outbound
-- Inbound deaths: industry closure + 10% money penalty, with 30-second cooldown
-
-**Win conditions**
-- 5 configurable win conditions: Company Value, Monthly Profit, Vehicle Count, Town Population, Cargo Delivered
-
-**APWorld**
-- Full Archipelago APWorld (`openttd.apworld`) with 56 configurable YAML options
-- Supports Archipelago 0.6.6+
+### Fixed (summary of issues resolved during beta)
+- See stable v1.0.0 CHANGELOG for complete beta history.

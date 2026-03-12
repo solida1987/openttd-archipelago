@@ -23,7 +23,15 @@
 #include "timer/timer_game_calendar.h"
 #include "table/strings.h"
 #include "table/sprites.h"
+#include "table/control_codes.h"
 #include "town.h"
+#include "zoom_func.h"
+#include "company_base.h"
+#include "company_func.h"
+#include "command_func.h"
+#include "misc_cmd.h"
+#include "network/network.h"
+#include "hotkeys.h"
 #include "safeguards.h"
 
 /* Forward declaration — defined in newgrf_gui.cpp */
@@ -48,6 +56,14 @@ enum APWidgets : WidgetID {
 	WAPGUI_BTN_DISCONNECT,
 	WAPGUI_BTN_NEWGRF,
 	WAPGUI_BTN_CLOSE,
+	/* Town rename row */
+	WAPGUI_LABEL_TOWNS,
+	WAPGUI_BTN_TOWNS_AUTO,
+	WAPGUI_BTN_TOWNS_CUSTOM,
+	WAPGUI_BTN_TOWNS_OFF,
+	WAPGUI_LABEL_CUSTOM_NAMES,
+	WAPGUI_EDIT_CUSTOM_NAMES,
+	WAPGUI_CUSTOM_HINT,
 };
 
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_widgets = {
@@ -66,6 +82,20 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_widgets = {
 				NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_LABEL_PASS), SetStringTip(STR_ARCHIPELAGO_LABEL_PASS), SetMinimalSize(80, 14),
 				NWidget(WWT_EDITBOX, COLOUR_GREY, WAPGUI_EDIT_PASS), SetStringTip(STR_EMPTY), SetMinimalSize(200, 14), SetFill(1, 0),
 			EndContainer(),
+			/* Town rename row */
+			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+				NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_LABEL_TOWNS), SetStringTip(STR_ARCHIPELAGO_LABEL_TOWNS), SetMinimalSize(80, 14),
+				NWidget(WWT_TEXTBTN, COLOUR_DARK_GREEN, WAPGUI_BTN_TOWNS_AUTO),   SetStringTip(STR_ARCHIPELAGO_TOWNS_AUTO,   STR_ARCHIPELAGO_TOWNS_AUTO_TIP),   SetMinimalSize(62, 14),
+				NWidget(WWT_TEXTBTN, COLOUR_GREY,       WAPGUI_BTN_TOWNS_CUSTOM), SetStringTip(STR_ARCHIPELAGO_TOWNS_CUSTOM, STR_ARCHIPELAGO_TOWNS_CUSTOM_TIP), SetMinimalSize(62, 14),
+				NWidget(WWT_TEXTBTN, COLOUR_GREY,       WAPGUI_BTN_TOWNS_OFF),    SetStringTip(STR_ARCHIPELAGO_TOWNS_OFF,    STR_ARCHIPELAGO_TOWNS_OFF_TIP),    SetMinimalSize(62, 14),
+			EndContainer(),
+			/* Custom names editbox — only visible when mode == 1 */
+			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+				NWidget(WWT_TEXT,    INVALID_COLOUR, WAPGUI_LABEL_CUSTOM_NAMES), SetStringTip(STR_ARCHIPELAGO_LABEL_CUSTOM_NAMES), SetMinimalSize(80, 14),
+				NWidget(WWT_EDITBOX, COLOUR_GREY,    WAPGUI_EDIT_CUSTOM_NAMES),  SetStringTip(STR_EMPTY), SetMinimalSize(200, 14), SetFill(1, 0),
+			EndContainer(),
+			/* Hint text — only shown when Custom mode is active */
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_CUSTOM_HINT), SetStringTip(STR_ARCHIPELAGO_CUSTOM_NAMES_HINT), SetMinimalSize(284, 20), SetFill(1, 0),
 			NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_STATUS),    SetMinimalSize(284, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
 			NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_SLOT_INFO), SetMinimalSize(284, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
@@ -78,15 +108,58 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_widgets = {
 	EndContainer(),
 };
 
+extern int         _ap_town_rename_mode;
+extern std::string _ap_town_custom_names;
+
+/** Format a number with locale-appropriate thousand separators */
+static std::string AP_FmtNum(int64_t v) { return GetString(STR_JUST_COMMA, v); }
+
+/** Abbreviate large numbers: 1234567 -> "1.23M", 50000000000 -> "50B" */
+static std::string AP_FmtShort(int64_t v) {
+	if (v < 0) return "-" + AP_FmtShort(-v);
+	if (v >= 1'000'000'000LL) {
+		double d = v / 1'000'000'000.0;
+		if (d >= 100.0) return fmt::format("{:.0f}B", d);
+		if (d >= 10.0)  return fmt::format("{:.1f}B", d);
+		return fmt::format("{:.2f}B", d);
+	}
+	if (v >= 1'000'000LL) {
+		double d = v / 1'000'000.0;
+		if (d >= 100.0) return fmt::format("{:.0f}M", d);
+		if (d >= 10.0)  return fmt::format("{:.1f}M", d);
+		return fmt::format("{:.2f}M", d);
+	}
+	if (v >= 1'000LL) {
+		double d = v / 1'000.0;
+		if (d >= 100.0) return fmt::format("{:.0f}k", d);
+		if (d >= 10.0)  return fmt::format("{:.1f}k", d);
+		return fmt::format("{:.2f}k", d);
+	}
+	return fmt::format("{}", v);
+}
+
 struct ArchipelagoConnectWindow : public Window {
 	QueryString server_buf;
 	QueryString slot_buf;
 	QueryString pass_buf;
-	std::string server_str, slot_str, pass_str;
+	QueryString custom_names_buf;
+	std::string server_str, slot_str, pass_str, custom_str;
 	APState  last_state  = APState::DISCONNECTED;
 	bool     last_has_sd = false;
 
-	static std::string WinDiffName(APWinDifficulty d) {
+	void UpdateTownButtons()
+	{
+		this->SetWidgetLoweredState(WAPGUI_BTN_TOWNS_AUTO,   _ap_town_rename_mode == 0);
+		this->SetWidgetLoweredState(WAPGUI_BTN_TOWNS_CUSTOM, _ap_town_rename_mode == 1);
+		this->SetWidgetLoweredState(WAPGUI_BTN_TOWNS_OFF,    _ap_town_rename_mode == 2);
+		/* Show/hide the custom names editbox row and hint */
+		this->SetWidgetDisabledState(WAPGUI_EDIT_CUSTOM_NAMES,  _ap_town_rename_mode != 1);
+		this->SetWidgetDisabledState(WAPGUI_LABEL_CUSTOM_NAMES, _ap_town_rename_mode != 1);
+		this->SetWidgetDisabledState(WAPGUI_CUSTOM_HINT,        _ap_town_rename_mode != 1);
+		this->SetDirty();
+	}
+
+	static std::string WinDifficultyName(APWinDifficulty d) {
 		switch (d) {
 			case APWinDifficulty::CASUAL:    return "Casual";
 			case APWinDifficulty::EASY:      return "Easy";
@@ -99,7 +172,7 @@ struct ArchipelagoConnectWindow : public Window {
 			case APWinDifficulty::NUTCASE:   return "Nutcase";
 			case APWinDifficulty::MADNESS:   return "Madness";
 			case APWinDifficulty::CUSTOM:    return "Custom";
-			default:                         return "?";
+			default:                         return "Unknown";
 		}
 	}
 
@@ -118,18 +191,19 @@ struct ArchipelagoConnectWindow : public Window {
 	static std::string SlotInfoStr(bool has_sd) {
 		if (!has_sd || _ap_client == nullptr) return "";
 		APSlotData sd = _ap_client->GetSlotData();
-		return "Difficulty: " + WinDiffName(sd.win_difficulty) +
+		return "Difficulty: " + WinDifficultyName(sd.win_difficulty) +
 		       "  Missions: " + fmt::format("{}", sd.missions.size()) +
 		       "  Start: " + sd.starting_vehicle;
 	}
 
 	ArchipelagoConnectWindow(WindowDesc &desc, WindowNumber wnum)
-		: Window(desc), server_buf(256), slot_buf(64), pass_buf(64)
+		: Window(desc), server_buf(256), slot_buf(64), pass_buf(64), custom_names_buf(512)
 	{
 		this->CreateNestedTree();
-		this->querystrings[WAPGUI_EDIT_SERVER] = &server_buf;
-		this->querystrings[WAPGUI_EDIT_SLOT]   = &slot_buf;
-		this->querystrings[WAPGUI_EDIT_PASS]   = &pass_buf;
+		this->querystrings[WAPGUI_EDIT_SERVER]       = &server_buf;
+		this->querystrings[WAPGUI_EDIT_SLOT]         = &slot_buf;
+		this->querystrings[WAPGUI_EDIT_PASS]         = &pass_buf;
+		this->querystrings[WAPGUI_EDIT_CUSTOM_NAMES] = &custom_names_buf;
 		this->FinishInitNested(wnum);
 
 		/* Restore last connection settings from ap_connection.cfg */
@@ -141,13 +215,25 @@ struct ArchipelagoConnectWindow : public Window {
 		server_str = full;
 		if (!_ap_last_slot.empty()) { slot_buf.text.Assign(_ap_last_slot.c_str()); slot_str = _ap_last_slot; }
 		if (!_ap_last_pass.empty()) { pass_buf.text.Assign(_ap_last_pass.c_str()); pass_str = _ap_last_pass; }
+
+		/* Restore town rename custom names if any */
+		if (!_ap_town_custom_names.empty()) {
+			custom_names_buf.text.Assign(_ap_town_custom_names.c_str());
+			custom_str = _ap_town_custom_names;
+		}
+
+		UpdateTownButtons();
 	}
 
 	void OnEditboxChanged(WidgetID wid) override {
 		switch (wid) {
-			case WAPGUI_EDIT_SERVER: server_str = server_buf.text.GetText().data(); break;
-			case WAPGUI_EDIT_SLOT:   slot_str   = slot_buf.text.GetText().data();   break;
-			case WAPGUI_EDIT_PASS:   pass_str   = pass_buf.text.GetText().data();   break;
+			case WAPGUI_EDIT_SERVER:       server_str = server_buf.text.GetText().data(); break;
+			case WAPGUI_EDIT_SLOT:         slot_str   = slot_buf.text.GetText().data();   break;
+			case WAPGUI_EDIT_PASS:         pass_str   = pass_buf.text.GetText().data();   break;
+			case WAPGUI_EDIT_CUSTOM_NAMES:
+				custom_str = custom_names_buf.text.GetText().data();
+				_ap_town_custom_names = custom_str;
+				break;
 		}
 	}
 
@@ -174,6 +260,18 @@ struct ArchipelagoConnectWindow : public Window {
 
 	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override {
 		switch (widget) {
+			case WAPGUI_BTN_TOWNS_AUTO:
+				_ap_town_rename_mode = 0;
+				UpdateTownButtons();
+				break;
+			case WAPGUI_BTN_TOWNS_CUSTOM:
+				_ap_town_rename_mode = 1;
+				UpdateTownButtons();
+				break;
+			case WAPGUI_BTN_TOWNS_OFF:
+				_ap_town_rename_mode = 2;
+				UpdateTownButtons();
+				break;
 			case WAPGUI_BTN_CONNECT: {
 				if (_ap_client == nullptr) break;
 				/* Strip any scheme prefix the user may have typed — auto-detect handles it */
@@ -215,7 +313,7 @@ struct ArchipelagoConnectWindow : public Window {
 };
 
 static WindowDesc _ap_connect_desc(
-	WDP_CENTER, {}, 380, 196,
+	WDP_CENTER, {}, 380, 240,
 	WC_ARCHIPELAGO, WC_NONE, {},
 	_nested_ap_widgets
 );
@@ -244,7 +342,14 @@ enum APStatusWidgets : WidgetID {
 	WAPST_BTN_SETTINGS,
 	WAPST_BTN_SHOP,
 	WAPST_BTN_GUIDE,
+	WAPST_BTN_INDEX,
 	WAPST_BTN_COLBY,
+	WAPST_BTN_DEMIGOD,
+	WAPST_BTN_RUINS,
+	WAPST_NEWS_LABEL,
+	WAPST_NEWS_OFF,
+	WAPST_NEWS_SELF,
+	WAPST_NEWS_ALL,
 };
 
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = {
@@ -265,15 +370,24 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = 
 			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_WIN_MISS),  SetMinimalSize(340, 11), SetFill(1, 0), SetStringTip(STR_EMPTY),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
 				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPST_BTN_RECONNECT), SetStringTip(STR_ARCHIPELAGO_BTN_RECONNECT), SetMinimalSize(80, 14),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPST_BTN_MISSIONS),  SetStringTip(STR_ARCHIPELAGO_BTN_MISSIONS),  SetMinimalSize(80, 14),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WAPST_BTN_MISSIONS),  SetStringTip(STR_ARCHIPELAGO_BTN_MISSIONS),  SetMinimalSize(80, 14),
 				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPST_BTN_SETTINGS),  SetStringTip(STR_ARCHIPELAGO_BTN_SETTINGS),  SetMinimalSize(80, 14),
 			EndContainer(),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPST_BTN_SHOP),      SetStringTip(STR_ARCHIPELAGO_BTN_SHOP),      SetMinimalSize(170, 14), SetFill(1, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WAPST_BTN_GUIDE),     SetStringTip(STR_ARCHIPELAGO_BTN_GUIDE),     SetMinimalSize(80, 14),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPST_BTN_SHOP),      SetStringTip(STR_ARCHIPELAGO_BTN_SHOP),      SetMinimalSize(120, 14), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WAPST_BTN_GUIDE),     SetStringTip(STR_ARCHIPELAGO_BTN_GUIDE),     SetMinimalSize(60, 14),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPST_BTN_INDEX),     SetStringTip(STR_ARCHIPELAGO_BTN_INDEX),     SetMinimalSize(60, 14),
 			EndContainer(),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPST_BTN_COLBY),     SetStringTip(STR_ARCHIPELAGO_BTN_COLBY),     SetMinimalSize(280, 14), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPST_BTN_COLBY),     SetStringTip(STR_ARCHIPELAGO_BTN_COLBY),     SetMinimalSize(80, 14), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_RED,    WAPST_BTN_DEMIGOD),   SetStringTip(STR_ARCHIPELAGO_BTN_DEMIGOD),   SetMinimalSize(80, 14), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_BROWN,  WAPST_BTN_RUINS),     SetStringTip(STR_ARCHIPELAGO_BTN_RUINS),     SetMinimalSize(80, 14), SetFill(1, 0),
+			EndContainer(),
+			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
+				NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_NEWS_LABEL), SetMinimalSize(50, 14), SetStringTip(STR_ARCHIPELAGO_NEWS_LABEL),
+				NWidget(WWT_TEXTBTN, COLOUR_GREY, WAPST_NEWS_OFF),  SetStringTip(STR_ARCHIPELAGO_NEWS_OFF),  SetMinimalSize(40, 14),
+				NWidget(WWT_TEXTBTN, COLOUR_GREY, WAPST_NEWS_SELF), SetStringTip(STR_ARCHIPELAGO_NEWS_SELF), SetMinimalSize(40, 14),
+				NWidget(WWT_TEXTBTN, COLOUR_GREY, WAPST_NEWS_ALL),  SetStringTip(STR_ARCHIPELAGO_NEWS_ALL),  SetMinimalSize(40, 14),
 			EndContainer(),
 		EndContainer(),
 	EndContainer(),
@@ -303,12 +417,45 @@ struct ArchipelagoStatusWindow : public Window {
 	static std::string GoalLine() {
 		if (_ap_client == nullptr || !_ap_client->HasSlotData()) return "No slot data";
 		const APSlotData &sd = AP_GetSlotData();
-		// brief one-liner: difficulty name
 		std::string diff_names[] = {"Casual","Easy","Normal","Medium","Hard",
 		    "Very Hard","Extreme","Insane","Nutcase","Madness","Custom"};
 		int di = (int)sd.win_difficulty;
 		std::string dn = (di >= 0 && di <= 10) ? diff_names[di] : "?";
 		return "Goal: " + dn + "  (click Guide for details)";
+	}
+
+	/** Draw one win-condition line: "Label  cur / tgt  (XX%)  [OK]" */
+	static void DrawWinLine(const Rect &r, WidgetID widget) {
+		const APSlotData &sd   = AP_GetSlotData();
+		APWinProgress     prog = AP_GetWinProgress();
+		int64_t cur = 0, tgt = 1;
+		const char *label = "";
+		switch (widget) {
+			case WAPST_WIN_CV:
+				cur = prog.company_value;   tgt = sd.win_target_company_value;   label = "Company Val"; break;
+			case WAPST_WIN_POP:
+				cur = prog.town_population; tgt = sd.win_target_town_population; label = "World Pop  "; break;
+			case WAPST_WIN_VEH:
+				cur = prog.vehicle_count;   tgt = sd.win_target_vehicle_count;   label = "Vehicles   "; break;
+			case WAPST_WIN_CARGO:
+				cur = prog.cargo_delivered; tgt = sd.win_target_cargo_delivered; label = "Cargo (t)  "; break;
+			case WAPST_WIN_PROF:
+				cur = prog.monthly_profit;  tgt = sd.win_target_monthly_profit;  label = "Mo. Profit "; break;
+			case WAPST_WIN_MISS:
+				cur = prog.missions;        tgt = sd.win_target_missions;        label = "Missions   "; break;
+			default: return;
+		}
+		bool done = (cur >= tgt);
+		int64_t pct = (tgt > 0) ? std::min<int64_t>(100LL, cur * 100LL / tgt) : 100LL;
+		TextColour col = done ? TC_LIGHT_BLUE : TC_WHITE;
+
+		std::string line = fmt::format("{}  {} / {}   ({}%){}",
+		    label,
+		    AP_FmtShort(cur),
+		    AP_FmtShort(tgt),
+		    pct,
+		    done ? "  [OK]" : "");
+		DrawString(r.left, r.right, r.top, line, col);
 	}
 
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override {
@@ -346,75 +493,6 @@ struct ArchipelagoStatusWindow : public Window {
 		}
 	}
 
-	/** Format a number with dot separators: 1234567 -> "1.234.567" */
-	static std::string FmtNum(int64_t v) {
-		if (v < 0) return "-" + FmtNum(-v);
-		std::string s = fmt::format("{}", v);
-		int ins = (int)s.size() - 3;
-		while (ins > 0) { s.insert(ins, "."); ins -= 3; }
-		return s;
-	}
-
-	/** Abbreviate large numbers: 1234567 -> "1.23M", 50000000000 -> "50B" */
-	static std::string FmtShort(int64_t v) {
-		if (v < 0) return "-" + FmtShort(-v);
-		if (v >= 1'000'000'000LL) {
-			double d = v / 1'000'000'000.0;
-			if (d >= 100.0) return fmt::format("{:.0f}B", d);
-			if (d >= 10.0)  return fmt::format("{:.1f}B", d);
-			return fmt::format("{:.2f}B", d);
-		}
-		if (v >= 1'000'000LL) {
-			double d = v / 1'000'000.0;
-			if (d >= 100.0) return fmt::format("{:.0f}M", d);
-			if (d >= 10.0)  return fmt::format("{:.1f}M", d);
-			return fmt::format("{:.2f}M", d);
-		}
-		if (v >= 1'000LL) {
-			double d = v / 1'000.0;
-			if (d >= 100.0) return fmt::format("{:.0f}k", d);
-			if (d >= 10.0)  return fmt::format("{:.1f}k", d);
-			return fmt::format("{:.2f}k", d);
-		}
-		return fmt::format("{}", v);
-	}
-
-	/** Draw one win-condition line as a single left-aligned string.
-	 *  Format:  "Label        cur / tgt   (XX%)  [OK]"
-	 *  Numbers are abbreviated (M/B/k) so everything fits on one line. */
-	static void DrawWinLine(const Rect &r, WidgetID widget) {
-		const APSlotData &sd   = AP_GetSlotData();
-		APWinProgress     prog = AP_GetWinProgress();
-		int64_t cur = 0, tgt = 1;
-		const char *label = "";
-		switch (widget) {
-			case WAPST_WIN_CV:
-				cur = prog.company_value;   tgt = sd.win_target_company_value;   label = "Company Val"; break;
-			case WAPST_WIN_POP:
-				cur = prog.town_population; tgt = sd.win_target_town_population; label = "World Pop  "; break;
-			case WAPST_WIN_VEH:
-				cur = prog.vehicle_count;   tgt = sd.win_target_vehicle_count;   label = "Vehicles   "; break;
-			case WAPST_WIN_CARGO:
-				cur = prog.cargo_delivered; tgt = sd.win_target_cargo_delivered; label = "Cargo (t)  "; break;
-			case WAPST_WIN_PROF:
-				cur = prog.monthly_profit;  tgt = sd.win_target_monthly_profit;  label = "Mo. Profit "; break;
-			case WAPST_WIN_MISS:
-				cur = prog.missions;        tgt = sd.win_target_missions;        label = "Missions   "; break;
-			default: return;
-		}
-		bool done = (cur >= tgt);
-		int64_t pct = (tgt > 0) ? std::min<int64_t>(100LL, cur * 100LL / tgt) : 100LL;
-		TextColour col = done ? TC_LIGHT_BLUE : TC_WHITE;
-
-		std::string line = fmt::format("{}  {} / {}   ({}%){}",
-		    label,
-		    FmtShort(cur),
-		    FmtShort(tgt),
-		    pct,
-		    done ? "  [OK]" : "");
-		DrawString(r.left, r.right, r.top, line, col);
-	}
-
 	void OnPaint() override {
 		bool disconnected = (_ap_client == nullptr ||
 		    _ap_client->GetState() == APState::DISCONNECTED ||
@@ -426,6 +504,18 @@ struct ArchipelagoStatusWindow : public Window {
 		 * full event UI once active). Disabled when no event is configured at all. */
 		bool colby_configured = AP_IsConnected() && AP_IsColbyConfigured();
 		this->SetWidgetDisabledState(WAPST_BTN_COLBY, !colby_configured);
+
+		/* Demigod button: enabled when system is active */
+		bool demigod_configured = AP_IsConnected() && AP_IsDemigodEnabled();
+		this->SetWidgetDisabledState(WAPST_BTN_DEMIGOD, !demigod_configured);
+
+		/* Ruins button: enabled when connected and ruins exist */
+		this->SetWidgetDisabledState(WAPST_BTN_RUINS, !AP_IsConnected());
+
+		/* Highlight active news filter button */
+		this->SetWidgetLoweredState(WAPST_NEWS_OFF,  _ap_news_filter == 0);
+		this->SetWidgetLoweredState(WAPST_NEWS_SELF, _ap_news_filter == 1);
+		this->SetWidgetLoweredState(WAPST_NEWS_ALL,  _ap_news_filter == 2);
 		this->DrawWidgets();
 	}
 
@@ -447,9 +537,21 @@ struct ArchipelagoStatusWindow : public Window {
 			case WAPST_BTN_GUIDE:
 				ShowArchipelagoGuideWindow();
 				break;
+			case WAPST_BTN_INDEX:
+				ShowArchipelagoIndexWindow();
+				break;
 			case WAPST_BTN_COLBY:
 				ShowArchipelagoColbyWindow();
 				break;
+			case WAPST_BTN_DEMIGOD:
+				ShowArchipelagoDemigodWindow();
+				break;
+			case WAPST_BTN_RUINS:
+				ShowArchipelagoRuinsTrackerWindow();
+				break;
+			case WAPST_NEWS_OFF:  _ap_news_filter = 0; this->SetDirty(); break;
+			case WAPST_NEWS_SELF: _ap_news_filter = 1; this->SetDirty(); break;
+			case WAPST_NEWS_ALL:  _ap_news_filter = 2; this->SetDirty(); break;
 		}
 	}
 };
@@ -465,6 +567,100 @@ void ShowArchipelagoStatusWindow()
 	AllocateWindowDescFront<ArchipelagoStatusWindow>(_ap_status_desc, 0);
 }
 
+/**
+ * Encode a Unicode code point as UTF-8 and append to @p out.
+ */
+static void AppendUtf8(std::string &out, char32_t c)
+{
+	if (c < 0x80) {
+		out += (char)c;
+	} else if (c < 0x800) {
+		out += (char)(0xC0 | (c >> 6));
+		out += (char)(0x80 | (c & 0x3F));
+	} else if (c < 0x10000) {
+		out += (char)(0xE0 | (c >> 12));
+		out += (char)(0x80 | ((c >> 6) & 0x3F));
+		out += (char)(0x80 | (c & 0x3F));
+	} else {
+		out += (char)(0xF0 | (c >> 18));
+		out += (char)(0x80 | ((c >> 12) & 0x3F));
+		out += (char)(0x80 | ((c >> 6) & 0x3F));
+		out += (char)(0x80 | (c & 0x3F));
+	}
+}
+
+/**
+ * Build a copy of @p text where numeric sequences (digits, commas, currency prefixes)
+ * are wrapped in SCC_PUSH_COLOUR / SCC_BLACK / SCC_POP_COLOUR so they render in black
+ * while the rest uses whatever colour DrawString is called with.
+ *
+ * This replaces the old DrawStringWithBlackNumbers which drew segments one by one.
+ * Drawing piecemeal caused cumulative 1-pixel overlap (DrawString returns the
+ * rightmost pixel, not the next free pixel), leading to garbled text.
+ */
+static std::string ColourizeNumbers(const std::string &text)
+{
+	std::string result;
+	result.reserve(text.size() + 64);
+
+	size_t i = 0;
+	while (i < text.size()) {
+		/* Find start of next numeric token. */
+		size_t num_start = std::string::npos;
+		for (size_t j = i; j < text.size(); j++) {
+			unsigned char ch = (unsigned char)text[j];
+			if (ch >= '0' && ch <= '9') { num_start = j; break; }
+			/* UTF-8 £ (0xC2 0xA3) followed by digit */
+			if (ch == 0xC2 && j + 2 < text.size() && (unsigned char)text[j+1] == 0xA3 &&
+			    (unsigned char)text[j+2] >= '0' && (unsigned char)text[j+2] <= '9') {
+				num_start = j; break;
+			}
+			/* $ followed by digit */
+			if (ch == '$' && j + 1 < text.size() &&
+			    (unsigned char)text[j+1] >= '0' && (unsigned char)text[j+1] <= '9') {
+				num_start = j; break;
+			}
+		}
+
+		if (num_start == std::string::npos) {
+			result.append(text, i, text.size() - i);
+			break;
+		}
+
+		/* Copy text before the number verbatim. */
+		result.append(text, i, num_start - i);
+
+		/* Find end of numeric token. */
+		size_t num_end = num_start;
+		if ((unsigned char)text[num_end] == 0xC2 && num_end + 1 < text.size() && (unsigned char)text[num_end+1] == 0xA3) {
+			num_end += 2;
+		} else if (text[num_end] == '$') {
+			num_end += 1;
+		}
+		while (num_end < text.size()) {
+			unsigned char ch = (unsigned char)text[num_end];
+			if (ch >= '0' && ch <= '9') { num_end++; continue; }
+			if ((ch == ',' || ch == '.') && num_end + 1 < text.size() &&
+			    (unsigned char)text[num_end+1] >= '0' && (unsigned char)text[num_end+1] <= '9') {
+				num_end++; continue;
+			}
+			break;
+		}
+
+		/* Wrap the number in inline colour codes:
+		 * PUSH_COLOUR saves the current text colour,
+		 * BLACK switches to black for the number,
+		 * POP_COLOUR restores the original. */
+		AppendUtf8(result, SCC_PUSH_COLOUR);
+		AppendUtf8(result, SCC_BLACK);
+		result.append(text, num_start, num_end - num_start);
+		AppendUtf8(result, SCC_POP_COLOUR);
+
+		i = num_end;
+	}
+	return result;
+}
+
 /* =========================================================================
  * MISSIONS WINDOW (Bug F fix)
  *
@@ -474,6 +670,7 @@ void ShowArchipelagoStatusWindow()
 
 enum APMissionsWidgets : WidgetID {
 	WAPM_CAPTION,
+	WAPM_FILTER_PANEL,
 	WAPM_FILTER_ALL,
 	WAPM_FILTER_EASY,
 	WAPM_FILTER_MEDIUM,
@@ -536,7 +733,7 @@ static std::string AP_FormatMoneyCompact(int64_t amount)
 struct ArchipelagoMissionsWindow : public Window {
 	int           row_height    = 0;      /* computed in constructor from font height */
 	int           max_line_px   = 0;      /* width in pixels of the longest line */
-	std::string   filter        = "all";  /* "all","easy","medium","hard","extreme" */
+	std::string   filter        = "all";  /* "all","easy","medium","hard","extreme","tasks" */
 	bool          show_tasks    = false;  /* true = Tasks tab, false = Missions tab */
 	std::vector<const APMission *> visible_missions;
 	std::vector<APTask> cached_tasks;     /* snapshot for task tab rendering */
@@ -614,9 +811,15 @@ struct ArchipelagoMissionsWindow : public Window {
 
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override {
 		/* Always rebuild — manager calls SetWindowClassesDirty every 250 ms
-		 * so this fires continuously for real-time mission progress display. */
-		if (_ap_status_dirty.exchange(false)) RebuildVisibleList();
-		else this->SetDirty(); /* redraw current values without full rebuild */
+		 * so this fires continuously for real-time mission progress display.
+		 * Tasks tab: ALWAYS rebuild so live t.current_value is reflected. */
+		if (_ap_status_dirty.exchange(false) || show_tasks) RebuildVisibleList();
+		else this->SetDirty();
+	}
+
+	void OnInvalidateData([[maybe_unused]] int data = 0, [[maybe_unused]] bool gui_scope = true) override {
+		if (!gui_scope) return;
+		RebuildVisibleList();
 	}
 
 	void SetFilterButton(const std::string &f) {
@@ -629,14 +832,12 @@ struct ArchipelagoMissionsWindow : public Window {
 		this->SetWidgetLoweredState(WAPM_FILTER_HARD,    f == "hard");
 		this->SetWidgetLoweredState(WAPM_FILTER_EXTREME, f == "extreme");
 		this->SetWidgetLoweredState(WAPM_FILTER_TASKS,   f == "tasks");
-		/* Reset scrollbar to top so stale position can't fire wrong links */
+		/* Reset scrollbar to top */
 		if (this->scrollbar) this->scrollbar->SetPosition(0);
 		if (show_tasks) {
-			/* Clear mission list so stale visible_missions can never be used */
 			visible_missions.clear();
 			RebuildTaskList();
 		} else {
-			/* Clear task cache so stale cached_tasks can never be used */
 			cached_tasks.clear();
 			RebuildVisibleList();
 		}
@@ -656,18 +857,13 @@ struct ArchipelagoMissionsWindow : public Window {
 				const Rect &r = this->GetWidget<NWidgetBase>(WAPM_LIST)->GetCurrentRect();
 
 				if (show_tasks) {
-					/* Tasks: 4 rows per task. Row 0 = header — never navigate from there.
-					 * C++ divides (-1)/4 = 0 (truncates toward zero), so we must explicitly
-					 * guard abs_row <= 0 before computing task_idx to avoid the header row
-					 * accidentally mapping to task[0]. */
+					/* Tasks: 4 rows per task. Row 0 = header — never navigate. */
 					int abs_row = this->scrollbar->GetPosition() + (pt.y - r.top - 2) / rh;
-					if (abs_row <= 0) break;  /* header row or above visible area */
+					if (abs_row <= 0) break;
 					int task_idx = (abs_row - 1) / 4;
 					int sub_row  = (abs_row - 1) % 4;
 					if (task_idx < 0 || task_idx >= (int)cached_tasks.size()) break;
-					/* Only rows 0 and 1 (action line + location line) are clickable.
-					 * Rows 2 (stats) and 3 (separator) are not. */
-					if (sub_row >= 2) break;
+					if (sub_row >= 2) break; /* only action + location rows clickable */
 					const APTask &t = cached_tasks[task_idx];
 					if (t.entity_tile != UINT32_MAX) {
 						ScrollMainWindowToTile(TileIndex{t.entity_tile});
@@ -696,15 +892,12 @@ struct ArchipelagoMissionsWindow : public Window {
 			/* ── Tasks tab — multi-line card layout ──
 			 * Layout per task (3 content lines; separator between tasks):
 			 *   Line A: [STATUS] DIFFICULTY  Action description
-			 *   Line B:    → Entity / location name  (TC_WHITE entity)
+			 *   Line B:    → Entity / location name
 			 *   Line C:      Progress  •  Deadline  •  Reward
-			 * Between tasks: 1 separator row.
-			 * Row order: header(1) + task0(3) + sep(1)+task1(3) + sep(1)+task2(3) ...
-			 */
+			 * Row order: header(1) + task0(3) + sep(1)+task1(3) + ... */
 			int first_row = this->scrollbar->GetPosition();
 			int row_idx   = 0;
 
-			/* Helper: y-coordinate for current row; -1 = out of view */
 			auto row_y = [&]() -> int {
 				int screen_row = row_idx - first_row;
 				if (screen_row < 0) return -1;
@@ -720,7 +913,7 @@ struct ArchipelagoMissionsWindow : public Window {
 					int total  = AP_GetTotalMissionsCompleted();
 					int checks = AP_GetTaskChecksCompleted();
 					std::string hdr = fmt::format("Task Mission Checks: {} (Total shop counter: {})", checks, total);
-					DrawString(r.left + 4 + x_off, r.right + max_line_px, y, hdr, TC_GOLD);
+					DrawString(r.left + 4 + x_off, r.right, y, hdr, TC_GOLD);
 				}
 				advance();
 			}
@@ -741,7 +934,7 @@ struct ArchipelagoMissionsWindow : public Window {
 				if (i > 0) {
 					int y = row_y();
 					if (y >= 0) {
-						GfxFillRect(r.left + 4, r.right - 4, y + rh / 2, y + rh / 2 + 1, PC_DARK_GREY);
+						GfxFillRect(r.left + 4, y + rh / 2, r.right - 4, y + rh / 2 + 1, PC_DARK_GREY);
 					}
 					advance();
 				}
@@ -762,19 +955,17 @@ struct ArchipelagoMissionsWindow : public Window {
 
 						/* Action = description up to " from " or " to " */
 						std::string action = t.description;
-						/* Strip "[Reward..." suffix first */
 						for (const char *tag : {" [Reward", " [REWARD"}) {
 							size_t p = action.find(tag);
 							if (p != std::string::npos) { action = action.substr(0, p); break; }
 						}
-						/* Strip entity suffix */
 						for (const char *sep : {" from ", " to "}) {
 							size_t p = action.find(sep);
 							if (p != std::string::npos) { action = action.substr(0, p); break; }
 						}
 
 						std::string line_a = badge + diff_tag + "  " + action;
-						DrawString(r.left + 4 + x_off, r.right + max_line_px, y, line_a, tc, SA_LEFT | SA_FORCE);
+						DrawString(r.left + 4 + x_off, r.right, y, line_a, tc, SA_LEFT | SA_FORCE);
 					}
 					advance();
 				}
@@ -783,7 +974,6 @@ struct ArchipelagoMissionsWindow : public Window {
 				{
 					int y = row_y();
 					if (y >= 0) {
-						/* Find the part of description after " from " or " to " */
 						std::string remainder;
 						const char *used_sep = nullptr;
 						for (const char *sep : {" from ", " to "}) {
@@ -791,7 +981,6 @@ struct ArchipelagoMissionsWindow : public Window {
 							if (p != std::string::npos) {
 								remainder = t.description.substr(p + strlen(sep));
 								used_sep  = sep;
-								/* Strip any trailing "[Reward..." */
 								for (const char *tag : {" [Reward", " [REWARD"}) {
 									size_t rp = remainder.find(tag);
 									if (rp != std::string::npos) { remainder = remainder.substr(0, rp); break; }
@@ -804,19 +993,22 @@ struct ArchipelagoMissionsWindow : public Window {
 						                       ? "    \xe2\x86\x92 from " : "    \xe2\x86\x92 to ";
 
 						if (!remainder.empty() && !t.entity_name.empty()) {
-							/* Draw prefix, then entity in TC_WHITE, then rest (e.g. "near X") */
-							int x2 = DrawString(r.left + 4 + x_off, r.right + max_line_px, y, prefix_str, tc, SA_LEFT | SA_FORCE);
+							/* Chain safely: DrawString returns 0 when clipped (overlapping windows). */
+							int base_x = r.left + 4 + x_off;
+							int ret2 = DrawString(base_x, r.right, y, prefix_str, tc, SA_LEFT | SA_FORCE);
+							int x2 = (ret2 > 0) ? ret2 + 1 : base_x;
 							size_t en_pos = remainder.find(t.entity_name);
 							if (en_pos == 0) {
-								int x3 = DrawString(x2, r.right + max_line_px, y, t.entity_name, TC_WHITE, SA_LEFT | SA_FORCE);
+								int ret3 = DrawString(x2, r.right, y, t.entity_name, TC_WHITE, SA_LEFT | SA_FORCE);
+								int x3 = (ret3 > 0) ? ret3 + 1 : x2;
 								std::string tail = remainder.substr(t.entity_name.size());
-								if (!tail.empty()) DrawString(x3, r.right + max_line_px, y, tail, tc, SA_LEFT | SA_FORCE);
+								if (!tail.empty()) DrawString(x3, r.right, y, tail, tc, SA_LEFT | SA_FORCE);
 							} else {
-								DrawString(x2, r.right + max_line_px, y, remainder, TC_WHITE, SA_LEFT | SA_FORCE);
+								DrawString(x2, r.right, y, remainder, TC_WHITE, SA_LEFT | SA_FORCE);
 							}
 						} else {
 							std::string fallback = prefix_str + (t.entity_name.empty() ? "(any)" : t.entity_name);
-							DrawString(r.left + 4 + x_off, r.right + max_line_px, y, fallback, tc, SA_LEFT | SA_FORCE);
+							DrawString(r.left + 4 + x_off, r.right, y, fallback, tc, SA_LEFT | SA_FORCE);
 						}
 					}
 					advance();
@@ -834,17 +1026,16 @@ struct ArchipelagoMissionsWindow : public Window {
 						} else {
 							int64_t pct = (t.amount > 0)
 							    ? std::min<int64_t>(100LL, t.current_value * 100LL / t.amount) : 0;
-							/* Unit suffix: passengers have no unit, freight shows "t" */
 							std::string unit_str;
 							if (IsValidCargoType((CargoType)t.cargo)) {
 								const CargoSpec *cs = CargoSpec::Get((CargoType)t.cargo);
 								if (cs && cs->classes.Test(CargoClass::Passengers)) {
-									unit_str = ""; /* passengers: no unit suffix */
+									unit_str = "";
 								} else {
-									unit_str = " t"; /* freight */
+									unit_str = " t";
 								}
 							}
-							line_c += fmt::format("{} / {}{}  ({}%)", t.current_value, t.amount, unit_str, pct);
+							line_c += AP_FmtNum(t.current_value) + " / " + AP_FmtNum(t.amount) + unit_str + "  (" + fmt::format("{}%", pct) + ")";
 							line_c += fmt::format("   -   By {}", t.deadline_year);
 							if (t.reward_type == APTaskRewardType::MISSION_CHECK) {
 								line_c += "   -   +[Mission Check]";
@@ -852,7 +1043,7 @@ struct ArchipelagoMissionsWindow : public Window {
 								line_c += fmt::format("   -   +{}", AP_FormatMoneyCompact(t.reward_cash));
 							}
 						}
-						DrawString(r.left + 4 + x_off, r.right + max_line_px, y, line_c, TC_GREY, SA_LEFT | SA_FORCE);
+						DrawString(r.left + 4 + x_off, r.right, y, line_c, TC_GREY, SA_LEFT | SA_FORCE);
 					}
 					advance();
 				}
@@ -861,12 +1052,6 @@ struct ArchipelagoMissionsWindow : public Window {
 		}
 
 		/* ── Missions tab (original logic) ── */
-		{
-		/* Recompute row height at draw time — GetCharacterHeight returns the
-		 * correct scaled value for the current UI zoom level.  Using the cached
-		 * constructor value causes rows to overlap at UI scale >=2. */
-		int rh = GetCharacterHeight(FS_NORMAL) + 3;
-
 		int y = r.top + 2;
 		int first = this->scrollbar->GetPosition();
 		int last  = first + (r.Height() / rh) + 1;
@@ -927,18 +1112,16 @@ struct ArchipelagoMissionsWindow : public Window {
 				}
 			}
 
-			/* Build progress string for incomplete missions.
-			 * Always show for all incomplete missions so players see the tracker is live.
-			 * Format: " [Status: X]" — target is already in the mission text. */
-			bool is_named    = (m->type == "passengers_to_town" || m->type == "mail_to_town" ||
-			                    m->type == "cargo_from_industry" || m->type == "cargo_to_industry");
+			/* Build progress string for ALL incomplete missions.
+			 * Always show status so the player knows the tracker is live.
+			 * Format: " [Status: X]" — target is already in the mission description text. */
 			bool is_maintain = (m->type == "maintain_75" ||
 			                    m->type.find("maintain") != std::string::npos);
 			std::string progress_str;
 			if (!m->completed && m->amount > 0) {
 				if (is_maintain) {
 					/* Keep months format — target is meaningful here */
-					progress_str = fmt::format("  ({}/{} months)", m->current_value, m->amount);
+					progress_str = "  (" + AP_FmtNum(m->current_value) + "/" + AP_FmtNum(m->amount) + " months)";
 				} else {
 					bool is_money = (m->unit == "\xC2\xA3" || m->unit == "\xC2\xA3/month" ||
 					                 m->unit == "£" || m->unit == "£/month" ||
@@ -949,13 +1132,7 @@ struct ArchipelagoMissionsWindow : public Window {
 						progress_str = fmt::format("  [Status: {}]",
 						    AP_FormatMoneyCompact(display_val));
 					} else {
-						auto fmt_num = [](int64_t v) -> std::string {
-							if (v < 0) v = 0;
-							if (v >= 1000000) return fmt::format("{:.1f}M", v / 1000000.0);
-							if (v >= 1000)    return fmt::format("{}k", v / 1000);
-							return fmt::format("{}", v);
-						};
-						progress_str = fmt::format("  [Status: {}]", fmt_num(m->current_value));
+						progress_str = "  [Status: " + AP_FmtShort(std::max<int64_t>(0, m->current_value)) + "]";
 					}
 				}
 			}
@@ -984,37 +1161,51 @@ struct ArchipelagoMissionsWindow : public Window {
 			if (m->named_entity.tile != UINT32_MAX) {
 				nav_hint = " \xe2\x86\x91"; /* ↑ unicode arrow — visual cue to scroll map */
 			}
-			std::string line = prefix + cap_diff + mission_num + " - " + desc + progress_str + nav_hint;
+			/* Assemble the main line WITHOUT the status/progress suffix —
+			 * we draw that separately in TC_BLACK for readability. */
+			std::string main_line = prefix + cap_diff + mission_num + " \xe2\x80\x93 " + desc + nav_hint;
 
 			int x_off = this->hscrollbar ? -this->hscrollbar->GetPosition() : 0;
 			int x = r.left + 4 + x_off;
-			int right_edge = r.right + max_line_px;
+			int right_edge = r.right;
 
-			/* Named missions: draw the entity name (town/industry) in TC_WHITE so
-			 * players know it is a clickable map link, distinct from the green text. */
-			if (is_named && !m->named_entity.name.empty() && !m->completed) {
+			/* Check if this is a named-destination mission with a clickable entity */
+			bool has_entity_link = (m->named_entity.tile != UINT32_MAX &&
+			                        !m->named_entity.name.empty() && !m->completed);
+
+			/* Helper: chain DrawString calls safely.
+			 * DrawString returns the rightmost pixel drawn (left + w - 1),
+			 * so we add +1 for the next segment.  BUT it returns 0 when
+			 * the draw region is clipped (overlapping windows, partial redraws).
+			 * In that case, keep using the previous x to avoid jumping to pixel 0. */
+			auto ChainDraw = [](int prev_x, int ret) -> int {
+				return (ret > 0) ? ret + 1 : prev_x;
+			};
+
+			if (has_entity_link) {
 				const std::string &ename = m->named_entity.name;
-				const std::string full_line = line;
-				size_t name_pos = full_line.find(ename);
+				size_t name_pos = main_line.find(ename);
 				if (name_pos != std::string::npos) {
-					std::string before = full_line.substr(0, name_pos);
-					std::string after  = full_line.substr(name_pos + ename.size());
-					/* Draw prefix segment */
-					int x2 = DrawString(x, right_edge, y, before, tc, SA_LEFT | SA_FORCE);
-					/* Draw entity name in white */
-					int x3 = DrawString(x2, right_edge, y, ename, TC_WHITE, SA_LEFT | SA_FORCE);
-					/* Draw remainder in normal mission color */
-					DrawString(x3, right_edge, y, after, tc, SA_LEFT | SA_FORCE);
+					std::string before = main_line.substr(0, name_pos);
+					std::string after  = main_line.substr(name_pos + ename.size());
+					int x2 = ChainDraw(x, DrawString(x, right_edge, y, ColourizeNumbers(before), tc, SA_LEFT | SA_FORCE));
+					int x3 = ChainDraw(x2, DrawString(x2, right_edge, y, ename, TC_WHITE, SA_LEFT | SA_FORCE));
+					x = ChainDraw(x3, DrawString(x3, right_edge, y, ColourizeNumbers(after), tc, SA_LEFT | SA_FORCE));
 				} else {
-					DrawString(x, right_edge, y, line, tc, SA_LEFT | SA_FORCE);
+					x = ChainDraw(x, DrawString(x, right_edge, y, ColourizeNumbers(main_line), tc, SA_LEFT | SA_FORCE));
 				}
 			} else {
-				DrawString(x, right_edge, y, line, tc, SA_LEFT | SA_FORCE);
+				x = ChainDraw(x, DrawString(x, right_edge, y, ColourizeNumbers(main_line), tc, SA_LEFT | SA_FORCE));
 			}
+
+			/* Draw progress/status in TC_BLACK for readability */
+			if (!progress_str.empty()) {
+				DrawString(x, right_edge, y, ColourizeNumbers(progress_str), TC_BLACK, SA_LEFT | SA_FORCE);
+			}
+
 			y += rh;
 			if (y > r.bottom) break;
 		}
-		} /* end missions block */
 	}
 
 	void OnScrollbarScroll([[maybe_unused]] WidgetID widget) override {
@@ -1224,7 +1415,7 @@ struct ArchipelagoShopWindow : public Window {
 				    i + 1, e.label, AP_FormatMoneyCompact(e.price));
 			}
 			int x_off = this->hscrollbar ? -this->hscrollbar->GetPosition() : 0;
-			DrawString(r.left + 4 + x_off, r.right + max_line_px, y, line, tc, SA_LEFT | SA_FORCE);
+			DrawString(r.left + 4 + x_off, r.right, y, line, tc, SA_LEFT | SA_FORCE);
 			y += row_height;
 		}
 	}
@@ -1497,10 +1688,8 @@ struct ArchipelagoGuideWindow : Window {
 		_L("                 if no vehicle visits for a month.");
 		_L("");
 		_H("--- Performance Tips ---");
-		_L("Fast forward starts locked at 100% (normal speed).");
-		_L("Each Speed Boost item you receive adds +10%,");
-		_L("up to a max of 300%. Unlock FF by finding");
-		_L("Speed Boosts in missions or shops.");
+		_L("Fast forward is capped at 2500% — this keeps");
+		_L("the AP connection stable.");
 		_L("Large maps with many trains can slow the game.");
 		_L("128x128 to 256x256 is ideal for AP games.");
 	}
@@ -1567,6 +1756,459 @@ static WindowDesc _ap_guide_desc(
 void ShowArchipelagoGuideWindow()
 {
 	AllocateWindowDescFront<ArchipelagoGuideWindow>(_ap_guide_desc, 0);
+}
+
+/* =========================================================================
+ * RUINS TRACKER WINDOW
+ * Shows all AP ruins (active + completed) with cargo progress and
+ * click-to-scroll-to-tile.
+ * ========================================================================= */
+
+enum ArchipelagoRuinsTrackerWidgets : WidgetID {
+	WAPRT_CAPTION,
+	WAPRT_PANEL,
+	WAPRT_SCROLLBAR,
+};
+
+static constexpr std::initializer_list<NWidgetPart> _nested_ap_ruins_tracker_widgets = {
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
+		NWidget(WWT_CAPTION, COLOUR_BROWN, WAPRT_CAPTION), SetStringTip(STR_ARCHIPELAGO_RUINS_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	EndContainer(),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_BROWN, WAPRT_PANEL), SetMinimalSize(380, 300), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPRT_SCROLLBAR), EndContainer(),
+		NWidget(NWID_VSCROLLBAR, COLOUR_BROWN, WAPRT_SCROLLBAR),
+	EndContainer(),
+	NWidget(WWT_RESIZEBOX, COLOUR_BROWN),
+};
+
+struct ArchipelagoRuinsTrackerWindow : Window {
+	std::vector<APRuinView> ruins;
+	Scrollbar *vscroll = nullptr;
+	int refresh_timer = 0;
+
+	/** Height of a single ruin entry: name + cargo lines + spacing. */
+	int _EntryH() const {
+		int line_h = GetCharacterHeight(FS_NORMAL) + 2;
+		/* Name line + up to 4 cargo lines + 1 blank separator = max 6 lines. */
+		/* We compute dynamically per-entry in DrawWidget, but for scroll we use max. */
+		return line_h * 6;
+	}
+
+	ArchipelagoRuinsTrackerWindow(WindowDesc &desc, WindowNumber wn) : Window(desc)
+	{
+		this->InitNested(wn);
+		this->vscroll = this->GetScrollbar(WAPRT_SCROLLBAR);
+		this->_RebuildList();
+	}
+
+	void _RebuildList()
+	{
+		this->ruins = AP_GetAllRuinViews();
+
+		/* Sort: incomplete first (by id), then completed (by id). */
+		std::sort(this->ruins.begin(), this->ruins.end(), [](const APRuinView &a, const APRuinView &b) {
+			if (a.completed != b.completed) return !a.completed;
+			return a.id < b.id;
+		});
+
+		if (this->vscroll) {
+			this->vscroll->SetCount((int)this->ruins.size());
+			const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPRT_PANEL);
+			int visible = (panel ? panel->current_y : 300) / _EntryH();
+			this->vscroll->SetCapacity(std::max(1, visible));
+		}
+	}
+
+	void OnPaint() override { this->DrawWidgets(); }
+
+	void DrawWidget(const Rect &r, WidgetID widget) const override
+	{
+		if (widget != WAPRT_PANEL) return;
+
+		int line_h = GetCharacterHeight(FS_NORMAL) + 2;
+		int entry_h = _EntryH();
+		int y = r.top + 3;
+		int max_y = r.bottom - 2;
+		int xl = r.left + 6;
+		int xr = r.right - 6;
+
+		int start = this->vscroll ? this->vscroll->GetPosition() : 0;
+		int visible = (r.bottom - r.top) / entry_h + 2;
+
+		if (this->ruins.empty()) {
+			DrawString(xl, xr, y, "No ruins discovered yet.", TC_GREY);
+			return;
+		}
+
+		for (int i = start; i < (int)this->ruins.size() && i < start + visible; i++) {
+			if (y > max_y) break;
+			const auto &rv = this->ruins[i];
+
+			/* ── Header line: [status icon] Ruin name — Town ── */
+			TextColour name_col = rv.completed ? TC_GREEN : TC_ORANGE;
+			std::string status_icon = rv.completed ? "\xE2\x9C\x93 " : "\xE2\x97\x8F "; /* ✓ or ● */
+			std::string header = status_icon + rv.location_name;
+			if (!rv.town_name.empty()) {
+				header += " — " + rv.town_name;
+			}
+			if (rv.completed) header += "  [CLEARED]";
+			DrawString(xl, xr, y, header, name_col);
+			y += line_h;
+
+			/* ── Cargo progress lines ── */
+			for (const auto &c : rv.cargo) {
+				std::string cargo_line = "    " + c.name + ": ";
+				cargo_line += fmt::format("{}/{}", c.delivered, c.required);
+
+				TextColour cargo_col;
+				if (c.delivered >= c.required) {
+					cargo_col = TC_GREEN;
+					cargo_line += "  \xE2\x9C\x93"; /* ✓ */
+				} else if (c.delivered > 0) {
+					cargo_col = TC_YELLOW;
+				} else {
+					cargo_col = TC_WHITE;
+				}
+
+				/* Draw a simple progress bar after the text */
+				DrawString(xl, xr, y, cargo_line, cargo_col);
+				y += line_h;
+			}
+
+			/* Blank separator */
+			y += line_h;
+		}
+	}
+
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override
+	{
+		if (widget != WAPRT_PANEL) return;
+
+		const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPRT_PANEL);
+		int entry_h = _EntryH();
+		int start = this->vscroll ? this->vscroll->GetPosition() : 0;
+		int rel_y = pt.y - panel->pos_y - 3;
+		int idx = start + rel_y / entry_h;
+
+		if (idx < 0 || idx >= (int)this->ruins.size()) return;
+
+		const auto &rv = this->ruins[idx];
+		if (rv.tile != UINT32_MAX) {
+			ScrollMainWindowToTile(TileIndex{rv.tile});
+		}
+	}
+
+	void OnGameTick() override
+	{
+		/* Refresh every ~2 seconds (74 ticks). */
+		if (++this->refresh_timer >= 74) {
+			this->refresh_timer = 0;
+			this->_RebuildList();
+			this->SetDirty();
+		}
+	}
+
+	void OnResize() override
+	{
+		if (this->vscroll) {
+			const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPRT_PANEL);
+			int visible = (panel ? panel->current_y : 300) / _EntryH();
+			this->vscroll->SetCapacity(std::max(1, visible));
+		}
+	}
+
+	void OnScrollbarScroll([[maybe_unused]] WidgetID widget) override { this->SetDirty(); }
+};
+
+static WindowDesc _ap_ruins_desc(
+	WDP_AUTO, {"ap_ruins_tracker"}, 400, 350,
+	WC_ARCHIPELAGO_RUINS_TRACKER, WC_NONE, {},
+	_nested_ap_ruins_tracker_widgets
+);
+
+void ShowArchipelagoRuinsTrackerWindow()
+{
+	AllocateWindowDescFront<ArchipelagoRuinsTrackerWindow>(_ap_ruins_desc, 0);
+}
+
+
+/* =========================================================================
+ * VEHICLE INDEX WINDOW
+ * Categorised vehicle encyclopedia with live stats from the Engine pool.
+ * ========================================================================= */
+
+#include "engine_base.h"
+#include "cargotype.h"
+#include "settings_type.h"
+#include "rail_type.h"
+
+/** Format a Money value as a currency string for the index window. */
+static std::string _APIdxMoney(Money v) { return GetString(STR_JUST_CURRENCY_LONG, v); }
+
+enum APIndexWidgets : WidgetID {
+	WAPIX_CAPTION,
+	WAPIX_TAB_TRAINS,
+	WAPIX_TAB_ROAD,
+	WAPIX_TAB_AIRCRAFT,
+	WAPIX_TAB_SHIPS,
+	WAPIX_TAB_WAGONS,
+	WAPIX_PANEL,
+	WAPIX_SCROLLBAR,
+};
+
+static constexpr std::initializer_list<NWidgetPart> _nested_ap_index_widgets = {
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_DARK_BLUE),
+		NWidget(WWT_CAPTION, COLOUR_DARK_BLUE, WAPIX_CAPTION), SetStringTip(STR_ARCHIPELAGO_INDEX_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	EndContainer(),
+	/* Tab buttons */
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_TRAINS),   SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_TRAINS),   SetMinimalSize(80, 16), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_ROAD),     SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_ROAD),     SetMinimalSize(100, 16), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_AIRCRAFT),  SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_AIRCRAFT), SetMinimalSize(80, 16), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_SHIPS),    SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_SHIPS),    SetMinimalSize(60, 16), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_WAGONS),   SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_WAGONS),   SetMinimalSize(80, 16), SetFill(1, 0),
+	EndContainer(),
+	/* Content panel + scrollbar */
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_DARK_BLUE, WAPIX_PANEL), SetMinimalSize(460, 360), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPIX_SCROLLBAR), EndContainer(),
+		NWidget(NWID_VSCROLLBAR, COLOUR_DARK_BLUE, WAPIX_SCROLLBAR),
+	EndContainer(),
+	NWidget(WWT_RESIZEBOX, COLOUR_DARK_BLUE),
+};
+
+struct IndexEntry {
+	EngineID    engine_id;
+	std::string name;
+	uint        speed;       ///< Display max speed
+	Money       cost;        ///< Purchase cost
+	Money       running;     ///< Annual running cost
+	uint        capacity;    ///< Primary cargo capacity
+	uint16_t    mail_cap;    ///< Mail capacity (aircraft)
+	CargoType   cargo;       ///< Default cargo type
+	std::string cargo_name;
+	std::string refit_text;  ///< Comma-separated refit list
+	std::string extra;       ///< Type-specific line (power/weight/railtype or subtype)
+	bool        unlocked;
+};
+
+struct ArchipelagoIndexWindow : Window {
+	int active_tab = 0;  ///< 0=trains 1=road 2=aircraft 3=ships 4=wagons
+	std::vector<IndexEntry> entries;
+	Scrollbar *vscroll = nullptr;
+
+	static constexpr int LINES_PER_ENTRY = 4;
+
+	ArchipelagoIndexWindow(WindowDesc &desc, WindowNumber wn) : Window(desc)
+	{
+		this->InitNested(wn);
+		this->vscroll = this->GetScrollbar(WAPIX_SCROLLBAR);
+		this->_BuildEntries();
+	}
+
+	int _LineH() const { return GetCharacterHeight(FS_NORMAL) + 2; }
+	int _EntryH() const { return _LineH() * LINES_PER_ENTRY + 4; }
+
+	void _BuildEntries()
+	{
+		entries.clear();
+		VehicleType vt;
+		bool wagons_only = false;
+		switch (active_tab) {
+			case 0: vt = VEH_TRAIN;    break;
+			case 1: vt = VEH_ROAD;     break;
+			case 2: vt = VEH_AIRCRAFT;  break;
+			case 3: vt = VEH_SHIP;     break;
+			case 4: vt = VEH_TRAIN; wagons_only = true; break;
+			default: vt = VEH_TRAIN;    break;
+		}
+
+		for (const Engine *e : Engine::Iterate()) {
+			if (e->type != vt) continue;
+
+			/* Climate filter */
+			if (!e->info.climates.Test(_settings_game.game_creation.landscape)) continue;
+
+			/* Wagon vs engine filter for trains */
+			if (vt == VEH_TRAIN) {
+				const auto &ri = e->VehInfo<RailVehicleInfo>();
+				bool is_wagon = (ri.railveh_type == RAILVEH_WAGON);
+				if (wagons_only && !is_wagon) continue;
+				if (!wagons_only && is_wagon) continue;
+			}
+
+			IndexEntry ie;
+			ie.engine_id = e->index;
+			ie.name = GetString(STR_ENGINE_NAME, PackEngineNameDParam(e->index, EngineNameContext::PurchaseList));
+			ie.speed = e->GetDisplayMaxSpeed();
+			ie.cost = e->GetCost();
+			ie.running = e->GetRunningCost();
+			ie.mail_cap = 0;
+			ie.capacity = e->GetDisplayDefaultCapacity(&ie.mail_cap);
+			ie.cargo = e->GetDefaultCargoType();
+			ie.unlocked = AP_IsEngineUnlocked(e->index.base());
+
+			/* Cargo name */
+			if (IsValidCargoType(ie.cargo)) {
+				const CargoSpec *cs = CargoSpec::Get(ie.cargo);
+				if (cs != nullptr) ie.cargo_name = GetString(cs->name);
+			}
+			if (ie.cargo_name.empty()) ie.cargo_name = (ie.capacity > 0) ? "Various" : "None (engine)";
+
+			/* Refit list */
+			ie.refit_text.clear();
+			int refit_count = 0;
+			for (CargoType ct = 0; ct < NUM_CARGO; ct++) {
+				if (!HasBit(e->info.refit_mask, ct)) continue;
+				if (!IsValidCargoType(ct)) continue;
+				const CargoSpec *cs = CargoSpec::Get(ct);
+				if (cs == nullptr) continue;
+				if (!ie.refit_text.empty()) ie.refit_text += ", ";
+				ie.refit_text += GetString(cs->name);
+				refit_count++;
+				if (refit_count >= 8) { ie.refit_text += ", ..."; break; }
+			}
+			if (ie.refit_text.empty()) ie.refit_text = "None";
+
+			/* Type-specific extra info */
+			if (vt == VEH_TRAIN) {
+				const char *rail_names[] = {"Normal Rail", "Electric Rail", "Monorail", "Maglev"};
+				const char *class_names[] = {"Steam", "Diesel", "Electric", "Monorail", "Maglev"};
+				const auto &ri = e->VehInfo<RailVehicleInfo>();
+				/* Find the primary railtype */
+				int rt = 0;
+				if (ri.intended_railtypes.Test(RAILTYPE_MAGLEV))        rt = 3;
+				else if (ri.intended_railtypes.Test(RAILTYPE_MONO))     rt = 2;
+				else if (ri.intended_railtypes.Test(RAILTYPE_ELECTRIC)) rt = 1;
+				else                                                     rt = 0;
+				if (wagons_only) {
+					ie.extra = fmt::format("Type: Wagon | Rail: {}",
+						(rt >= 0 && rt <= 3) ? rail_names[rt] : "Unknown");
+				} else {
+					int ec = (int)ri.engclass;
+					ie.extra = fmt::format("Power: {} hp | Weight: {}t | {} | {}",
+						e->GetPower(), e->GetDisplayWeight(),
+						(ec >= 0 && ec <= 4) ? class_names[ec] : "Unknown",
+						(rt >= 0 && rt <= 3) ? rail_names[rt] : "Unknown");
+				}
+			} else if (vt == VEH_AIRCRAFT) {
+				const auto &ai = e->VehInfo<AircraftVehicleInfo>();
+				bool is_heli = (ai.subtype & AIR_CTOL) == 0;
+				ie.extra = fmt::format("Type: {} | Range: {}",
+					is_heli ? "Helicopter" : "Aeroplane",
+					e->GetRange() > 0 ? fmt::format("{} tiles", e->GetRange()) : "Unlimited");
+				if (ie.mail_cap > 0) {
+					ie.extra += fmt::format(" | Mail: {}", ie.mail_cap);
+				}
+			} else if (vt == VEH_SHIP) {
+				ie.extra = fmt::format("Type: Ship");
+			} else if (vt == VEH_ROAD) {
+				ie.extra = fmt::format("Type: Road Vehicle");
+			}
+
+			entries.push_back(std::move(ie));
+		}
+
+		/* Sort alphabetically by name */
+		std::sort(entries.begin(), entries.end(), [](const IndexEntry &a, const IndexEntry &b) {
+			return a.name < b.name;
+		});
+
+		if (vscroll) {
+			const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPIX_PANEL);
+			int visible = (panel ? (int)panel->current_y : 360) / _EntryH();
+			vscroll->SetCount((int)entries.size());
+			vscroll->SetCapacity(std::max(1, visible));
+		}
+	}
+
+	void OnPaint() override
+	{
+		this->SetWidgetLoweredState(WAPIX_TAB_TRAINS,   active_tab == 0);
+		this->SetWidgetLoweredState(WAPIX_TAB_ROAD,     active_tab == 1);
+		this->SetWidgetLoweredState(WAPIX_TAB_AIRCRAFT,  active_tab == 2);
+		this->SetWidgetLoweredState(WAPIX_TAB_SHIPS,    active_tab == 3);
+		this->SetWidgetLoweredState(WAPIX_TAB_WAGONS,   active_tab == 4);
+		this->DrawWidgets();
+	}
+
+	void DrawWidget(const Rect &r, WidgetID widget) const override
+	{
+		if (widget != WAPIX_PANEL) return;
+
+		const int LH = _LineH();
+		const int EH = _EntryH();
+		int start = vscroll ? vscroll->GetPosition() : 0;
+		int visible = (r.bottom - r.top) / EH + 2;
+		int y = r.top + 2;
+		int xl = r.left + 6;
+		int xr = r.right - 6;
+
+		for (int idx = start; idx < (int)entries.size() && idx < start + visible; idx++) {
+			if (y > r.bottom) break;
+			const auto &e = entries[idx];
+
+			/* Line 1: Name + unlock status */
+			TextColour name_col = e.unlocked ? TC_GREEN : TC_RED;
+			std::string status_str = e.unlocked ? " [UNLOCKED]" : " [LOCKED]";
+			DrawString(xl, xr, y, e.name + status_str, name_col);
+			y += LH;
+
+			/* Line 2: Speed, cost, running cost */
+			std::string line2 = fmt::format("Speed: {} km/h | Cost: {} | Running: {}/yr",
+				e.speed, _APIdxMoney(e.cost), _APIdxMoney(e.running));
+			DrawString(xl + 10, xr, y, line2, TC_WHITE);
+			y += LH;
+
+			/* Line 3: Cargo + capacity + extra */
+			std::string line3;
+			if (e.capacity > 0) {
+				line3 = fmt::format("Cargo: {} ({}) | {}", e.cargo_name, e.capacity, e.extra);
+			} else {
+				line3 = fmt::format("Cargo: {} | {}", e.cargo_name, e.extra);
+			}
+			DrawString(xl + 10, xr, y, line3, TC_LIGHT_BLUE);
+			y += LH;
+
+			/* Line 4: Refit options */
+			DrawString(xl + 10, xr, y, "Refit: " + e.refit_text, TC_FROMSTRING);
+			y += LH + 4; /* extra 4px gap between entries */
+		}
+	}
+
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override
+	{
+		switch (widget) {
+			case WAPIX_TAB_TRAINS:   active_tab = 0; _BuildEntries(); this->SetDirty(); break;
+			case WAPIX_TAB_ROAD:     active_tab = 1; _BuildEntries(); this->SetDirty(); break;
+			case WAPIX_TAB_AIRCRAFT:  active_tab = 2; _BuildEntries(); this->SetDirty(); break;
+			case WAPIX_TAB_SHIPS:    active_tab = 3; _BuildEntries(); this->SetDirty(); break;
+			case WAPIX_TAB_WAGONS:   active_tab = 4; _BuildEntries(); this->SetDirty(); break;
+		}
+	}
+
+	void OnResize() override
+	{
+		if (vscroll) {
+			const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPIX_PANEL);
+			int visible = (panel ? (int)panel->current_y : 360) / _EntryH();
+			vscroll->SetCapacity(std::max(1, visible));
+		}
+	}
+
+	void OnScrollbarScroll([[maybe_unused]] WidgetID widget) override { this->SetDirty(); }
+};
+
+static WindowDesc _ap_index_desc(
+	WDP_AUTO, {"ap_index"}, 480, 420,
+	WC_ARCHIPELAGO_INDEX, WC_NONE, {},
+	_nested_ap_index_widgets
+);
+
+void ShowArchipelagoIndexWindow()
+{
+	AllocateWindowDescFront<ArchipelagoIndexWindow>(_ap_index_desc, 0);
 }
 
 /* =========================================================================
@@ -1657,17 +2299,17 @@ struct ArchipelagoColbyWindow : public Window {
 					add("Event completed.", TC_GREEN);
 				} else if (cs.escaped) {
 					int days_left = std::max(0, cs.escape_ticks / 74);
-					add(fmt::format("Colby has escaped!", days_left), TC_RED);
+					add("Colby has escaped!", TC_RED);
 					add(fmt::format("Awaiting capture in approximately {} days...", days_left), TC_ORANGE);
 				} else {
 					/* Cache link targets */
-					_link_town_id    = (TownID)cs.town_id;
-					_link_stash_tile = TileIndex{cs.source_tile};
+					_link_town_id    = cs.town_id;
+					_link_stash_tile = cs.source_tile;
 
 					add(fmt::format("Step {}/5", cs.step), TC_GOLD);
 
 					/* Clickable destination town */
-					if (cs.town_id != 0xFFFFU) {
+					if (cs.town_id != (TownID)UINT16_MAX) {
 						_lines.push_back({
 							fmt::format("\u25ba Destination: {} (click to locate)", cs.town_name),
 							TC_LIGHT_BLUE, false, 0, LINK_TOWN});
@@ -1676,7 +2318,7 @@ struct ArchipelagoColbyWindow : public Window {
 					}
 
 					/* Clickable stash station */
-					if (cs.source_tile != 0xFFFFFFFFU && !cs.source_name.empty()) {
+					if (cs.source_tile != INVALID_TILE && !cs.source_name.empty()) {
 						_lines.push_back({
 							fmt::format("\u25ba Pick up {} at: {} (click to locate)",
 							            cs.cargo_name, cs.source_name),
@@ -1802,4 +2444,378 @@ static WindowDesc _ap_colby_desc(
 void ShowArchipelagoColbyWindow()
 {
 	AllocateWindowDescFront<ArchipelagoColbyWindow>(_ap_colby_desc, 0);
+}
+
+/* =========================================================================
+ * DEMIGOD WINDOW — God of Wackens detail view
+ * ========================================================================= */
+
+enum APDemigodWidgets : WidgetID {
+	WAPDG_CAPTION,
+	WAPDG_PANEL,
+	WAPDG_BTN_TRIBUTE,
+	WAPDG_BTN_CLOSE,
+	WAPDG_SCROLLBAR,
+};
+
+static constexpr std::initializer_list<NWidgetPart> _nested_ap_demigod_widgets = {
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_RED),
+		NWidget(WWT_CAPTION, COLOUR_RED, WAPDG_CAPTION), SetStringTip(STR_ARCHIPELAGO_DEMIGOD_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	EndContainer(),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_RED, WAPDG_PANEL), SetMinimalSize(340, 120), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPDG_SCROLLBAR), EndContainer(),
+		NWidget(NWID_VSCROLLBAR, COLOUR_RED, WAPDG_SCROLLBAR),
+	EndContainer(),
+	NWidget(NWID_HORIZONTAL), SetPIP(4, 4, 4),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPDG_BTN_TRIBUTE), SetStringTip(STR_ARCHIPELAGO_DEMIGOD_PAY_TRIBUTE), SetMinimalSize(200, 16), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,  WAPDG_BTN_CLOSE),   SetStringTip(STR_ARCHIPELAGO_DEMIGOD_CLOSE),      SetMinimalSize(80, 16),
+	EndContainer(),
+};
+
+struct ArchipelagoDemigodWindow : public Window {
+	Scrollbar *vscroll = nullptr;
+
+	ArchipelagoDemigodWindow(WindowDesc &desc, WindowNumber wnum) : Window(desc) {
+		this->CreateNestedTree();
+		this->vscroll = this->GetScrollbar(WAPDG_SCROLLBAR);
+		this->FinishInitNested(wnum);
+	}
+
+	void OnPaint() override {
+		DemigodStatus ds = AP_GetDemigodStatus();
+		/* Tribute button: enabled only when demigod is active and player can afford it */
+		bool can_pay = false;
+		if (ds.active) {
+			Company *c = Company::GetIfValid(_local_company);
+			can_pay = (c != nullptr && c->money >= (Money)ds.tribute_cost);
+		}
+		this->SetWidgetDisabledState(WAPDG_BTN_TRIBUTE, !ds.active || !can_pay);
+
+		/* Scrollbar */
+		int lines = 10;
+		this->vscroll->SetCount(lines);
+		this->DrawWidgets();
+	}
+
+	void DrawWidget(const Rect &r, WidgetID widget) const override {
+		if (widget != WAPDG_PANEL) return;
+		DemigodStatus ds = AP_GetDemigodStatus();
+		int y = r.top + 4;
+		int line_h = GetCharacterHeight(FS_NORMAL) + 2;
+
+		/* Title line */
+		DrawString(r.left + 4, r.right - 4, y, "The God of Wackens watches over this world.", TC_GOLD);
+		y += line_h;
+		y += line_h / 2; /* spacing */
+
+		/* Defeated counter */
+		std::string counter = fmt::format("Demigods defeated: {} / {}", ds.defeated_count, ds.total_count);
+		DrawString(r.left + 4, r.right - 4, y, counter, TC_WHITE);
+		y += line_h;
+		y += line_h / 2;
+
+		if (ds.active) {
+			/* Active demigod info */
+			DrawString(r.left + 4, r.right - 4, y, "ACTIVE DEMIGOD:", TC_RED);
+			y += line_h;
+
+			DrawString(r.left + 8, r.right - 4, y, ds.active_name, TC_ORANGE);
+			y += line_h;
+
+			std::string theme_line = fmt::format("Theme: {}", ds.active_theme);
+			DrawString(r.left + 8, r.right - 4, y, theme_line, TC_LIGHT_BLUE);
+			y += line_h;
+
+			std::string cost_line = fmt::format("Tribute cost: {}", GetString(STR_JUST_CURRENCY_LONG, (int64_t)ds.tribute_cost));
+			DrawString(r.left + 8, r.right - 4, y, cost_line, TC_YELLOW);
+			y += line_h;
+		} else if (ds.next_spawn_year > 0 && ds.defeated_count < ds.total_count) {
+			/* Next spawn countdown */
+			std::string next = fmt::format("Next demigod arrives in year: {}", ds.next_spawn_year);
+			DrawString(r.left + 4, r.right - 4, y, next, TC_GREY);
+			y += line_h;
+		} else if (ds.defeated_count >= ds.total_count && ds.total_count > 0) {
+			DrawString(r.left + 4, r.right - 4, y, "All demigods have been vanquished!", TC_GREEN);
+			y += line_h;
+		} else {
+			DrawString(r.left + 4, r.right - 4, y, "No demigods configured.", TC_GREY);
+			y += line_h;
+		}
+	}
+
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override {
+		switch (widget) {
+			case WAPDG_BTN_TRIBUTE: {
+				DemigodStatus ds = AP_GetDemigodStatus();
+				if (!ds.active) break;
+				/* Call defeat directly — no confirmation dialog for now */
+				AP_DemigodDefeat();
+				this->SetDirty();
+				break;
+			}
+			case WAPDG_BTN_CLOSE:
+				this->Close();
+				break;
+		}
+	}
+
+	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override {
+		this->SetDirty(); /* refresh every tick to track money / active state */
+	}
+};
+
+static WindowDesc _ap_demigod_desc(
+	WDP_AUTO, {"ap_demigod"}, 360, 180,
+	WC_ARCHIPELAGO_DEMIGOD, WC_NONE, {},
+	_nested_ap_demigod_widgets
+);
+
+void ShowArchipelagoDemigodWindow()
+{
+	AllocateWindowDescFront<ArchipelagoDemigodWindow>(_ap_demigod_desc, 0);
+}
+
+/* ---------------------------------------------------------------------------
+ * RUIN DETAIL WINDOW — industry-like view for AP ruins
+ * Opened when the player clicks on a ruin tile.
+ * -------------------------------------------------------------------------- */
+
+enum APRuinWidgets : WidgetID {
+	WAPRN_CAPTION,
+	WAPRN_PANEL,
+	WAPRN_SCROLLBAR,
+};
+
+static constexpr std::initializer_list<NWidgetPart> _nested_ap_ruin_widgets = {
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
+		NWidget(WWT_CAPTION, COLOUR_BROWN, WAPRN_CAPTION), SetStringTip(STR_ARCHIPELAGO_RUIN_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	EndContainer(),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_BROWN, WAPRN_PANEL), SetMinimalSize(300, 140), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPRN_SCROLLBAR), EndContainer(),
+		NWidget(NWID_VSCROLLBAR, COLOUR_BROWN, WAPRN_SCROLLBAR),
+	EndContainer(),
+};
+
+struct ArchipelagoRuinWindow : public Window {
+	Scrollbar *vscroll = nullptr;
+	uint32_t ruin_tile;
+
+	ArchipelagoRuinWindow(WindowDesc &desc, WindowNumber wnum, uint32_t tile) : Window(desc), ruin_tile(tile) {
+		this->CreateNestedTree();
+		this->vscroll = this->GetScrollbar(WAPRN_SCROLLBAR);
+		this->FinishInitNested(wnum);
+	}
+
+	void OnPaint() override {
+		this->vscroll->SetCount(12);
+		this->DrawWidgets();
+	}
+
+	void DrawWidget(const Rect &r, WidgetID widget) const override {
+		if (widget != WAPRN_PANEL) return;
+
+		APRuinView rv;
+		bool found = AP_GetRuinViewByTile(this->ruin_tile, rv);
+		int y = r.top + 4;
+		int line_h = GetCharacterHeight(FS_NORMAL) + 2;
+
+		if (!found) {
+			DrawString(r.left + 4, r.right - 4, y, "This ruin is no longer active.", TC_GREY);
+			return;
+		}
+
+		/* Location name */
+		DrawString(r.left + 4, r.right - 4, y, fmt::format("Location: {}", rv.location_name), TC_GOLD);
+		y += line_h;
+
+		/* Nearby town */
+		DrawString(r.left + 4, r.right - 4, y, fmt::format("Near: {}", rv.town_name), TC_WHITE);
+		y += line_h;
+		y += line_h / 2;
+
+		if (rv.completed) {
+			DrawString(r.left + 4, r.right - 4, y, "This ruin has been cleansed!", TC_GREEN);
+			y += line_h;
+			DrawString(r.left + 4, r.right - 4, y, "The AP location check has been sent.", TC_GREEN);
+			return;
+		}
+
+		/* Cargo requirements header */
+		DrawString(r.left + 4, r.right - 4, y, "Cargo required to cleanse this ruin:", TC_ORANGE);
+		y += line_h;
+		y += line_h / 4;
+
+		/* Cargo lines */
+		for (const auto &cl : rv.cargo) {
+			bool done = (cl.delivered >= cl.required);
+			TextColour tc = done ? TC_GREEN : TC_YELLOW;
+			std::string mark = done ? " (done!)" : "";
+			std::string line = fmt::format("  {}: {} / {}{}", cl.name, cl.delivered, cl.required, mark);
+			DrawString(r.left + 8, r.right - 4, y, line, tc);
+			y += line_h;
+		}
+
+		y += line_h / 2;
+		DrawString(r.left + 4, r.right - 4, y, "Deliver the required cargo to a nearby station.", TC_FROMSTRING);
+	}
+
+	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override {
+		this->SetDirty();
+	}
+};
+
+static WindowDesc _ap_ruin_desc(
+	WDP_AUTO, {"ap_ruin"}, 320, 180,
+	WC_ARCHIPELAGO_RUIN, WC_NONE, {},
+	_nested_ap_ruin_widgets
+);
+
+void ShowArchipelagoRuinWindow(uint32_t tile_index)
+{
+	/* Close any existing ruin window, then open for this tile */
+	CloseWindowByClass(WC_ARCHIPELAGO_RUIN);
+	new ArchipelagoRuinWindow(_ap_ruin_desc, 0, tile_index);
+}
+
+/* ---------------------------------------------------------------------------
+ * AP Victory Screen — shown when AP goal is completed
+ * Reuses the vanilla Tycoon end-screen sprites as background.
+ * -------------------------------------------------------------------------- */
+
+static constexpr std::initializer_list<NWidgetPart> _nested_ap_victory_widgets = {
+	NWidget(WWT_PANEL, COLOUR_BROWN, 0), SetResize(1, 1), EndContainer(),
+};
+
+static WindowDesc _ap_victory_desc(
+	WDP_MANUAL, {}, 0, 0,
+	WC_ENDSCREEN, WC_NONE,
+	{},
+	_nested_ap_victory_widgets
+);
+
+struct APVictoryWindow : Window {
+
+	APVictoryWindow() : Window(_ap_victory_desc)
+	{
+		this->InitNested();
+		this->flags.Reset(WindowFlag::WhiteBorder);
+		ResizeWindow(this, _screen.width - this->width, _screen.height - this->height);
+
+		if (!_networking) Command<CMD_PAUSE>::Post(PauseMode::Normal, true);
+		MarkWholeScreenDirty();
+	}
+
+	void Close([[maybe_unused]] int data = 0) override
+	{
+		if (!_networking) Command<CMD_PAUSE>::Post(PauseMode::Normal, false);
+		this->Window::Close();
+	}
+
+	void OnClick([[maybe_unused]] Point pt, [[maybe_unused]] WidgetID widget, [[maybe_unused]] int click_count) override
+	{
+		this->Close();
+	}
+
+	EventState OnKeyPress([[maybe_unused]] char32_t key, uint16_t keycode) override
+	{
+		if (IsQuitKey(keycode)) return ES_NOT_HANDLED;
+		switch (keycode) {
+			case WKC_RETURN: case WKC_ESC: case WKC_SPACE:
+				this->Close();
+				return ES_HANDLED;
+			default:
+				return ES_HANDLED;
+		}
+	}
+
+	void OnPaint() override
+	{
+		/* Resize to full screen */
+		if (this->width != _screen.width || this->height != _screen.height)
+			ResizeWindow(this, _screen.width - this->width, _screen.height - this->height);
+
+		this->DrawWidgets();
+
+		/* Dark grey fill behind the background sprite */
+		GfxFillRect(Rect{0, 0, this->width, this->height}, PixelColour{105}, FILLRECT_OPAQUE);
+
+		/* The background sprite is 640px wide, split into 10 strips of 50px */
+		const SpriteID bg = SPR_TYCOON_IMG2_BEGIN;
+		Dimension dim = GetSpriteSize(bg);
+		int total_h = dim.height * 96 / 10; /* 96% of 10×50px = 480px equivalent */
+
+		int x0 = std::max(0, (_screen.width  / 2) - ((int)dim.width  / 2));
+		int y0 = std::max(0, (_screen.height / 2) - (total_h / 2));
+
+		GfxFillRect(x0, y0, x0 + (int)dim.width - 1, y0 + total_h - 1, PC_BLACK);
+		for (uint i = 0; i < 10; i++) {
+			DrawSprite(bg + i, PAL_NONE, x0, y0 + (int)(i * dim.height));
+		}
+
+		/* --- Build text lines --- */
+		const int W  = ScaleSpriteTrad(640);
+		const int tx = x0; /* left edge of sprite area */
+
+		/* Line 1 — Title (large, gold) */
+		DrawStringMultiLine(
+			tx + ScaleSpriteTrad(20), tx + W - ScaleSpriteTrad(20),
+			y0 + ScaleSpriteTrad(60), y0 + ScaleSpriteTrad(120),
+			std::string("ARCHIPELAGO \xe2\x80\x94 GOAL COMPLETE!"),
+			TC_GOLD, SA_CENTER);
+
+		/* Line 2 — Player / company (white) */
+		const std::string slot = _ap_last_slot.empty() ? "You" : _ap_last_slot;
+		const std::string company_line = slot + "'s Transport has completed the Archipelago Multiworld!";
+		DrawStringMultiLine(
+			tx + ScaleSpriteTrad(30), tx + W - ScaleSpriteTrad(30),
+			y0 + ScaleSpriteTrad(130), y0 + ScaleSpriteTrad(195),
+			company_line,
+			TC_WHITE, SA_CENTER);
+
+		/* Line 3 — Stats */
+		const int missions_done  = AP_GetTotalMissionsCompleted();
+		const int missions_total = AP_GetSlotData().mission_count;
+		const int64_t items_recv = AP_GetItemsReceivedCount();
+
+		const std::string stats_line = fmt::format(
+			"Missions completed: {} / {}     \xe2\x80\xa2     Items received: {}",
+			missions_done, missions_total, items_recv);
+		DrawStringMultiLine(
+			tx + ScaleSpriteTrad(30), tx + W - ScaleSpriteTrad(30),
+			y0 + ScaleSpriteTrad(210), y0 + ScaleSpriteTrad(265),
+			stats_line,
+			TC_LIGHT_BLUE, SA_CENTER);
+
+		/* Line 4 — Year & server */
+		const int start_year   = AP_GetSlotData().start_year;
+		const int current_year = TimerGameCalendar::year.base();
+		const int years_played = std::max(0, current_year - start_year);
+		const std::string server_str = _ap_last_host.empty()
+			? "local"
+			: _ap_last_host + ":" + fmt::format("{}", _ap_last_port);
+
+		const std::string footer_line = fmt::format(
+			"Year {}  \xe2\x80\xa2  {} years in service  \xe2\x80\xa2  {}",
+			current_year, years_played, server_str);
+		DrawStringMultiLine(
+			tx + ScaleSpriteTrad(30), tx + W - ScaleSpriteTrad(30),
+			y0 + ScaleSpriteTrad(280), y0 + ScaleSpriteTrad(330),
+			footer_line,
+			TC_GREY, SA_CENTER);
+
+		/* Dismiss hint */
+		DrawString(
+			tx + ScaleSpriteTrad(30), tx + W - ScaleSpriteTrad(30),
+			y0 + ScaleSpriteTrad(380),
+			std::string("Press Enter, Space or Escape to continue"),
+			TC_GREY, SA_CENTER);
+	}
+};
+
+void ShowAPVictoryScreen()
+{
+	CloseWindowByClass(WC_ENDSCREEN);
+	new APVictoryWindow();
 }

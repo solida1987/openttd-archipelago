@@ -8,6 +8,7 @@
 /** @file toolbar_gui.cpp Code related to the (main) toolbar. */
 
 #include "stdafx.h"
+#include "archipelago.h"
 #include "gui.h"
 #include "window_gui.h"
 #include "window_func.h"
@@ -2015,6 +2016,12 @@ struct MainToolbarWindow : Window {
 
 		this->SetWidgetDisabledState(WID_TN_GOAL, Goal::GetNumItems() == 0);
 		this->SetWidgetDisabledState(WID_TN_STORY, StoryPage::GetNumItems() == 0);
+
+		/* AP: Disable fast-forward until Speed Boost items are received.
+		 * 100 = base speed (no boost), so FF does nothing useful. */
+		if (AP_IsActive()) {
+			this->SetWidgetDisabledState(WID_TN_FAST_FORWARD, AP_GetFfSpeed() <= 100);
+		}
 
 		this->DrawWidgets();
 	}

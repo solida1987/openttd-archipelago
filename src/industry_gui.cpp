@@ -51,6 +51,7 @@
 #include "core/string_consumer.hpp"
 
 #include "widgets/industry_widget.h"
+/* #include "archipelago.h" — removed: ruins tracker moved to archipelago_gui.cpp */
 
 #include "table/strings.h"
 
@@ -1446,7 +1447,7 @@ protected:
 
 			this->industries.Filter(filter);
 
-			this->vscroll->SetCount(this->industries.size()); // Update scrollbar as well.
+			this->vscroll->SetCount(this->industries.size());
 		}
 
 		IndustryDirectoryWindow::produced_cargo_filter = this->produced_cargo_filter_criteria;
@@ -1726,6 +1727,7 @@ public:
 
 					ir.top += this->resize.step_height;
 				}
+
 				break;
 			}
 		}
@@ -1801,12 +1803,16 @@ public:
 				break;
 
 			case WID_ID_INDUSTRY_LIST: {
-				auto it = this->vscroll->GetScrolledItemFromWidget(this->industries, pt.y, this, WID_ID_INDUSTRY_LIST, WidgetDimensions::scaled.framerect.top);
-				if (it != this->industries.end()) {
+				/* Calculate which row was clicked */
+				int clicked_row = this->vscroll->GetScrolledRowFromWidget(pt.y, this, WID_ID_INDUSTRY_LIST, WidgetDimensions::scaled.framerect.top);
+				int ind_count = (int)this->industries.size();
+
+				if (clicked_row >= 0 && clicked_row < ind_count) {
+					const Industry *ind = this->industries[clicked_row];
 					if (_ctrl_pressed) {
-						ShowExtraViewportWindow((*it)->location.tile);
+						ShowExtraViewportWindow(ind->location.tile);
 					} else {
-						ScrollMainWindowToTile((*it)->location.tile);
+						ScrollMainWindowToTile(ind->location.tile);
 					}
 				}
 				break;
@@ -1855,14 +1861,20 @@ public:
 
 	void OnPaint() override
 	{
-		if (this->industries.NeedRebuild()) this->BuildSortIndustriesList();
+		/* Always rebuild if pool size drifted (industries destroyed since last build).
+		 * Without this, stale Industry* pointers cause ACCESS_VIOLATION crashes. */
+		if (this->industries.NeedRebuild() ||
+		    this->industries.size() > Industry::GetNumItems()) {
+			this->industries.ForceRebuild();
+			this->BuildSortIndustriesList();
+		}
 		this->hscroll->SetCount(this->GetIndustryListWidth());
 		this->DrawWidgets();
 	}
 
 	/** Rebuild the industry list on a regular interval. */
 	const IntervalTimer<TimerWindow> rebuild_interval = {std::chrono::seconds(3), [this](auto) {
-		this->industries.ForceResort();
+		this->industries.ForceRebuild();
 		this->BuildSortIndustriesList();
 	}};
 

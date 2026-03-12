@@ -78,6 +78,7 @@
 #include "table/station_land.h"
 
 #include <bitset>
+#include "archipelago.h"
 
 #include "safeguards.h"
 
@@ -2633,6 +2634,11 @@ CommandCost CmdBuildAirport(DoCommandFlags flags, TileIndex tile, uint8_t airpor
 	if (distant_join && (!_settings_game.station.distant_join_stations || !Station::IsValidID(station_to_join))) return CMD_ERROR;
 
 	if (airport_type >= NUM_AIRPORTS) return CMD_ERROR;
+
+	/* AP airport lock: block building locked airport types (AT_SMALL always free) */
+	if (AP_IsActive() && AP_IsAirportLocked(airport_type)) {
+		return CommandCost(STR_ERROR_ARCHIPELAGO_AIRPORT_LOCKED);
+	}
 
 	CommandCost ret = CheckIfAuthorityAllowsNewStation(tile, flags);
 	if (ret.Failed()) return ret;

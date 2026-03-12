@@ -907,28 +907,33 @@ void DeterminePaths(std::string_view exe, bool only_local_path)
 	if (!_config_file.empty()) {
 		config_dir = _searchpaths[SP_WORKING_DIR];
 	} else {
-		std::string personal_dir = FioFindFullPath(BASE_DIR, "openttd.cfg");
-		if (!personal_dir.empty()) {
-			auto end = personal_dir.find_last_of(PATHSEPCHAR);
-			if (end != std::string::npos) personal_dir.erase(end + 1);
-			config_dir = std::move(personal_dir);
+		/* AP: Self-contained build — always use SP_PERSONAL_DIR (<exe>/data/)
+		 * for config.  Skip FioFindFullPath which would find a stale
+		 * openttd.cfg in Documents/OpenTTD and redirect everything there. */
+		if (IsValidSearchPath(SP_PERSONAL_DIR)) {
+			config_dir = _searchpaths[SP_PERSONAL_DIR];
 		} else {
+			std::string personal_dir = FioFindFullPath(BASE_DIR, "openttd.cfg");
+			if (!personal_dir.empty()) {
+				auto end = personal_dir.find_last_of(PATHSEPCHAR);
+				if (end != std::string::npos) personal_dir.erase(end + 1);
+				config_dir = std::move(personal_dir);
+			} else {
 #ifdef USE_XDG
-			/* No previous configuration file found. Use the configuration folder from XDG. */
-			config_dir = config_home;
+				config_dir = config_home;
 #else
-			static const Searchpath new_openttd_cfg_order[] = {
-					SP_PERSONAL_DIR, SP_BINARY_DIR, SP_WORKING_DIR, SP_SHARED_DIR, SP_INSTALLATION_DIR
-				};
-
-			config_dir.clear();
-			for (const auto &searchpath : new_openttd_cfg_order) {
-				if (IsValidSearchPath(searchpath)) {
-					config_dir = _searchpaths[searchpath];
-					break;
+				static const Searchpath new_openttd_cfg_order[] = {
+						SP_PERSONAL_DIR, SP_BINARY_DIR, SP_WORKING_DIR, SP_SHARED_DIR, SP_INSTALLATION_DIR
+					};
+				config_dir.clear();
+				for (const auto &searchpath : new_openttd_cfg_order) {
+					if (IsValidSearchPath(searchpath)) {
+						config_dir = _searchpaths[searchpath];
+						break;
+					}
 				}
-			}
 #endif
+			}
 		}
 		_config_file = config_dir + "openttd.cfg";
 	}

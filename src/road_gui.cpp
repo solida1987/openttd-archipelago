@@ -46,6 +46,7 @@
 #include "timer/timer_game_calendar.h"
 
 #include "widgets/road_widget.h"
+#include "archipelago.h"
 
 #include "table/strings.h"
 
@@ -411,6 +412,17 @@ struct BuildRoadToolbarWindow : Window {
 				this->GetWidget<NWidgetCore>(WID_ROT_BUS_STATION)->SetToolTip(rtt == RTT_ROAD ? STR_ROAD_TOOLBAR_TOOLTIP_BUILD_BUS_STATION : STR_ROAD_TOOLBAR_TOOLTIP_BUILD_PASSENGER_TRAM_STATION);
 				this->GetWidget<NWidgetCore>(WID_ROT_TRUCK_STATION)->SetToolTip(rtt == RTT_ROAD ? STR_ROAD_TOOLBAR_TOOLTIP_BUILD_TRUCK_LOADING_BAY : STR_ROAD_TOOLBAR_TOOLTIP_BUILD_CARGO_TRAM_STATION);
 			}
+		}
+
+		/* AP road direction locks: grey out locked direction buttons */
+		if (AP_IsActive()) {
+			if (RoadTypeIsRoad(this->roadtype)) {
+				if (AP_IsRoadDirLocked(0)) this->SetWidgetDisabledState(WID_ROT_ROAD_X, true);
+				if (AP_IsRoadDirLocked(1)) this->SetWidgetDisabledState(WID_ROT_ROAD_Y, true);
+				if (AP_IsRoadDirLocked(0) && AP_IsRoadDirLocked(1)) this->SetWidgetDisabledState(WID_ROT_AUTOROAD, true);
+			}
+			if (AP_IsTunnelLocked()) this->SetWidgetDisabledState(WID_ROT_BUILD_TUNNEL, true);
+			if (AP_IsBridgeLocked()) this->SetWidgetDisabledState(WID_ROT_BUILD_BRIDGE, true);
 		}
 	}
 

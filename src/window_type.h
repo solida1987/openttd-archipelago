@@ -740,6 +740,10 @@ enum WindowClass : uint16_t {
 	WC_ARCHIPELAGO_TICKER, ///< Archipelago background ticker.
 	WC_ARCHIPELAGO_GUIDE,  ///< Archipelago guide / command reference.
 	WC_ARCHIPELAGO_COLBY,  ///< Archipelago Colby Event status window.
+	WC_ARCHIPELAGO_DEMIGOD, ///< Archipelago Demigod (God of Wackens) window.
+	WC_ARCHIPELAGO_RUIN,    ///< Archipelago Ruin detail window (industry-like).
+	WC_ARCHIPELAGO_RUINS_TRACKER, ///< Archipelago Ruins Tracker window.
+	WC_ARCHIPELAGO_INDEX,   ///< Archipelago vehicle index / encyclopedia.
 
 	WC_INVALID = 0xFFFF, ///< Invalid window.
 };
