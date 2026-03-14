@@ -10,7 +10,7 @@ setlocal EnableDelayedExpansion
 :: ============================================================
 
 :: ── VERSION ─────────────────────────────────────────────────
-set AP_VERSION=exp-3.0
+set AP_VERSION=exp-4.0
 
 :: ── STIER ───────────────────────────────────────────────────
 set PROJECT_DIR=C:\Users\marco\OneDrive\Desktop\OpenTTD 15.2 with Archipelago-exp
@@ -177,6 +177,22 @@ copy /Y "%PROJECT_DIR%\CHANGELOG.md"  "%OUT%\CHANGELOG.md"  > nul
 copy /Y "%PROJECT_DIR%\KNOWN_BUGS.md" "%OUT%\KNOWN_BUGS.md" > nul
 copy /Y "%PROJECT_DIR%\INSTALL.md"    "%OUT%\INSTALL.md"    > nul
 
+:: ── Server.bat launcher (multiplayer) ──────────────────────
+if exist "%PROJECT_DIR%\Server.bat" (
+    copy /Y "%PROJECT_DIR%\Server.bat" "%OUT%\Server.bat" > nul
+    echo   [OK]      Server.bat
+) else (
+    echo   [ADVARSEL] Server.bat ikke fundet
+)
+
+:: ── AP Bridge (Python server) ──────────────────────────────
+if exist "%PROJECT_DIR%\bridge\__main__.py" (
+    xcopy /E /I /Q "%PROJECT_DIR%\bridge" "%OUT%\bridge" > nul
+    echo   [OK]      bridge\
+) else (
+    echo   [ADVARSEL] bridge\ mappen ikke fundet
+)
+
 :: ── Archipelago APWorld ──────────────────────────────────────
 if exist "%PROJECT_DIR%\apworld" (
     xcopy /E /I /Q "%PROJECT_DIR%\apworld" "%OUT%\apworld" > nul
@@ -248,22 +264,25 @@ if exist "%PROJECT_DIR%\media\baseset\archipelago_ruins.grf" (
     echo   [ADVARSEL] media\baseset\archipelago_ruins.grf ikke fundet til newgrf\
 )
 
-:: ── SimpleAI til ai-mappen ──────────────────────────────────
+:: ── SimpleAI til data\ai\ (personal dir) ─────────────────────
 set SIMPLEAI_TAR=%DIST_DIR%\data_template\content_download\ai\534d504c-SimpleAI-14.tar
 if exist "%SIMPLEAI_TAR%" (
-    echo   Udpakker SimpleAI til ai\...
-    powershell -NoProfile -Command "tar -xf '%SIMPLEAI_TAR%' -C '%OUT%\ai'"
-    echo   [OK]      ai\SimpleAI-14\
+    echo   Udpakker SimpleAI til data\ai\...
+    if not exist "%OUT%\data\ai" mkdir "%OUT%\data\ai"
+    powershell -NoProfile -Command "tar -xf '%SIMPLEAI_TAR%' -C '%OUT%\data\ai'"
+    echo   [OK]      data\ai\SimpleAI-14\
 ) else (
     echo   [ADVARSEL] SimpleAI-14.tar ikke fundet i data_template - springer over.
 )
 
-:: ── Data-mappe (portable config + content_download) ─────────
+:: ── Data-mappe (portable config + content_download + AI libraries) ──
+:: NB: data_template indeholder ai\library\ med alle 4 libraries,
+::     saa en separat kopi er ikke noedvendig. /Y undgaar overwrite-prompt.
 set DATA_TEMPLATE=%DIST_DIR%\data_template
 if exist "%DATA_TEMPLATE%" (
     echo   Kopierer data-mappe fra template...
-    xcopy /E /I /Q "%DATA_TEMPLATE%" "%OUT%\data" > nul
-    echo   [OK]      data\ (configs, SimpleAI, NightGFX, musik)
+    xcopy /E /I /Y /Q "%DATA_TEMPLATE%" "%OUT%\data" > nul
+    echo   [OK]      data\ (configs, AI libraries, NightGFX, musik)
 ) else (
     echo   [ADVARSEL] dist\data_template\ ikke fundet - ingen data-mappe.
 )
@@ -290,10 +309,15 @@ if exist "%OUT%\game\MoneyQuests\main.nut" (
 ) else (
     echo   [ADVARSEL] game\MoneyQuests\main.nut mangler
 )
-if exist "%OUT%\ai\SimpleAI-14\info.nut" (
-    echo   [OK]      ai\SimpleAI-14\info.nut
+if exist "%OUT%\data\ai\SimpleAI-14\info.nut" (
+    echo   [OK]      data\ai\SimpleAI-14\info.nut
 ) else (
-    echo   [ADVARSEL] ai\SimpleAI-14\ mangler (demigod AI)
+    echo   [ADVARSEL] data\ai\SimpleAI-14\ mangler (demigod AI)
+)
+if exist "%OUT%\data\ai\library\pathfinder\road\library.nut" (
+    echo   [OK]      data\ai\library\ (pathfinder.road, pathfinder.rail, graph.aystar, queue.binary_heap)
+) else (
+    echo   [ADVARSEL] data\ai\library\ mangler - SimpleAI kan ikke finde pathfinder!
 )
 if exist "%OUT%\data\openttd.cfg" (
     echo   [OK]      data\openttd.cfg (portable config)
@@ -314,6 +338,16 @@ if exist "%OUT%\newgrf\archipelago_ruins.grf" (
     echo   [OK]      newgrf\archipelago_ruins.grf
 ) else (
     echo   [ADVARSEL] archipelago_ruins.grf mangler i newgrf\
+)
+if exist "%OUT%\Server.bat" (
+    echo   [OK]      Server.bat (multiplayer launcher)
+) else (
+    echo   [ADVARSEL] Server.bat mangler
+)
+if exist "%OUT%\bridge\__main__.py" (
+    echo   [OK]      bridge\__main__.py (AP Bridge)
+) else (
+    echo   [ADVARSEL] bridge\ mangler
 )
 if "%MISSING%"=="1" (
     echo.

@@ -208,78 +208,98 @@ class StartingCashBonus(Choice):
 # ═══════════════════════════════════════════════════════════════
 
 class EnableWagonUnlocks(Toggle):
-    """When enabled, wagons are locked at session start and must be unlocked via Archipelago items.
-    When disabled, all wagons are immediately available. Starting trains guarantee at least one
-    usable wagon precollected."""
+    """Lock wagons at session start — they must be received as Archipelago items.
+    Without this, all wagons are available from the start.
+    NOTE: Ignored when Sphere Progression is ON (auto-enabled)."""
     display_name = "Enable Wagon Unlocks"
     default = 0
 
 
+class EnableSphereProgression(Toggle):
+    """Enable sphere-based progression. When ON, all unlock items (rail directions,
+    road directions, signals, bridges, tunnels, airports, terraform, wagons, trees,
+    town actions) are locked at session start and must be found as Archipelago items.
+    This creates proper progression spheres:
+
+    Sphere 0: Starting vehicles + precollected infra → Easy missions
+    Sphere 1: More vehicles + basic infra (rail/road/airports) → Medium missions
+    Sphere 2: Even more vehicles + crossing infra (bridge/tunnel) → Hard missions
+    Sphere 3: Full fleet + terraform → Extreme missions
+
+    When OFF, all infrastructure is available from the start (flat progression).
+    This is a master toggle — it enables ALL unlock categories at once."""
+    display_name = "Enable Sphere Progression"
+    default = 0
+
+
 class EnableRailDirectionUnlocks(Toggle):
-    """When enabled, each rail type (Normal, Electrified, Monorail, Maglev) has 6 track
-    directions locked at session start. You must unlock all 6 for a rail type before you
-    can build that type in any direction. Adds 24 progression items to the pool
-    (4 rail types × 6 directions: NE-SW, NW-SE, N, S, W, E).
-    Starting trains guarantee at least one direction unlock and a usable wagon precollected."""
+    """Lock rail track directions (Normal, Electrified, Monorail, Maglev x 6 dirs each = 24 items).
+    You must find direction unlocks before you can build track in that orientation.
+    NOTE: Ignored when Sphere Progression is ON (auto-enabled)."""
     display_name = "Enable Rail Direction Unlocks"
     default = 0
 
 
 class EnableRoadDirectionUnlocks(Toggle):
-    """When enabled, road directions (NE-SW and NW-SE) are locked at session start.
-    Adds 2 progression items to the pool. Starting road vehicles guarantee one direction."""
+    """Lock road directions (NE-SW, NW-SE). You must find direction unlocks before
+    you can build roads in that orientation.
+    NOTE: Ignored when Sphere Progression is ON (auto-enabled)."""
     display_name = "Enable Road Direction Unlocks"
     default = 0
 
 
 class EnableSignalUnlocks(Toggle):
-    """When enabled, all 6 signal types are locked at session start.
-    Adds 6 progression items to the pool."""
+    """Lock signal types (Block, Entry, Exit, Combo, Path, One-Way Path).
+    You must find signal unlocks before you can place them.
+    NOTE: Ignored when Sphere Progression is ON (auto-enabled)."""
     display_name = "Enable Signal Unlocks"
     default = 0
 
 
 class EnableBridgeUnlocks(Toggle):
-    """When enabled, all 13 bridge types are locked at session start.
-    Adds 13 useful items to the pool."""
+    """Lock bridge types (Wooden through Tubular Silicon = 13 items).
+    You must find bridge unlocks before you can build them.
+    NOTE: Ignored when Sphere Progression is ON (auto-enabled)."""
     display_name = "Enable Bridge Unlocks"
     default = 0
 
 
 class EnableTunnelUnlocks(Toggle):
-    """When enabled, tunnel construction is locked at session start.
-    Adds 1 progression item to the pool."""
+    """Lock tunnel construction. You must find the Tunnel Construction item
+    before you can dig tunnels.
+    NOTE: Ignored when Sphere Progression is ON (auto-enabled)."""
     display_name = "Enable Tunnel Unlocks"
     default = 0
 
 
 class EnableAirportUnlocks(Toggle):
-    """When enabled, all airport types except Small Airport are locked at session start.
-    Small Airport is always free. Adds 8 useful items to the pool."""
+    """Lock airport types (Large, Heliport, Metropolitan, International, Commuter,
+    Helidepot, Intercontinental, Helistation = 8 items). Small Airport is always free.
+    NOTE: Ignored when Sphere Progression is ON (auto-enabled)."""
     display_name = "Enable Airport Unlocks"
     default = 0
 
 
 class EnableTreeUnlocks(Toggle):
-    """When enabled, tree types are locked by climate pack at session start.
-    Adds 10 filler items to the pool (3 packs per climate + 1 Toyland)."""
+    """Lock tree planting — 10 tree packs (3 per climate + Toyland) must be
+    received as items before you can plant those tree types.
+    NOTE: Ignored when Sphere Progression is ON (auto-enabled)."""
     display_name = "Enable Tree Unlocks"
     default = 0
 
 
 class EnableTerraformUnlocks(Toggle):
-    """When enabled, Raise Land and Lower Land are locked at session start.
-    Level Land auto-unlocks when both raise and lower are unlocked.
-    Adds 2 progression items to the pool."""
+    """Lock terraform abilities (Raise Land, Lower Land). You must find terraform
+    unlocks before you can modify terrain height.
+    NOTE: Ignored when Sphere Progression is ON (auto-enabled)."""
     display_name = "Enable Terraform Unlocks"
     default = 0
 
 
 class EnableTownActionUnlocks(Toggle):
-    """When enabled, all 8 town authority actions are locked at session start.
-    Adds 8 useful items to the pool. Actions: Advertise Small/Medium/Large,
-    Fund Road Reconstruction, Build Statue, Fund Buildings,
-    Buy Exclusive Transport Rights, Bribe Authority."""
+    """Lock town authority actions (advertise, bribe, fund buildings, etc. = 8 items).
+    You must find action unlocks before you can use them.
+    NOTE: Ignored when Sphere Progression is ON (auto-enabled)."""
     display_name = "Enable Town Action Unlocks"
     default = 0
 
@@ -448,6 +468,69 @@ class LandGenerator(Choice):
     default = 1
 
 
+class TerrainType(Choice):
+    """How mountainous the landscape is."""
+    display_name       = "Terrain Type"
+    option_very_flat   = 0
+    option_flat        = 1
+    option_hilly       = 2
+    option_mountainous = 3
+    option_alpinist    = 4
+    default = 1
+
+
+class SeaLevel(Choice):
+    """Amount of water on the map."""
+    display_name     = "Sea Level"
+    option_very_low  = 0
+    option_low       = 1
+    option_medium    = 2
+    option_high      = 3
+    default = 1
+
+
+class Rivers(Choice):
+    """Amount of rivers generated on the map."""
+    display_name  = "Rivers"
+    option_none     = 0
+    option_few      = 1
+    option_moderate = 2
+    option_many     = 3
+    default = 2
+
+
+class Smoothness(Choice):
+    """How smooth or rough the terrain is (TerraGenesis only)."""
+    display_name       = "Smoothness"
+    option_very_smooth = 0
+    option_smooth      = 1
+    option_rough       = 2
+    option_very_rough  = 3
+    default = 1
+
+
+class VarietyDistribution(Choice):
+    """How varied the terrain height distribution is."""
+    display_name     = "Variety Distribution"
+    option_none      = 0
+    option_very_low  = 1
+    option_low       = 2
+    option_medium    = 3
+    option_high      = 4
+    option_very_high = 5
+    default = 0
+
+
+class NumberOfTowns(Choice):
+    """How many towns are generated at game start."""
+    display_name     = "Number of Towns"
+    option_very_low  = 0
+    option_low       = 1
+    option_normal    = 2
+    option_high      = 3
+    default = 2
+
+
 class IndustryDensity(Choice):
     """Number of industries generated at game start."""
     display_name     = "Industry Density"
@@ -458,6 +541,33 @@ class IndustryDensity(Choice):
     option_normal    = 4
     option_high      = 5
     default = 4
+
+
+class TownNames(Choice):
+    """Town name generator style."""
+    display_name          = "Town Names"
+    option_english        = 0
+    option_french         = 1
+    option_german         = 2
+    option_american       = 3
+    option_latin          = 4
+    option_silly          = 5
+    option_swedish        = 6
+    option_dutch          = 7
+    option_finnish        = 8
+    option_polish         = 9
+    option_slovak         = 10
+    option_norwegian      = 11
+    option_hungarian      = 12
+    option_austrian       = 13
+    option_romanian       = 14
+    option_czech          = 15
+    option_swiss          = 16
+    option_danish         = 17
+    option_turkish        = 18
+    option_italian        = 19
+    option_catalan        = 20
+    default = 0
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -717,6 +827,93 @@ class EnableIronHorse(Toggle):
     default = 0
 
 
+class EnableMilitaryItems(Toggle):
+    """Enable Military Items aircraft set (69 military aircraft + helicopters).
+    Adds fighters, transports, reconnaissance planes, trainers, and helicopters
+    spanning from 1913 to 2015. All aircraft are small-airport compatible
+    except the Lockheed C-5 Galaxy (large). Works on all climates.
+    NOT available on Toyland maps."""
+    display_name = "Enable Military Items"
+    default = 0
+
+
+class EnableSharkShips(Toggle):
+    """Enable SHARK Ship Set (GPL v2, by andythenorth).
+    Adds 70 ships including freighters, ferries, tankers, barges, hovercrafts,
+    hydrofoils, and container ships spanning from 1850 to 2008.
+    When enabled, vanilla ships are replaced by SHARK ships.
+    Works on all climates. NOT available on Toyland maps."""
+    display_name = "Enable SHARK Ships"
+    default = 0
+
+
+class EnableHoverVehicles(Toggle):
+    """Enable Hover Vehicles set (6 futuristic hover road vehicles).
+    Adds hover buses and trucks available from 2075 onwards.
+    These are additional road vehicles — they do NOT replace vanilla ones.
+    Works on all climates. NOT available on Toyland maps."""
+    display_name = "Enable Hover Vehicles"
+    default = 0
+
+
+class EnableHEQS(Toggle):
+    """Enable HEQS Heavy Equipment Set (46 heavy-duty road vehicles + 1 train).
+    Adds off-road crawlers, industrial trams, dump trucks, mining trucks,
+    logging trucks, foundry transporters, tractors, and railmotors.
+    These are additional vehicles — they do NOT replace vanilla ones.
+    Works on all climates. NOT available on Toyland maps."""
+    display_name = "Enable HEQS Heavy Equipment"
+    default = 0
+
+
+class EnableVactrain(Toggle):
+    """Enable Vactrain Set (18 futuristic vacuum-tube trains).
+    Adds VACT railtype with extreme-speed passenger and cargo locomotives.
+    Introduces a new rail type (Vacuum Tube). Trains appear from 2022 onwards.
+    These are additional trains — they do NOT replace vanilla or Iron Horse ones.
+    Works on all climates. NOT available on Toyland maps."""
+    display_name = "Enable Vactrain Set"
+    default = 0
+
+
+class EnableAircraftpack(Toggle):
+    """Enable Aircraftpack 2025 (47 real-world + futuristic aircraft).
+    Adds planes from early aviation (1928) through futuristic designs (2042).
+    Includes commercial airliners, helicopters, and concept aircraft.
+    These are additional aircraft — they do NOT replace vanilla or Military ones.
+    Works on all climates. NOT available on Toyland maps."""
+    display_name = "Enable Aircraftpack 2025"
+    default = 0
+
+
+class EnableFIRS(Toggle):
+    """Enable FIRS Industry Replacement Set (41 industries, 96 cargo types).
+    Completely replaces vanilla industries and cargos with a detailed industrial
+    economy. Multiple economy presets: Temperate Basic, Arctic Basic, Tropic Basic,
+    Steeltown, In A Hot Country. WARNING: This fundamentally changes the game economy.
+    Cargo types for vehicle refits and missions will be different from vanilla.
+    NOT available on Toyland maps."""
+    display_name = "Enable FIRS Industries"
+    default = 0
+
+
+class FIRSEconomy(Choice):
+    """Which FIRS economy preset to use. Only applies when FIRS is enabled.
+    Each economy has different industries and cargo chains.
+    Temperate Basic: Standard temperate industries.
+    Arctic Basic: Cold-climate industries.
+    Tropic Basic: Tropical industries.
+    Steeltown: Heavy industry focus (steel, chemicals, engineering supplies).
+    In A Hot Country: Tropical plantation and mining focus."""
+    display_name = "FIRS Economy"
+    option_temperate_basic   = 0
+    option_arctic_basic      = 1
+    option_tropic_basic      = 2
+    option_steeltown         = 3
+    option_in_a_hot_country  = 4
+    default = 0
+
+
 # ═══════════════════════════════════════════════════════════════
 #  EVENTS
 # ═══════════════════════════════════════════════════════════════
@@ -765,6 +962,73 @@ class DemigodSpawnIntervalMax(Range):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  GOD OF WACKENS — WRATH SYSTEM
+# ═══════════════════════════════════════════════════════════════
+
+class EnableWrath(Toggle):
+    """Enable the God of Wackens wrath system.
+    When ON, the God of Wackens watches your destruction. Bulldozing houses,
+    removing town roads, terraforming terrain, and clearing trees all count
+    against yearly limits. Exceed the limits and his anger escalates through
+    5 levels — from a gentle warning up to divine wrath (infrastructure
+    destruction, station deletion, vehicle breakdowns, and sinkholes).
+    Each year of good behavior reduces anger by 1 level.
+    When OFF, you can destroy freely with no consequences."""
+    display_name = "God of Wackens (Wrath System)"
+    default = 1
+
+
+class WrathLimitHouses(Range):
+    """How many town buildings you can bulldoze per year before the God of Wackens
+    notices. Exceeding this limit counts as one category violation.
+    If 3+ categories are exceeded in the same year, anger jumps by +2 instead of +1."""
+    display_name = "Wrath: House Demolition Limit (per year)"
+    range_start = 1
+    range_end = 100
+    default = 2
+
+
+class WrathLimitRoads(Range):
+    """How many town-owned road tiles you can remove per year before the God of Wackens
+    notices. Only roads owned by towns count — your own roads are free to remove."""
+    display_name = "Wrath: Town Road Removal Limit (per year)"
+    range_start = 1
+    range_end = 100
+    default = 2
+
+
+class WrathLimitTerrain(Range):
+    """How many terrain tiles you can terraform (raise/lower) per year before the
+    God of Wackens notices. Each terraform action counts as one tile."""
+    display_name = "Wrath: Terraform Limit (tiles per year)"
+    range_start = 1
+    range_end = 1000
+    default = 25
+
+
+
+# ═══════════════════════════════════════════════════════════════
+#  MULTIPLAYER
+# ═══════════════════════════════════════════════════════════════
+
+class MultiplayerMode(Toggle):
+    """Enable multiplayer compatibility mode.
+    When ON, features that cause desync in multiplayer are disabled:
+    - Ruins (God of Wackens curses)
+    - Colby Event
+    - Demigod system (God of Wackens bosses)
+    - Wrath system (God of Wackens anger)
+
+    These features modify the game map directly and cannot be synced
+    between host and clients. With this OFF, the 'Open to Multiplayer'
+    button in-game will be greyed out.
+
+    Turn this ON if you want to play cooperatively with other players."""
+    display_name = "Multiplayer Mode"
+    default = 0
+
+
+# ═══════════════════════════════════════════════════════════════
 #  FUNNY STUFF
 # ═══════════════════════════════════════════════════════════════
 
@@ -792,28 +1056,21 @@ OPTION_GROUPS = [
         WinCustomMonthlyProfit,
         WinCustomMissionsCompleted,
     ]),
-    OptionGroup("Missions", [
+    OptionGroup("Progression Balancing", [
+        EnableSphereProgression,
         MissionTierUnlockCount,
         MissionDifficulty,
     ]),
-    OptionGroup("Shop & Items", [
+    OptionGroup("Items & Shop", [
         UtilityCount,
         ShopPriceTier,
         StartingCashBonus,
     ]),
-    OptionGroup("Item Pool", [
-        EnableWagonUnlocks,
-        EnableRailDirectionUnlocks,
-        EnableRoadDirectionUnlocks,
-        EnableSignalUnlocks,
-        EnableBridgeUnlocks,
-        EnableTunnelUnlocks,
-        EnableAirportUnlocks,
-        EnableTreeUnlocks,
-        EnableTerraformUnlocks,
-        EnableTownActionUnlocks,
+    OptionGroup("Ruins", [
         RuinPoolSize,
         MaxActiveRuins,
+        RuinCargoTypesMin,
+        RuinCargoTypesMax,
     ]),
     OptionGroup("Traps", [
         EnableTraps,
@@ -833,7 +1090,14 @@ OPTION_GROUPS = [
         MapSizeY,
         Landscape,
         LandGenerator,
+        TerrainType,
+        SeaLevel,
+        Rivers,
+        Smoothness,
+        VarietyDistribution,
+        NumberOfTowns,
         IndustryDensity,
+        TownNames,
     ]),
     OptionGroup("Economy & Finance", [
         InfiniteMoney,
@@ -875,6 +1139,14 @@ OPTION_GROUPS = [
     ]),
     OptionGroup("NewGRFs", [
         EnableIronHorse,
+        EnableMilitaryItems,
+        EnableSharkShips,
+        EnableHoverVehicles,
+        EnableHEQS,
+        EnableVactrain,
+        EnableAircraftpack,
+        EnableFIRS,
+        FIRSEconomy,
     ]),
     OptionGroup("Events", [
         ColbyEvent,
@@ -883,8 +1155,29 @@ OPTION_GROUPS = [
         DemigodSpawnIntervalMin,
         DemigodSpawnIntervalMax,
     ]),
+    OptionGroup("God of Wackens (Wrath)", [
+        EnableWrath,
+        WrathLimitHouses,
+        WrathLimitRoads,
+        WrathLimitTerrain,
+    ]),
+    OptionGroup("Multiplayer", [
+        MultiplayerMode,
+    ]),
     OptionGroup("Funny Stuff", [
         CommunityVehicleNames,
+    ]),
+    OptionGroup("Manual Unlock Toggles (IGNORED when Sphere Progression is ON)", [
+        EnableRailDirectionUnlocks,
+        EnableRoadDirectionUnlocks,
+        EnableSignalUnlocks,
+        EnableBridgeUnlocks,
+        EnableTunnelUnlocks,
+        EnableAirportUnlocks,
+        EnableTerraformUnlocks,
+        EnableWagonUnlocks,
+        EnableTreeUnlocks,
+        EnableTownActionUnlocks,
     ]),
 ]
 
@@ -911,7 +1204,8 @@ class OpenTTDOptions(PerGameCommonOptions):
     win_custom_cargo_delivered:      WinCustomCargoDelivered
     win_custom_monthly_profit:       WinCustomMonthlyProfit
     win_custom_missions_completed:   WinCustomMissionsCompleted
-    # Missions
+    # Progression
+    enable_sphere_progression:       EnableSphereProgression
     mission_tier_unlock_count:       MissionTierUnlockCount
     mission_difficulty:              MissionDifficulty
     # Shop & Items
@@ -950,7 +1244,14 @@ class OpenTTDOptions(PerGameCommonOptions):
     map_size_y:                      MapSizeY
     landscape:                       Landscape
     land_generator:                  LandGenerator
+    terrain_type:                    TerrainType
+    sea_level:                       SeaLevel
+    rivers:                          Rivers
+    smoothness:                      Smoothness
+    variety:                         VarietyDistribution
+    number_towns:                    NumberOfTowns
     industry_density:                IndustryDensity
+    town_names:                      TownNames
     # Economy & Finance
     infinite_money:                  InfiniteMoney
     inflation:                       Inflation
@@ -987,12 +1288,27 @@ class OpenTTDOptions(PerGameCommonOptions):
     vehicle_breakdowns:              VehicleBreakdowns
     # NewGRFs
     enable_iron_horse:               EnableIronHorse
+    enable_military_items:           EnableMilitaryItems
+    enable_shark_ships:              EnableSharkShips
+    enable_hover_vehicles:           EnableHoverVehicles
+    enable_heqs:                     EnableHEQS
+    enable_vactrain:                 EnableVactrain
+    enable_aircraftpack:             EnableAircraftpack
+    enable_firs:                     EnableFIRS
+    firs_economy:                    FIRSEconomy
     # Events
     colby_event:                     ColbyEvent
     enable_demigods:                 EnableDemigods
     demigod_count:                   DemigodCount
     demigod_spawn_interval_min:      DemigodSpawnIntervalMin
     demigod_spawn_interval_max:      DemigodSpawnIntervalMax
+    # God of Wackens (Wrath)
+    enable_wrath:                    EnableWrath
+    wrath_limit_houses:              WrathLimitHouses
+    wrath_limit_roads:               WrathLimitRoads
+    wrath_limit_terrain:             WrathLimitTerrain
+    # Multiplayer
+    multiplayer_mode:                MultiplayerMode
     # Funny Stuff
     community_vehicle_names:         CommunityVehicleNames
     # Death Link

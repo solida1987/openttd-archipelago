@@ -372,7 +372,7 @@ TRAIN_TO_RAILTYPE: Dict[str, int] = {
     # Monorail (2)
     "'X2001' (Electric)":            2,
     "'T.I.M.' (Electric)":           2,
-    "'Millennium Z1' (Electric)":    2,
+    "'Millennium Z1' (Electric)":    3,  # Maglev, not Monorail
     "Wizzowow Z99":                  2,
     # Maglev (3)
     "Lev1 'Leviathan' (Electric)":   3,
@@ -636,6 +636,350 @@ IRON_HORSE_ENGINES: List[str] = [
 ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  MILITARY ITEMS 1.2.0 — Aircraft (fighters, transports, recon, trainers,
+#  helicopters) by MilitaryItems team.
+#  Prefix "MIL: " distinguishes them from vanilla aircraft.
+# ─────────────────────────────────────────────────────────────────────────────
+
+MILITARY_ITEMS_AIRCRAFT: List[str] = [
+    # ── Fighters (32) ────────────────────────────────────────────────────────
+    "MIL: Avro 504",
+    "MIL: Nieuport-Delage NiD 29",
+    "MIL: Avia B.3",
+    "MIL: Aero A.18",
+    "MIL: Avia B.21",
+    "MIL: Avia Ba.33",
+    "MIL: Avia B.534",
+    "MIL: Polikarpov I-16",
+    "MIL: Hawker Hurricane IIC",
+    "MIL: Avia B.35",
+    "MIL: Mitsubishi A6M Zero",
+    "MIL: Grumman F6F Hellcat",
+    "MIL: Yakovlev Yak-9",
+    "MIL: Avia S-199",
+    "MIL: Hawker Sea Hawk",
+    "MIL: Mikoyan-Gurevich MiG-15",
+    "MIL: North American F-86 Sabre",
+    "MIL: Aero S-103",
+    "MIL: Mikoyan-Gurevich MiG-19",
+    "MIL: Mikoyan-Gurevich MiG-21",
+    "MIL: Dassault Mirage III",
+    "MIL: Aero S-105",
+    "MIL: McDonnell F-4 Phantom II",
+    "MIL: General Dynamics F-16 Fighting Falcon",
+    "MIL: Mikoyan-Gurevich MiG-29",
+    "MIL: Dassault Mirage 2000",
+    "MIL: McDonnell Douglas F/A-18 Hornet",
+    "MIL: Saab JAS 39 Gripen",
+    "MIL: Sukhoi Su-30",
+    "MIL: Dassault Rafale",
+    "MIL: Lockheed Martin F-35A Lightning II",
+    "MIL: Sukhoi Su-57",
+    # ── Transport / Airlifters (15) ──────────────────────────────────────────
+    "MIL: Douglas C-74 Globemaster",
+    "MIL: Antonov An-2",
+    "MIL: Douglas C-124 Globemaster II",
+    "MIL: Antonov An-12",
+    "MIL: Antonov An-24",
+    "MIL: Lockheed C-141 Starlifter",
+    "MIL: Grumman C-2 Greyhound",
+    "MIL: Antonov An-22",
+    "MIL: Lockheed C-5 Galaxy",
+    "MIL: Let L-410",
+    "MIL: Antonov An-26",
+    "MIL: Ilyushin Il-76",
+    "MIL: Boeing C-17 Globemaster III",
+    "MIL: Airbus A400M Atlas",
+    "MIL: Let L-410NG",
+    # ── Reconnaissance (2) ───────────────────────────────────────────────────
+    "MIL: Northrop Grumman RQ-4 Global Hawk",
+    "MIL: Lockheed Martin RQ-170 Sentinel",
+    # ── Training / Courier / Light Bombers (8) ───────────────────────────────
+    "MIL: Letov S.328",
+    "MIL: Zlin Z.12",
+    "MIL: Aero A.304",
+    "MIL: Aero A.304 (courier)",
+    "MIL: Aero L-29",
+    "MIL: Aero L-39",
+    "MIL: Aero L-159",
+    "MIL: Aero L-39NG",
+    # ── Helicopters (16) ─────────────────────────────────────────────────────
+    "MIL: Sikorsky CH-37 Mojave",
+    "MIL: Bell UH-1 Iroquois",
+    "MIL: Mil Mi-6",
+    "MIL: Aerospatiale SA 321 Super Frelon",
+    "MIL: Aerospatiale SA 330 Puma",
+    "MIL: Sikorsky CH-53E Super Stallion",
+    "MIL: Mil Mi-26",
+    "MIL: Eurocopter AS 532 Cougar",
+    "MIL: Sikorsky UH-60 Black Hawk",
+    "MIL: Mil Mi-17",
+    "MIL: AgustaWestland AW101 Merlin",
+    "MIL: AgustaWestland AW139",
+    "MIL: Eurocopter EC725 Caracal",
+    "MIL: Sikorsky CH-148 Cyclone",
+    "MIL: Sikorsky CH-53K King Stallion",
+    "MIL: Mil Mi-38",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SHARK SHIP SET 1.0 — Ships (freighters, ferries, tankers, barges, etc.)
+#  by andythenorth.  Prefix "SHARK: " distinguishes from vanilla ships.
+# ─────────────────────────────────────────────────────────────────────────────
+
+SHARK_SHIPS: List[str] = [
+    "SHARK: Whitgift",
+    "SHARK: Bernard",
+    "SHARK: Lantau",
+    "SHARK: Wellfleet",
+    "SHARK: Harbour Point",
+    "SHARK: Malin",
+    "SHARK: Finisterre",
+    "SHARK: Constance",
+    "SHARK: Saint Marie",
+    "SHARK: Gorky",
+    "SHARK: Freshney",
+    "SHARK: Volgoneft 270",
+    "SHARK: Frisco Bay",
+    "SHARK: Little Cumbrae",
+    "SHARK: Volgoneft 540",
+    "SHARK: Provincetown",
+    "SHARK: Altamira",
+    "SHARK: Friedrich",
+    "SHARK: Quessant",
+    "SHARK: Lampwick",
+    "SHARK: Olympic",
+    "SHARK: Roland",
+    "SHARK: Lutschine",
+    "SHARK: Bundaberg",
+    "SHARK: Schipbeek",
+    "SHARK: Tyree",
+    "SHARK: Volgoneft 320",
+    "SHARK: Volgoneft 630",
+    "SHARK: Labrador",
+    "SHARK: Island Trader",
+    "SHARK: Taurus",
+    "SHARK: Josephine",
+    "SHARK: Shannon",
+    "SHARK: Rosario",
+    "SHARK: McClure",
+    "SHARK: Grindavik",
+    "SHARK: Eddystone",
+    "SHARK: Meteor",
+    "SHARK: Whetstone",
+    "SHARK: Kagoshima",
+    "SHARK: Marstein",
+    "SHARK: Oran",
+    "SHARK: Nagasaki",
+    "SHARK: Provence Edibles",
+    "SHARK: Stornoway",
+    "SHARK: Tigershark",
+    "SHARK: Santorini",
+    "SHARK: Maddalena",
+    "SHARK: Connor Freight",
+    "SHARK: Helsinki",
+    "SHARK: Nanaimo 70",
+    "SHARK: Ohshima Freight",
+    "SHARK: Duckitt 400",
+    "SHARK: La Orchilla",
+    "SHARK: Hitsuji",
+    "SHARK: Cadiz",
+    "SHARK: Kwangtung",
+    "SHARK: Newport",
+    "SHARK: Hammerhead",
+    "SHARK: Yokohama",
+    "SHARK: Lorraine Edibles",
+    "SHARK: Matsushima",
+    "SHARK: Munkegrund",
+    "SHARK: Huanghai LNG",
+    "SHARK: Port Jackson",
+    "SHARK: Maspalomas",
+    "SHARK: Great White",
+    "SHARK: Winterhold",
+    "SHARK: Dieze",
+    "SHARK: Enoshima",
+    "SHARK: Mako",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  HOVER VEHICLES 1 — Futuristic hover road vehicles.
+#  Prefix "HV: " distinguishes from vanilla road vehicles.
+# ─────────────────────────────────────────────────────────────────────────────
+
+HOVER_VEHICLES: List[str] = [
+    "HV: HZ Hover Bus",
+    "HV: HZ Flatbed Hover Truck",
+    "HV: HZ Hopper Hover Truck",
+    "HV: HZ Hover Tanker",
+    "HV: HZ Hi-Sec Hover Truck",
+    "HV: HZ Refrigerated Hover Truck",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  HEQS Heavy Equipment Set 1.5.2 — Off-road crawlers, dump/mining trucks,
+#  industrial trams, foundry transporters, tractors, logging trucks.
+#  Prefix "HEQS: " distinguishes from vanilla road vehicles.
+#  Articulated sub-parts excluded (not independently purchasable).
+# ─────────────────────────────────────────────────────────────────────────────
+
+HEQS_ROAD_VEHICLES: List[str] = [
+    # Heavy crawlers
+    "HEQS: No. 6 Crawler (General Purpose)",
+    "HEQS: No. 6 Crawler (Logging / Mining)",
+    "HEQS: No. 8 Crawler (Supply Train)",
+    "HEQS: No. 8 Crawler (Logging / Mining)",
+    "HEQS: No. 9 Crawler (Supply Train)",
+    "HEQS: No. 9 Crawler (Logging / Mining)",
+    "HEQS: Red Peak Articulated Crawler",
+    # Logging trucks
+    "HEQS: Cascade C10 Logging Truck",
+    "HEQS: Cascade C16 Logging Truck",
+    "HEQS: Mackenzie Logging Truck",
+    # Dump trucks
+    "HEQS: Mt. McKinley Dump Truck",
+    "HEQS: Mt. Rainier Dump Truck",
+    "HEQS: Wolfpen Ridge Dump Truck",
+    "HEQS: Medium Belly Dump",
+    "HEQS: Large Belly Dump",
+    # Mining trucks
+    "HEQS: Thunder Mountain Mining Truck",
+    "HEQS: Harney Peak Mining Truck",
+    "HEQS: Bear Mountain Mining Truck",
+    "HEQS: Rockchuck Peak Mining Truck",
+    "HEQS: Camelback Mountain Mining Truck",
+    "HEQS: Kilimanjaro Unitised Mining Truck",
+    # Utility / tractors / forklifts
+    "HEQS: Gmund Mog",
+    "HEQS: Willamette Forklift",
+    "HEQS: Fourtrac",
+    "HEQS: Speedytrac",
+    "HEQS: Super Speedytrac",
+    # Trailers
+    "HEQS: Generic Medium Trailer",
+    "HEQS: Kander Trailer",
+    # Foundry transporters
+    "HEQS: Grindelwald Foundry Transporter",
+    "HEQS: Kander Foundry Transporter",
+    # Tram wagons
+    "HEQS: Tram Wagon 1",
+    "HEQS: Tram Wagon 2",
+    "HEQS: Tram Wagon 3",
+    "HEQS: Express Tram Wagon 1",
+    # Industrial trams (Steam)
+    "HEQS: 0-4-0 Dorstfeld Industrial Tram (Steam)",
+    "HEQS: 0-6-0 Chemnitz Industrial Tram (Steam)",
+    "HEQS: 0-8-0 Kassel Industrial Tram (Steam)",
+    "HEQS: 0-6-6-0 Afonside Industrial Tram (Steam)",
+    # Industrial trams (Electric)
+    "HEQS: Kreuzberg Industrial Tram (Electric)",
+    "HEQS: Hennigsdorf Industrial Tram (Electric)",
+    "HEQS: Ishizuchi Industrial Tram (Electric)",
+    "HEQS: Dynamo Express Tram (Electric)",
+    # Railmotors
+    "HEQS: Yonkers Railmotor (Steam)",
+    "HEQS: Winterthur Railmotor (Electric)",
+    "HEQS: Port Jack Railmotor (Electric)",
+]
+
+HEQS_TRAINS: List[str] = [
+    "HEQS: Gmund Mog Hi-Rail Truck",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  VACTRAIN SET 1.0.1 — Futuristic vacuum-tube trains (VACT railtype).
+#  Prefix "VAC: " distinguishes from vanilla and Iron Horse trains.
+# ─────────────────────────────────────────────────────────────────────────────
+
+VACTRAIN_ENGINES: List[str] = [
+    # Passenger locomotives
+    "VAC: Hyperloop Pod",
+    "VAC: Fenglong FL1 Prototype",
+    "VAC: Swissmetro",
+    "VAC: Alstom Train-Sous-Vide",
+    "VAC: Alstom TSV Duplex",
+    "VAC: Siemens Chimaera",
+    "VAC: JVAC Shinkūsen 1000",
+    "VAC: JVAC Shinkūsen 4000",
+    "VAC: Fenglong FL2",
+    'VAC: Fenglong FL5 "Gepard"',
+    "VAC: Fenglong FL8",
+    # Cargo locomotives
+    "VAC: Siemens TransCargo",
+    "VAC: Alstom TSV Fret",
+    "VAC: F-Trainz FT001",
+    'VAC: Juanlong "Silk Dragon"',
+    # Wagons
+    "VAC: Vactrain Unit Wagon (Powered)",
+    "VAC: Vactrain Unit Wagon (Unpowered)",
+    "VAC: Vactrain Universal Cargo Module",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  AIRCRAFTPACK 2025 by Illusive 1.6.0 — Real-world + futuristic aircraft.
+#  Prefix "AP25: " distinguishes from vanilla and Military Items aircraft.
+# ─────────────────────────────────────────────────────────────────────────────
+
+AIRCRAFTPACK_AIRCRAFT: List[str] = [
+    # Early era
+    "AP25: Luftschiff",
+    "AP25: Junkers Ju 52",
+    "AP25: Douglas DC-3 Dakota",
+    # Classic era
+    "AP25: Vickers Viscount",
+    "AP25: Boeing 707",
+    "AP25: Aérospatiale SE-210 Caravelle",
+    "AP25: BAC 1-11",
+    "AP25: Boeing 727",
+    "AP25: McDonnell Douglas DC-9",
+    "AP25: Boeing 737",
+    "AP25: Boeing 747",
+    "AP25: McDonnell Douglas DC-10",
+    "AP25: Airbus A300",
+    "AP25: Lockheed L-1011 TriStar",
+    "AP25: Aérospatiale/BAC Concorde",
+    "AP25: Aérospatiale Hirondelle",
+    # Modern era
+    "AP25: Aérospatiale AS 332",
+    "AP25: McDonnell Douglas MD-81",
+    "AP25: Boeing 767",
+    "AP25: Airbus A310",
+    "AP25: Boeing 757",
+    "AP25: BAe 146",
+    "AP25: Mil Mi-26T",
+    "AP25: Airbus A320",
+    "AP25: Fokker 100",
+    "AP25: McDonnell Douglas MD-11",
+    "AP25: Airbus A340",
+    "AP25: Learjet 60",
+    "AP25: Boeing 777",
+    "AP25: Airbus A330",
+    "AP25: Sikorsky S-92",
+    "AP25: Lockheed Martin P-791",
+    "AP25: Airbus A380",
+    "AP25: Boeing 787 Dreamliner",
+    "AP25: Boeing 747-8I",
+    "AP25: Airbus A350",
+    "AP25: Kamov Ka-62",
+    # Future era
+    "AP25: Lockheed CL-2000",
+    "AP25: Lilium Airtaxi",
+    "AP25: Airbus RACER",
+    "AP25: Boom Supersonic Overture",
+    "AP25: Boeing 797 SonicCruiser",
+    "AP25: Flying-V-2000",
+    "AP25: Airbus A360",
+    "AP25: Airbus A400",
+    "AP25: Boeing 848 Skywhale",
+    "AP25: Airbus A370",
+]
+
+
 def _build_item_table() -> Dict[str, OpenTTDItemData]:
     table: Dict[str, OpenTTDItemData] = {}
     code = OPENTTD_BASE_ID
@@ -650,7 +994,7 @@ def _build_item_table() -> Dict[str, OpenTTDItemData]:
     for name in ALL_TRAINS:
         add(name, ItemClassification.progression, ItemType.VEHICLE, "train")
     for name in ALL_WAGONS:
-        add(name, ItemClassification.useful, ItemType.VEHICLE, "wagon")
+        add(name, ItemClassification.progression, ItemType.VEHICLE, "wagon")
     for name in ALL_ROAD_VEHICLES:
         add(name, ItemClassification.progression, ItemType.VEHICLE, "road_vehicle")
     for name in ALL_AIRCRAFT:
@@ -675,11 +1019,11 @@ def _build_item_table() -> Dict[str, OpenTTDItemData]:
     for name in SIGNAL_ITEMS:
         add(name, ItemClassification.progression, ItemType.UTILITY, "signal")
     for name in BRIDGE_ITEMS:
-        add(name, ItemClassification.useful, ItemType.UTILITY, "bridge")
+        add(name, ItemClassification.progression, ItemType.UTILITY, "bridge")
     for name in TUNNEL_ITEMS:
         add(name, ItemClassification.progression, ItemType.UTILITY, "tunnel")
     for name in AIRPORT_ITEMS:
-        add(name, ItemClassification.useful, ItemType.UTILITY, "airport")
+        add(name, ItemClassification.progression, ItemType.UTILITY, "airport")
     for name in TREE_ITEMS:
         add(name, ItemClassification.filler, ItemType.UTILITY, "tree")
     for name in TERRAFORM_ITEMS:
@@ -690,6 +1034,26 @@ def _build_item_table() -> Dict[str, OpenTTDItemData]:
     # the option is disabled. Items only enter the *pool* when enabled (see __init__.py).
     for name in IRON_HORSE_ENGINES:
         add(name, ItemClassification.progression, ItemType.VEHICLE, "train")
+    # Military Items aircraft — always registered, only pooled when enabled
+    for name in MILITARY_ITEMS_AIRCRAFT:
+        add(name, ItemClassification.progression, ItemType.VEHICLE, "aircraft")
+    # SHARK ships — always registered, only pooled when enabled
+    for name in SHARK_SHIPS:
+        add(name, ItemClassification.progression, ItemType.VEHICLE, "ship")
+    # Hover Vehicles — always registered, only pooled when enabled
+    for name in HOVER_VEHICLES:
+        add(name, ItemClassification.progression, ItemType.VEHICLE, "road_vehicle")
+    # HEQS Heavy Equipment — always registered, only pooled when enabled
+    for name in HEQS_ROAD_VEHICLES:
+        add(name, ItemClassification.progression, ItemType.VEHICLE, "road_vehicle")
+    for name in HEQS_TRAINS:
+        add(name, ItemClassification.progression, ItemType.VEHICLE, "train")
+    # Vactrain — always registered, only pooled when enabled
+    for name in VACTRAIN_ENGINES:
+        add(name, ItemClassification.progression, ItemType.VEHICLE, "train")
+    # Aircraftpack 2025 — always registered, only pooled when enabled
+    for name in AIRCRAFTPACK_AIRCRAFT:
+        add(name, ItemClassification.progression, ItemType.VEHICLE, "aircraft")
 
     add("Victory", ItemClassification.progression, ItemType.VICTORY, "victory")
     return table

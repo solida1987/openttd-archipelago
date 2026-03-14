@@ -70,6 +70,17 @@ NetworkRecvStatus NetworkGameSocketHandler::HandlePacket(Packet &p)
 
 	this->last_packet = std::chrono::steady_clock::now();
 
+	/* AP trace: log every received packet type for debugging join issues.
+	 * Only appends if the trace file already exists (client creates it in SendJoin). */
+	{
+		FILE *f = fopen("ap_net_trace.log", "r+");
+		if (f) {
+			fclose(f);
+			f = fopen("ap_net_trace.log", "a");
+			if (f) { fmt::print(f, "[PACKET] received type={}\n", (int)type); fclose(f); }
+		}
+	}
+
 	switch (type) {
 		case PACKET_SERVER_FULL:                  return this->Receive_SERVER_FULL(p);
 		case PACKET_SERVER_BANNED:                return this->Receive_SERVER_BANNED(p);

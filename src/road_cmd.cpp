@@ -350,7 +350,7 @@ static CommandCost RemoveRoad(TileIndex tile, DoCommandFlags flags, RoadBits pie
 	if (ret.Failed()) return ret;
 
 	/* Track town road destruction for the Wrath system */
-	if (flags.Test(DoCommandFlag::Execute) && AP_IsActive() && Company::IsValidID(_current_company)) {
+	if (flags.Test(DoCommandFlag::Execute) && AP_IsActive() && _current_company == _local_company) {
 		if (GetRoadOwner(tile, rtt) == OWNER_TOWN) AP_WrathTrackRoad();
 	}
 

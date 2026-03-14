@@ -31,7 +31,18 @@
 #include "command_func.h"
 #include "misc_cmd.h"
 #include "network/network.h"
+#include "network/network_func.h"
+#include "network/network_bridge_client.h"
+#include "network/core/config.h"
+#include "string_func.h"
+#include "error.h"
+#include "debug.h"
+#include "settings_type.h"
+#include "genworld.h"
+#include "fios.h"
+#include "console_func.h"
 #include "hotkeys.h"
+#include <charconv>
 #include "safeguards.h"
 
 /* Forward declaration — defined in newgrf_gui.cpp */
@@ -238,6 +249,11 @@ struct ArchipelagoConnectWindow : public Window {
 	}
 
 	void OnGameTick() override {
+		if (_ap_bridge_mode) {
+			bool d = _ap_status_dirty.exchange(false);
+			if (d) this->SetDirty();
+			return;
+		}
 		if (_ap_client == nullptr) return;
 		APState s = _ap_client->GetState();
 		bool    h = _ap_client->HasSlotData();
@@ -245,6 +261,24 @@ struct ArchipelagoConnectWindow : public Window {
 	}
 
 	void DrawWidget(const Rect &r, WidgetID widget) const override {
+		if (_ap_bridge_mode) {
+			/* In bridge mode, show simplified status */
+			switch (widget) {
+				case WAPGUI_STATUS:
+					DrawString(r.left, r.right, r.top, "Bridge mode (multiplayer)", TC_BLACK);
+					break;
+				case WAPGUI_SLOT_INFO: {
+					const APSlotData &sd = AP_GetSlotData();
+					if (sd.start_year > 0) {
+						DrawString(r.left, r.right, r.top, "Slot data loaded", TC_DARK_GREEN);
+					} else {
+						DrawString(r.left, r.right, r.top, "Waiting for slot data...", TC_DARK_GREEN);
+					}
+					break;
+				}
+			}
+			return;
+		}
 		if (_ap_client == nullptr) return;
 		switch (widget) {
 			case WAPGUI_STATUS:
@@ -350,6 +384,8 @@ enum APStatusWidgets : WidgetID {
 	WAPST_NEWS_OFF,
 	WAPST_NEWS_SELF,
 	WAPST_NEWS_ALL,
+	WAPST_BTN_DAYNIGHT,
+	WAPST_BTN_OPEN_MP,
 };
 
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = {
@@ -388,6 +424,10 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = 
 				NWidget(WWT_TEXTBTN, COLOUR_GREY, WAPST_NEWS_OFF),  SetStringTip(STR_ARCHIPELAGO_NEWS_OFF),  SetMinimalSize(40, 14),
 				NWidget(WWT_TEXTBTN, COLOUR_GREY, WAPST_NEWS_SELF), SetStringTip(STR_ARCHIPELAGO_NEWS_SELF), SetMinimalSize(40, 14),
 				NWidget(WWT_TEXTBTN, COLOUR_GREY, WAPST_NEWS_ALL),  SetStringTip(STR_ARCHIPELAGO_NEWS_ALL),  SetMinimalSize(40, 14),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WAPST_BTN_DAYNIGHT), SetStringTip(STR_ARCHIPELAGO_BTN_DAYNIGHT_ON), SetMinimalSize(60, 14),
+			EndContainer(),
+			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPST_BTN_OPEN_MP), SetStringTip(STR_AP_OPEN_MP_BTN), SetMinimalSize(200, 16), SetFill(1, 0),
 			EndContainer(),
 		EndContainer(),
 	EndContainer(),
@@ -403,6 +443,9 @@ struct ArchipelagoStatusWindow : public Window {
 	}
 
 	static std::string StatusLine() {
+		/* Bridge mode: AP is handled by the Bridge, not a local client */
+		if (_ap_bridge_mode) return "AP: Bridge (multiplayer)";
+
 		if (_ap_client == nullptr) return "AP: No client";
 		switch (_ap_client->GetState()) {
 			case APState::AUTHENTICATED:  return "AP: Connected";
@@ -415,6 +458,16 @@ struct ArchipelagoStatusWindow : public Window {
 	}
 
 	static std::string GoalLine() {
+		/* Bridge mode: slot_data comes from the Bridge */
+		if (_ap_bridge_mode) {
+			const APSlotData &sd = AP_GetSlotData();
+			if (sd.start_year == 0 && sd.map_x == 0) return "Waiting for slot data...";
+			std::string diff_names[] = {"Casual","Easy","Normal","Medium","Hard",
+			    "Very Hard","Extreme","Insane","Nutcase","Madness","Custom"};
+			int di = (int)sd.win_difficulty;
+			std::string dn = (di >= 0 && di <= 10) ? diff_names[di] : "?";
+			return "Goal: " + dn + "  (click Guide for details)";
+		}
 		if (_ap_client == nullptr || !_ap_client->HasSlotData()) return "No slot data";
 		const APSlotData &sd = AP_GetSlotData();
 		std::string diff_names[] = {"Casual","Easy","Normal","Medium","Hard",
@@ -459,6 +512,12 @@ struct ArchipelagoStatusWindow : public Window {
 	}
 
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override {
+		/* In bridge mode, just check the dirty flag */
+		if (_ap_bridge_mode) {
+			bool d = _ap_status_dirty.exchange(false);
+			if (d) this->SetDirty();
+			return;
+		}
 		if (_ap_client == nullptr) return;
 		APState s = _ap_client->GetState();
 		bool    h = _ap_client->HasSlotData();
@@ -472,7 +531,7 @@ struct ArchipelagoStatusWindow : public Window {
 	void DrawWidget(const Rect &r, WidgetID widget) const override {
 		switch (widget) {
 			case WAPST_STATUS_LINE: {
-				bool ok = (_ap_client && _ap_client->GetState() == APState::AUTHENTICATED);
+				bool ok = _ap_bridge_mode || (_ap_client && _ap_client->GetState() == APState::AUTHENTICATED);
 				DrawString(r.left, r.right, r.top, StatusLine(), ok ? TC_GREEN : TC_RED);
 				break;
 			}
@@ -486,7 +545,7 @@ struct ArchipelagoStatusWindow : public Window {
 			case WAPST_WIN_CARGO:
 			case WAPST_WIN_PROF:
 			case WAPST_WIN_MISS:
-				if (_ap_client != nullptr && _ap_client->HasSlotData()) {
+				if (_ap_bridge_mode || (_ap_client != nullptr && _ap_client->HasSlotData())) {
 					DrawWinLine(r, widget);
 				}
 				break;
@@ -494,7 +553,7 @@ struct ArchipelagoStatusWindow : public Window {
 	}
 
 	void OnPaint() override {
-		bool disconnected = (_ap_client == nullptr ||
+		bool disconnected = !_ap_bridge_mode && (_ap_client == nullptr ||
 		    _ap_client->GetState() == APState::DISCONNECTED ||
 		    _ap_client->GetState() == APState::AP_ERROR);
 		this->SetWidgetDisabledState(WAPST_BTN_RECONNECT, !disconnected || _ap_last_host.empty());
@@ -516,6 +575,22 @@ struct ArchipelagoStatusWindow : public Window {
 		this->SetWidgetLoweredState(WAPST_NEWS_OFF,  _ap_news_filter == 0);
 		this->SetWidgetLoweredState(WAPST_NEWS_SELF, _ap_news_filter == 1);
 		this->SetWidgetLoweredState(WAPST_NEWS_ALL,  _ap_news_filter == 2);
+
+		/* Day/Night toggle label */
+		this->GetWidget<NWidgetCore>(WAPST_BTN_DAYNIGHT)->SetString(
+		    AP_IsDayNightDisabled() ? STR_ARCHIPELAGO_BTN_DAYNIGHT_OFF : STR_ARCHIPELAGO_BTN_DAYNIGHT_ON);
+
+		/* Open to Multiplayer: hide when already a server, disable when not in normal game,
+		 * or when multiplayer_mode is not enabled in AP slot_data */
+		bool already_server = _networking && _network_server;
+		bool mp_disabled = !AP_IsMultiplayerMode();
+		this->SetWidgetDisabledState(WAPST_BTN_OPEN_MP, already_server || _game_mode != GM_NORMAL || mp_disabled);
+		if (already_server) {
+			this->GetWidget<NWidgetCore>(WAPST_BTN_OPEN_MP)->SetString(STR_AP_OPEN_MP_STATUS);
+		} else {
+			this->GetWidget<NWidgetCore>(WAPST_BTN_OPEN_MP)->SetString(STR_AP_OPEN_MP_BTN);
+		}
+
 		this->DrawWidgets();
 	}
 
@@ -552,6 +627,14 @@ struct ArchipelagoStatusWindow : public Window {
 			case WAPST_NEWS_OFF:  _ap_news_filter = 0; this->SetDirty(); break;
 			case WAPST_NEWS_SELF: _ap_news_filter = 1; this->SetDirty(); break;
 			case WAPST_NEWS_ALL:  _ap_news_filter = 2; this->SetDirty(); break;
+			case WAPST_BTN_DAYNIGHT:
+				AP_ToggleDayNight();
+				this->SetDirty();
+				break;
+			case WAPST_BTN_OPEN_MP:
+				AP_OpenToMultiplayer();
+				this->SetDirty();
+				break;
 		}
 	}
 };
@@ -1294,6 +1377,8 @@ struct ArchipelagoShopWindow : public Window {
 		int64_t     price;        ///< item price (hidden when locked)
 		bool        locked;       ///< true when shop tier not yet unlocked
 		int         missions_needed; ///< total missions required to unlock
+		bool        purchased;    ///< true when already bought
+		int         display_num;  ///< permanent display number (1-based, from sorted position)
 	};
 	std::vector<ShopEntry> shop_items;
 
@@ -1302,34 +1387,42 @@ struct ArchipelagoShopWindow : public Window {
 		shop_items.clear();
 		int total = AP_GetShopSlots();
 
-		/* Collect all unsold items with their labels and prices. */
-		struct RawEntry { std::string loc; std::string label; int64_t price; };
+		/* Collect ALL items (including already purchased) with labels and prices. */
+		struct RawEntry { std::string loc; std::string label; int64_t price; bool purchased; };
 		std::vector<RawEntry> raw;
 		for (int i = 1; i <= total; i++) {
 			std::string loc = fmt::format("Shop_Purchase_{:04d}", i);
-			if (AP_IsShopLocationSent(loc)) continue;
+			bool purchased = AP_IsShopLocationSent(loc);
 			std::string label = AP_GetShopLocationLabel(loc);
 			if (label.empty()) label = fmt::format("Item #{} (loading...)", i);
-			raw.push_back({loc, label, AP_GetShopPrice(loc)});
+			raw.push_back({loc, label, AP_GetShopPrice(loc), purchased});
 		}
 		/* Sort ascending by price — cheapest first. */
 		std::sort(raw.begin(), raw.end(),
 		    [](const RawEntry &a, const RawEntry &b) { return a.price < b.price; });
 
-		/* Assign lock state based on sorted position. */
+		/* Assign lock state based on sorted position (uses original index,
+		 * NOT filtered index — so purchasing items never changes other items'
+		 * lock tiers or display numbers). */
 		for (int idx = 0; idx < (int)raw.size(); idx++) {
-			bool locked  = !AP_IsShopSlotUnlocked(idx);
+			bool locked  = !raw[idx].purchased && !AP_IsShopSlotUnlocked(idx);
 			int  needed  = AP_GetShopSlotRequiredMissions(idx);
-			shop_items.push_back({raw[idx].loc, raw[idx].label, raw[idx].price, locked, needed});
+			shop_items.push_back({raw[idx].loc, raw[idx].label, raw[idx].price,
+			    locked, needed, raw[idx].purchased, idx + 1});
 		}
 
 		if (this->scrollbar) this->scrollbar->SetCount((int)shop_items.size());
 		max_line_px = 0;
 		for (int idx = 0; idx < (int)shop_items.size(); idx++) {
 			const auto &e = shop_items[idx];
-			std::string full = e.locked
-			    ? fmt::format("[{}] [LOCKED] Complete {} missions to unlock", idx + 1, e.missions_needed)
-			    : fmt::format("[{}] {} \xe2\x80\x94 {}", idx + 1, e.label, AP_FormatMoneyCompact(e.price));
+			std::string full;
+			if (e.purchased) {
+				full = fmt::format("[{}] [SOLD] {}", e.display_num, e.label);
+			} else if (e.locked) {
+				full = fmt::format("[{}] [LOCKED] Complete {} missions to unlock", e.display_num, e.missions_needed);
+			} else {
+				full = fmt::format("[{}] {} \xe2\x80\x94 {}", e.display_num, e.label, AP_FormatMoneyCompact(e.price));
+			}
 			int w = GetStringBoundingBox(full).width;
 			if (w > max_line_px) max_line_px = w;
 		}
@@ -1397,7 +1490,9 @@ struct ArchipelagoShopWindow : public Window {
 		for (int i = first; i < last && i < (int)shop_items.size(); i++) {
 			const ShopEntry &e = shop_items[i];
 			TextColour tc;
-			if (e.locked) {
+			if (e.purchased) {
+				tc = TC_GREEN;
+			} else if (e.locked) {
 				tc = TC_GREY;
 			} else if (i == selected) {
 				tc = TC_WHITE;
@@ -1407,12 +1502,15 @@ struct ArchipelagoShopWindow : public Window {
 				tc = TC_GREY;
 			}
 			std::string line;
-			if (e.locked) {
+			if (e.purchased) {
+				line = fmt::format("[{}] [SOLD] {}",
+				    e.display_num, e.label);
+			} else if (e.locked) {
 				line = fmt::format("[{}] [LOCKED] Complete {} missions to unlock",
-				    i + 1, e.missions_needed);
+				    e.display_num, e.missions_needed);
 			} else {
 				line = fmt::format("[{}] {} — {}",
-				    i + 1, e.label, AP_FormatMoneyCompact(e.price));
+				    e.display_num, e.label, AP_FormatMoneyCompact(e.price));
 			}
 			int x_off = this->hscrollbar ? -this->hscrollbar->GetPosition() : 0;
 			DrawString(r.left + 4 + x_off, r.right, y, line, tc, SA_LEFT | SA_FORCE);
@@ -1432,7 +1530,11 @@ struct ArchipelagoShopWindow : public Window {
 			}
 			case WAPSH_BTN_BUY:
 				if (selected >= 0 && selected < (int)shop_items.size()) {
-					const ShopEntry &entry = shop_items[selected];
+					ShopEntry &entry = shop_items[selected];
+					if (entry.purchased) {
+						AP_ShowConsole("[AP] Shop: already purchased");
+						break;
+					}
 					if (entry.locked) {
 						AP_ShowConsole(fmt::format("[AP] Shop: locked — complete {} missions first",
 						    entry.missions_needed));
@@ -1447,9 +1549,9 @@ struct ArchipelagoShopWindow : public Window {
 					AP_SendCheckByName(entry.location_name);
 					AP_NotifyShopPurchased();
 					AP_ShowConsole(fmt::format("[AP] Shop: bought item for {}", entry.label));
-					shop_items.erase(shop_items.begin() + selected);
+					/* Mark as purchased — don't remove from list */
+					entry.purchased = true;
 					selected = -1;
-					if (this->scrollbar) this->scrollbar->SetCount((int)shop_items.size());
 					this->SetDirty();
 				}
 				break;
@@ -2027,6 +2129,9 @@ struct ArchipelagoIndexWindow : Window {
 		for (const Engine *e : Engine::Iterate()) {
 			if (e->type != vt) continue;
 
+			/* Skip engines with invalid string_id — prevents crash in SCC_ENGINE_NAME */
+			if (e->info.string_id == INVALID_STRING_ID) continue;
+
 			/* Climate filter */
 			if (!e->info.climates.Test(_settings_game.game_creation.landscape)) continue;
 
@@ -2298,9 +2403,13 @@ struct ArchipelagoColbyWindow : public Window {
 				if (cs.done) {
 					add("Event completed.", TC_GREEN);
 				} else if (cs.escaped) {
-					int days_left = std::max(0, cs.escape_ticks / 74);
+					int seconds_left = std::max(0, cs.escape_ticks / 4);
+					int minutes_left = (seconds_left + 30) / 60;
 					add("Colby has escaped!", TC_RED);
-					add(fmt::format("Awaiting capture in approximately {} days...", days_left), TC_ORANGE);
+					if (minutes_left > 0)
+						add(fmt::format("Awaiting capture in approximately {} minute{}...", minutes_left, minutes_left == 1 ? "" : "s"), TC_ORANGE);
+					else
+						add(fmt::format("Awaiting capture in {} seconds...", seconds_left), TC_ORANGE);
 				} else {
 					/* Cache link targets */
 					_link_town_id    = cs.town_id;
@@ -2484,13 +2593,25 @@ struct ArchipelagoDemigodWindow : public Window {
 
 	void OnPaint() override {
 		DemigodStatus ds = AP_GetDemigodStatus();
-		/* Tribute button: enabled only when demigod is active and player can afford it */
+		/* Tribute button: enabled only when demigod is active and player can afford it.
+		 * When friendly, dismiss is always free (tribute_cost=0), so always enabled. */
 		bool can_pay = false;
 		if (ds.active) {
-			Company *c = Company::GetIfValid(_local_company);
-			can_pay = (c != nullptr && c->money >= (Money)ds.tribute_cost);
+			if (ds.friendly) {
+				can_pay = true; /* free dismiss */
+			} else {
+				Company *c = Company::GetIfValid(_local_company);
+				can_pay = (c != nullptr && c->money >= (Money)ds.tribute_cost);
+			}
 		}
 		this->SetWidgetDisabledState(WAPDG_BTN_TRIBUTE, !ds.active || !can_pay);
+
+		/* Swap button text depending on friendly state */
+		if (ds.active && ds.friendly) {
+			this->GetWidget<NWidgetCore>(WAPDG_BTN_TRIBUTE)->SetStringTip(STR_ARCHIPELAGO_DEMIGOD_DISMISS, {});
+		} else {
+			this->GetWidget<NWidgetCore>(WAPDG_BTN_TRIBUTE)->SetStringTip(STR_ARCHIPELAGO_DEMIGOD_PAY_TRIBUTE, {});
+		}
 
 		/* Scrollbar */
 		int lines = 10;
@@ -2516,20 +2637,36 @@ struct ArchipelagoDemigodWindow : public Window {
 		y += line_h / 2;
 
 		if (ds.active) {
-			/* Active demigod info */
-			DrawString(r.left + 4, r.right - 4, y, "ACTIVE DEMIGOD:", TC_RED);
-			y += line_h;
+			if (ds.friendly) {
+				/* Friendly demigod info */
+				DrawString(r.left + 4, r.right - 4, y, "ALLIED DEMIGOD:", TC_GREEN);
+				y += line_h;
 
-			DrawString(r.left + 8, r.right - 4, y, ds.active_name, TC_ORANGE);
-			y += line_h;
+				DrawString(r.left + 8, r.right - 4, y, ds.active_name, TC_ORANGE);
+				y += line_h;
 
-			std::string theme_line = fmt::format("Theme: {}", ds.active_theme);
-			DrawString(r.left + 8, r.right - 4, y, theme_line, TC_LIGHT_BLUE);
-			y += line_h;
+				std::string theme_line = fmt::format("Theme: {}", ds.active_theme);
+				DrawString(r.left + 8, r.right - 4, y, theme_line, TC_LIGHT_BLUE);
+				y += line_h;
 
-			std::string cost_line = fmt::format("Tribute cost: {}", GetString(STR_JUST_CURRENCY_LONG, (int64_t)ds.tribute_cost));
-			DrawString(r.left + 8, r.right - 4, y, cost_line, TC_YELLOW);
-			y += line_h;
+				DrawString(r.left + 8, r.right - 4, y, "This demigod is now your ally! Yearly dividends incoming.", TC_GREEN);
+				y += line_h;
+			} else {
+				/* Hostile demigod info */
+				DrawString(r.left + 4, r.right - 4, y, "ACTIVE DEMIGOD:", TC_RED);
+				y += line_h;
+
+				DrawString(r.left + 8, r.right - 4, y, ds.active_name, TC_ORANGE);
+				y += line_h;
+
+				std::string theme_line = fmt::format("Theme: {}", ds.active_theme);
+				DrawString(r.left + 8, r.right - 4, y, theme_line, TC_LIGHT_BLUE);
+				y += line_h;
+
+				std::string cost_line = fmt::format("Tribute cost: {}", GetString(STR_JUST_CURRENCY_LONG, (int64_t)ds.tribute_cost));
+				DrawString(r.left + 8, r.right - 4, y, cost_line, TC_YELLOW);
+				y += line_h;
+			}
 		} else if (ds.next_spawn_year > 0 && ds.defeated_count < ds.total_count) {
 			/* Next spawn countdown */
 			std::string next = fmt::format("Next demigod arrives in year: {}", ds.next_spawn_year);
@@ -2818,4 +2955,264 @@ void ShowAPVictoryScreen()
 {
 	CloseWindowByClass(WC_ENDSCREEN);
 	new APVictoryWindow();
+}
+
+/* =========================================================================
+ * AP START CHOICE WINDOW — 3-button dialog (Single Player / Host / Load)
+ * ========================================================================= */
+
+enum APStartChoiceWidgets : WidgetID {
+	WAPSC_MESSAGE,
+	WAPSC_BTN_SINGLE,
+	WAPSC_BTN_HOST,
+	WAPSC_BTN_LOAD,
+};
+
+static constexpr std::initializer_list<NWidgetPart> _nested_ap_start_choice_widgets = {
+	NWidget(WWT_CAPTION, COLOUR_GREY), SetStringTip(STR_ARCHIPELAGO_START_CHOICE_CAPTION_V2, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	NWidget(WWT_PANEL, COLOUR_GREY),
+		NWidget(NWID_VERTICAL), SetPIP(8, 6, 8), SetPadding(8),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPSC_MESSAGE), SetStringTip(STR_ARCHIPELAGO_START_MESSAGE), SetMinimalSize(260, 14), SetFill(1, 0),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPSC_BTN_SINGLE), SetStringTip(STR_ARCHIPELAGO_START_SINGLE), SetMinimalSize(260, 14), SetFill(1, 0),
+			/* Host Multiplayer button removed — use AP Bridge .exe instead */
+			NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPSC_BTN_LOAD),   SetStringTip(STR_ARCHIPELAGO_START_LOAD),   SetMinimalSize(260, 14), SetFill(1, 0),
+		EndContainer(),
+	EndContainer(),
+};
+
+struct APStartChoiceWindow : public Window {
+	APStartChoiceWindow(WindowDesc &desc) : Window(desc)
+	{
+		this->InitNested(0);
+	}
+
+	void Close(int data = 0) override
+	{
+		AP_SetWaitingForStartChoice(false);
+		this->Window::Close(data);
+	}
+
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
+	{
+		switch (widget) {
+			case WAPSC_BTN_SINGLE:
+				/* Single Player — same as old "Yes" path */
+				AP_SetWaitingForStartChoice(false);
+				AP_ConsumeWorldStart();
+				{
+					uint32_t seed = AP_GetWorldSeed();
+					IConsolePrint(CC_WHITE, fmt::format("[AP] Generating world (seed={})...", seed));
+					_is_network_server = false;
+					StartNewGameWithoutGUI(seed);
+				}
+				this->Close();
+				break;
+
+			/* WAPSC_BTN_HOST removed — multiplayer is now managed by the AP Bridge .exe */
+
+			case WAPSC_BTN_LOAD:
+				/* Load Save — same as old "No" path */
+				AP_SetWaitingForStartChoice(false);
+				AP_SetPendingLoadSave();
+				ShowSaveLoadDialog(FT_SAVEGAME, SLO_LOAD);
+				this->Close();
+				break;
+		}
+	}
+};
+
+static WindowDesc _ap_start_choice_desc(
+	WDP_CENTER, {}, 300, 120,
+	WC_AP_START_CHOICE, WC_NONE, {},
+	_nested_ap_start_choice_widgets
+);
+
+void ShowAPStartChoiceWindow()
+{
+	CloseWindowByClass(WC_AP_START_CHOICE);
+	new APStartChoiceWindow(_ap_start_choice_desc);
+}
+
+/* =========================================================================
+ * AP JOIN MULTIPLAYER WINDOW — 4-field join: AP Server, Slot, Password, Game IP
+ * ========================================================================= */
+
+enum APJoinWidgets : WidgetID {
+	WAPJOIN_LABEL_APSERVER,
+	WAPJOIN_EDIT_APSERVER,
+	WAPJOIN_LABEL_SLOT,
+	WAPJOIN_EDIT_SLOT,
+	WAPJOIN_LABEL_PASS,
+	WAPJOIN_EDIT_PASS,
+	WAPJOIN_LABEL_PLAYERNAME,
+	WAPJOIN_EDIT_PLAYERNAME,
+	WAPJOIN_LABEL_GAMESERVER,
+	WAPJOIN_EDIT_GAMESERVER,
+	WAPJOIN_BTN_JOIN,
+	WAPJOIN_STATUS,
+};
+
+static constexpr std::initializer_list<NWidgetPart> _nested_ap_join_widgets = {
+	NWidget(WWT_CAPTION, COLOUR_ORANGE), SetStringTip(STR_AP_JOIN_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	NWidget(WWT_PANEL, COLOUR_ORANGE),
+		NWidget(NWID_VERTICAL), SetPIP(8, 4, 8), SetPadding(8),
+			/* AP Server address */
+			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+				NWidget(WWT_TEXT, INVALID_COLOUR, WAPJOIN_LABEL_APSERVER), SetStringTip(STR_AP_JOIN_LABEL_APSERVER), SetMinimalSize(110, 14),
+				NWidget(WWT_EDITBOX, COLOUR_GREY, WAPJOIN_EDIT_APSERVER), SetStringTip(STR_EMPTY), SetMinimalSize(220, 14), SetFill(1, 0),
+			EndContainer(),
+			/* Slot name */
+			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+				NWidget(WWT_TEXT, INVALID_COLOUR, WAPJOIN_LABEL_SLOT), SetStringTip(STR_AP_JOIN_LABEL_SLOT), SetMinimalSize(110, 14),
+				NWidget(WWT_EDITBOX, COLOUR_GREY, WAPJOIN_EDIT_SLOT), SetStringTip(STR_EMPTY), SetMinimalSize(220, 14), SetFill(1, 0),
+			EndContainer(),
+			/* Password */
+			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+				NWidget(WWT_TEXT, INVALID_COLOUR, WAPJOIN_LABEL_PASS), SetStringTip(STR_AP_JOIN_LABEL_PASSWORD), SetMinimalSize(110, 14),
+				NWidget(WWT_EDITBOX, COLOUR_GREY, WAPJOIN_EDIT_PASS), SetStringTip(STR_EMPTY), SetMinimalSize(220, 14), SetFill(1, 0),
+			EndContainer(),
+			/* Player name */
+			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+				NWidget(WWT_TEXT, INVALID_COLOUR, WAPJOIN_LABEL_PLAYERNAME), SetStringTip(STR_AP_JOIN_LABEL_PLAYERNAME), SetMinimalSize(110, 14),
+				NWidget(WWT_EDITBOX, COLOUR_GREY, WAPJOIN_EDIT_PLAYERNAME), SetStringTip(STR_EMPTY), SetMinimalSize(220, 14), SetFill(1, 0),
+			EndContainer(),
+			/* Game server IP */
+			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+				NWidget(WWT_TEXT, INVALID_COLOUR, WAPJOIN_LABEL_GAMESERVER), SetStringTip(STR_AP_JOIN_LABEL_GAMESERVER), SetMinimalSize(110, 14),
+				NWidget(WWT_EDITBOX, COLOUR_GREY, WAPJOIN_EDIT_GAMESERVER), SetStringTip(STR_EMPTY), SetMinimalSize(220, 14), SetFill(1, 0),
+			EndContainer(),
+			/* Status line */
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPJOIN_STATUS), SetMinimalSize(340, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			/* Join button */
+			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPJOIN_BTN_JOIN), SetStringTip(STR_AP_JOIN_BTN_CONNECT), SetMinimalSize(120, 16), SetFill(1, 0),
+			EndContainer(),
+		EndContainer(),
+	EndContainer(),
+};
+
+struct APJoinMultiplayerWindow : public Window {
+	QueryString apserver_buf;
+	QueryString slot_buf;
+	QueryString pass_buf;
+	QueryString playername_buf;
+	QueryString gameserver_buf;
+	std::string apserver_str, slot_str, pass_str, playername_str, gameserver_str;
+
+	APJoinMultiplayerWindow(WindowDesc &desc) : Window(desc),
+		apserver_buf(256), slot_buf(128), pass_buf(128), playername_buf(128), gameserver_buf(256)
+	{
+		this->InitNested(0);
+		this->querystrings[WAPJOIN_EDIT_APSERVER]    = &this->apserver_buf;
+		this->querystrings[WAPJOIN_EDIT_SLOT]         = &this->slot_buf;
+		this->querystrings[WAPJOIN_EDIT_PASS]         = &this->pass_buf;
+		this->querystrings[WAPJOIN_EDIT_PLAYERNAME]   = &this->playername_buf;
+		this->querystrings[WAPJOIN_EDIT_GAMESERVER]   = &this->gameserver_buf;
+
+		/* Pre-fill from last known AP connection if available */
+		if (!_ap_last_host.empty()) {
+			std::string full = _ap_last_host + ":" + fmt::format("{}", _ap_last_port);
+			this->apserver_buf.text.Assign(full);
+			this->apserver_str = full;
+		} else {
+			this->apserver_buf.text.Assign("archipelago.gg:38281");
+			this->apserver_str = "archipelago.gg:38281";
+		}
+		if (!_ap_last_slot.empty()) {
+			this->slot_buf.text.Assign(_ap_last_slot);
+			this->slot_str = _ap_last_slot;
+		}
+		if (!_ap_last_pass.empty()) {
+			this->pass_buf.text.Assign(_ap_last_pass);
+			this->pass_str = _ap_last_pass;
+		}
+		/* Pre-fill player name from network settings or slot name */
+		if (!_settings_client.network.client_name.empty() &&
+		    _settings_client.network.client_name != "Player") {
+			this->playername_buf.text.Assign(_settings_client.network.client_name);
+			this->playername_str = _settings_client.network.client_name;
+		} else if (!_ap_last_slot.empty()) {
+			this->playername_buf.text.Assign(_ap_last_slot);
+			this->playername_str = _ap_last_slot;
+		} else {
+			this->playername_buf.text.Assign("Player");
+			this->playername_str = "Player";
+		}
+		this->gameserver_buf.text.Assign("127.0.0.1:3979");
+		this->gameserver_str = "127.0.0.1:3979";
+
+		this->SetFocusedWidget(WAPJOIN_EDIT_GAMESERVER);
+	}
+
+	void OnEditboxChanged(WidgetID wid) override
+	{
+		if (wid == WAPJOIN_EDIT_APSERVER)    this->apserver_str    = this->apserver_buf.text.GetText();
+		if (wid == WAPJOIN_EDIT_SLOT)        this->slot_str        = this->slot_buf.text.GetText();
+		if (wid == WAPJOIN_EDIT_PASS)        this->pass_str        = this->pass_buf.text.GetText();
+		if (wid == WAPJOIN_EDIT_PLAYERNAME)  this->playername_str  = this->playername_buf.text.GetText();
+		if (wid == WAPJOIN_EDIT_GAMESERVER)  this->gameserver_str  = this->gameserver_buf.text.GetText();
+	}
+
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
+	{
+		if (widget != WAPJOIN_BTN_JOIN) return;
+
+		/* Validate fields */
+		if (this->gameserver_str.empty() || this->slot_str.empty()) {
+			ShowErrorMessage(GetEncodedString(STR_JUST_RAW_STRING,
+				std::string("Please fill in at least Game Server and Slot name.")), {}, WL_ERROR);
+			return;
+		}
+
+		/* ── Ensure AP client exists ── */
+		if (_ap_client == nullptr) InitArchipelago();
+		if (_ap_client == nullptr) return;
+
+		/* ── Parse AP server address ── */
+		std::string raw = this->apserver_str;
+		if (raw.rfind("wss://", 0) == 0) raw = raw.substr(6);
+		else if (raw.rfind("ws://", 0) == 0) raw = raw.substr(5);
+
+		std::string host = raw;
+		uint16_t port = 38281;
+		auto colon = raw.rfind(':');
+		if (colon != std::string::npos) {
+			host = raw.substr(0, colon);
+			int p = ParseInteger<int>(raw.substr(colon + 1)).value_or(0);
+			if (p > 0 && p < 65536) port = (uint16_t)p;
+		}
+
+		_ap_last_host = host;
+		_ap_last_port = port;
+		_ap_last_slot = this->slot_str;
+		_ap_last_pass = this->pass_str;
+		AP_SaveConnectionConfig();
+
+		/* ── Set player name ── */
+		if (!this->playername_str.empty()) {
+			_settings_client.network.client_name = this->playername_str;
+		}
+
+		/* ── Request deferred MP join ── */
+		/* Connect to AP server first. When slot_data arrives, the AP
+		 * manager will apply all NewGRFs + settings (just like for SP
+		 * world generation), then auto-connect to the game server. */
+		AP_RequestMPJoin(this->gameserver_str, this->slot_str);
+
+		_ap_client->Connect(host, port, this->slot_str, this->pass_str, "OpenTTD-Exp", false);
+
+		this->Close();
+	}
+};
+
+static WindowDesc _ap_join_desc(
+	WDP_CENTER, {}, 400, 160,
+	WC_AP_JOIN_MULTIPLAYER, WC_NONE, {},
+	_nested_ap_join_widgets
+);
+
+void ShowAPJoinMultiplayerWindow()
+{
+	CloseWindowByClass(WC_AP_JOIN_MULTIPLAYER);
+	new APJoinMultiplayerWindow(_ap_join_desc);
 }

@@ -28,6 +28,7 @@
 #include "base_media_sounds.h"
 #include "base_media_music.h"
 #include "engine_base.h"
+#include "engine_cmd.h"
 #include "engine_func.h"
 #include "engine_type.h"
 #include "company_func.h"
@@ -39,6 +40,7 @@
 #include "town_type.h"
 #include "town_cmd.h"
 #include "command_func.h"
+#include "misc_cmd.h"
 #include "cargotype.h"
 #include "core/random_func.hpp"
 #include "rail.h"
@@ -77,6 +79,7 @@
 #include "currency.h"
 #include "signs_base.h"
 #include "economy_func.h"
+#include "network/network_func.h"   /* NetworkAddChatMessage — demigod chat */
 #include "cargopacket.h"
 #include "newgrf_config.h"
 #include "newgrf_object.h"
@@ -87,6 +90,10 @@
 #include "terraform_cmd.h"
 #include "gfxinit.h"
 #include "fileio_func.h"
+#include "network/network.h"
+#include "network/network_func.h"
+#include "saveload/saveload.h"
+#include "fios.h"
 #include "safeguards.h"
 
 /* Console log helpers */
@@ -94,6 +101,34 @@
 #define AP_OK(msg)   IConsolePrint(CC_WHITE,   "[AP] " + std::string(msg))
 #define AP_WARN(msg) IConsolePrint(CC_WARNING, "[AP] WARNING: " + std::string(msg))
 #define AP_ERR(msg)  IConsolePrint(CC_ERROR,   "[AP] ERROR: " + std::string(msg))
+
+/** File-only trace log — writes to ap_console.log but NOT to the in-game
+ *  console window.  Use for verbose diagnostics that would spam the player. */
+static void AP_Trace(const std::string &msg)
+{
+	extern std::optional<FileHandle> _iconsole_output_file;
+	if (_iconsole_output_file.has_value()) {
+		try {
+			FILE *f = *_iconsole_output_file;
+			fmt::print(f, "{}{}\n", GetLogPrefix(), "[AP][TRACE] " + msg);
+			fflush(f);
+		} catch (const std::system_error &) {}
+	}
+}
+#define AP_TRACE(msg) AP_Trace(msg)
+
+/** Network-safe money change — uses CMD_CHANGE_BANK_BALANCE (deity).
+ *  Propagates to all multiplayer clients via the command queue. */
+static void AP_ChangeMoney(CompanyID cid, Money delta)
+{
+	AP_TRACE(fmt::format("ChangeMoney: company={} delta={}", cid.base(), (int64_t)delta));
+	CompanyID old = _current_company;
+	_current_company = OWNER_DEITY;
+	Command<CMD_CHANGE_BANK_BALANCE>::Do(
+		DoCommandFlags{DoCommandFlag::Execute},
+		(TileIndex)0, delta, cid, EXPENSES_OTHER);
+	_current_company = old;
+}
 
 /* -------------------------------------------------------------------------
  * Formatting helpers — currency respects player's chosen symbol/separator;
@@ -260,10 +295,9 @@ static void AP_RenameTowns()
 		return (int)a->index.base() < (int)b->index.base();
 	});
 
-	/* Shuffle names array using the map's random seed for determinism */
-	/* Use a simple Fisher-Yates with OpenTTD's Random() */
+	/* Shuffle names array (InteractiveRandom — safe for MP, won't desync game RNG) */
 	for (int i = (int)names.size() - 1; i > 0; i--) {
-		int j = (int)(RandomRange((uint32_t)(i + 1)));
+		int j = (int)(InteractiveRandomRange((uint32_t)(i + 1)));
 		std::swap(names[i], names[j]);
 	}
 
@@ -960,30 +994,112 @@ static bool     _ap_staging_stats            = false;
 static std::string _ap_staging_shop_sent;
 static bool        _ap_staging_shop_sent_valid = false;
 
+/* Staging for AP-server checked locations — received via Connected/RoomUpdate.
+ * Applied after session init (which clears _ap_sent_shop_locations and mission flags). */
+static std::set<std::string> _ap_server_checked_locations;
+static bool                  _ap_server_checked_pending = false;
+
+/* Staging for completed missions — AP_OnSlotData overwrites _ap_pending_sd (including
+ * all mission completion flags). The saveload stores the completed mission string here,
+ * and it gets re-applied in first-tick setup after AP_OnSlotData has run. */
+static std::string _ap_staging_completed_missions;
+static bool        _ap_staging_completed_valid = false;
+
+/* Staging for maintain counters — same timing issue as completed missions. */
+static std::string _ap_staging_maintain_counters;
+static bool        _ap_staging_maintain_valid  = false;
+
+/* Staging for named entity cumulative progress — AP_OnSlotData overwrites
+ * _ap_pending_sd (including named_entity.cumulative on all missions).
+ * The saveload stores the string here and it gets re-applied AFTER
+ * AP_AssignNamedEntities() in first-tick setup. */
+static std::string _ap_staging_named_entities;
+static bool        _ap_staging_named_valid = false;
+
+/** Normalize typographic quotes to ASCII — GRFs may use U+2018/U+2019 (single)
+ *  or U+201C/U+201D (double) while items.py uses plain ASCII ' and ". */
+static std::string NormalizeQuotes(const std::string &s)
+{
+	std::string out;
+	out.reserve(s.size());
+	for (size_t i = 0; i < s.size(); ) {
+		uint8_t c = static_cast<uint8_t>(s[i]);
+		if (c == 0xE2 && i + 2 < s.size()) {
+			uint8_t b1 = static_cast<uint8_t>(s[i+1]);
+			uint8_t b2 = static_cast<uint8_t>(s[i+2]);
+			if (b1 == 0x80 && (b2 == 0x98 || b2 == 0x99)) {
+				out += '\''; i += 3; continue;  /* U+2018/U+2019 → ' */
+			}
+			if (b1 == 0x80 && (b2 == 0x9C || b2 == 0x9D)) {
+				out += '"';  i += 3; continue;  /* U+201C/U+201D → " */
+			}
+		}
+		out += s[i]; i++;
+	}
+	return out;
+}
+
 static void BuildEngineMap()
 {
 	_ap_engine_map.clear();
 	_ap_engine_extras.clear();
-	for (const Engine *e : Engine::Iterate()) {
-		/* Primary: context-aware name — returns the NewGRF/callback name when
-		 * available, and the language-file name for vanilla engines.
-		 * However, EngineNameContext::PurchaseList only returns a non-empty name
-		 * for engines that are currently in the purchase list (i.e. introduced and
-		 * not yet expired).  With never_expire_vehicles=true already set above,
-		 * expiry is no longer an issue — but intro_date still applies in early
-		 * game years, so some future engines may still return empty here. */
-		std::string name = GetString(STR_ENGINE_NAME,
-		    PackEngineNameDParam(e->index, EngineNameContext::PurchaseList));
 
-		/* Fallback: if the PurchaseList context returned empty (engine not yet
-		 * available for purchase), get the name directly from the engine's
-		 * string_id.  This is always populated for both vanilla and NewGRF
-		 * engines, so it gives us the name regardless of availability. */
-		if (name.empty() && e->info.string_id != STR_NEWGRF_INVALID_ENGINE) {
+	/* Military Items GRF: engine names are assigned by Action 4 during GRF
+	 * loading, conditioned on param[0].  AP_ConsumeWorldStart sets the correct
+	 * params ({1,1,4,4,0}) for NEW games.  Saves created before this fix have
+	 * param[0]=0 → 123 empty aircraft engine slots with no names, no cargo,
+	 * no speed — these are not real purchasable aircraft and cannot be fixed
+	 * retroactively (engine slot allocation is baked into the save).
+	 * For these old saves, MIL aircraft items are silently skipped. */
+
+	int skipped_empty = 0;
+	int recovered_invalid = 0;
+	int recovered_newgrf = 0;
+	for (const Engine *e : Engine::Iterate()) {
+		std::string name;
+		bool was_invalid = (e->info.string_id == INVALID_STRING_ID);
+
+		/* Try every EngineNameContext.  The SCC_ENGINE_NAME handler is safe for
+		 * all engines: it null-checks, tries user name, tries GRF callback,
+		 * then checks INVALID_STRING_ID before resolving string_id.
+		 * Some GRFs (Military Items) only respond to specific contexts. */
+		static const EngineNameContext contexts[] = {
+			EngineNameContext::PurchaseList,
+			EngineNameContext::Generic,
+			EngineNameContext::PreviewNews,
+			EngineNameContext::VehicleDetails,
+			EngineNameContext::AutoreplaceVehicleInUse,
+		};
+		for (auto ctx : contexts) {
+			name = GetString(STR_ENGINE_NAME,
+			    PackEngineNameDParam(e->index, ctx));
+			if (!name.empty()) break;
+		}
+
+		/* Final fallback: string_id directly (works for vanilla & some GRFs) */
+		if (name.empty() && e->info.string_id != INVALID_STRING_ID &&
+		    e->info.string_id != STR_NEWGRF_INVALID_ENGINE) {
 			name = GetString(e->info.string_id);
 		}
 
-		if (name.empty()) continue;
+		if (was_invalid && !name.empty()) recovered_invalid++;
+		if (e->info.string_id == STR_NEWGRF_INVALID_ENGINE && !name.empty()) recovered_newgrf++;
+
+		if (name.empty()) {
+			skipped_empty++;
+			continue;
+		}
+
+		/* Trim leading/trailing whitespace — some GRFs produce names with
+		 * a leading space (e.g. " Douglas DC-3 Dakota" from Aircraft2025). */
+		size_t start = name.find_first_not_of(" \t\r\n");
+		size_t end = name.find_last_not_of(" \t\r\n");
+		if (start == std::string::npos) {
+			skipped_empty++;
+			continue;
+		}
+		name = name.substr(start, end - start + 1);
+		name = NormalizeQuotes(name);
 
 		if (_ap_engine_map.count(name) == 0) {
 			_ap_engine_map[name] = e->index;
@@ -996,8 +1112,34 @@ static void BuildEngineMap()
 	}
 	_ap_engine_map_built = true;
 	Debug(misc, 1, "[AP] Engine map built: {} engines", _ap_engine_map.size());
-	AP_LOG(fmt::format("Engine map built: {} engines indexed ({} with shared names)",
-	       _ap_engine_map.size(), _ap_engine_extras.size()));
+	AP_LOG(fmt::format("Engine map built: {} engines indexed ({} with shared names), skipped_empty={}, recovered_invalid={}, recovered_newgrf={}",
+	       _ap_engine_map.size(), _ap_engine_extras.size(), skipped_empty, recovered_invalid, recovered_newgrf));
+
+	/* Dump full engine map to ap_engine_map.log for debugging name mismatches */
+	{
+		FILE *emap = fopen("ap_engine_map.log", "w");
+		if (emap) {
+			fmt::print(emap, "=== AP Engine Map ({} entries, {} extras, {} skipped) ===\n",
+			           _ap_engine_map.size(), _ap_engine_extras.size(), skipped_empty);
+			for (const auto &pair : _ap_engine_map) {
+				const Engine *eng = Engine::GetIfValid(pair.second);
+				fmt::print(emap, "  [{}] '{}' (type={} grfid={:08X})\n",
+				           pair.second, pair.first,
+				           eng ? (int)eng->type : -1,
+				           eng && eng->grf_prop.grffile ? eng->grf_prop.grfid : 0);
+			}
+			fmt::print(emap, "\n=== Extras (shared names) ===\n");
+			for (const auto &pair : _ap_engine_extras) {
+				fmt::print(emap, "  '{}' => [", pair.first);
+				for (size_t i = 0; i < pair.second.size(); i++) {
+					if (i > 0) fmt::print(emap, ", ");
+					fmt::print(emap, "{}", pair.second[i]);
+				}
+				fmt::print(emap, "]\n");
+			}
+			fclose(emap);
+		}
+	}
 }
 
 /**
@@ -1041,6 +1183,9 @@ static void ForceEnglishLanguage()
 
 bool AP_IsActive()
 {
+	/* Bridge mode: the Bridge controls AP, not a local client. */
+	if (_ap_bridge_mode) return true;
+
 	return _ap_client != nullptr &&
 	       _ap_client->GetState() == APState::AUTHENTICATED;
 }
@@ -1103,9 +1248,15 @@ void AP_RegisterConsoleCommands()
  *   - Toolbar invalidation
  * ---------------------------------------------------------------------- */
 
-static bool AP_UnlockEngineByName(const std::string &name)
+bool AP_UnlockEngineByName(const std::string &name)
 {
 	CompanyID cid = _local_company;
+	/* Bridge mode: dedicated server has _local_company == COMPANY_SPECTATOR.
+	 * Use Company 0 (first player's company) as the target for CMD_ENGINE_CTRL.
+	 * If Company 0 doesn't exist yet, we still proceed — the company_avail bit
+	 * and _ap_unlocked_engine_ids entry are set so the engine is available when
+	 * a company IS created. */
+	if (_ap_bridge_mode) cid = CompanyID(0);
 	if (cid >= MAX_COMPANIES) return false;
 
 	if (!_ap_engine_map_built) BuildEngineMap();
@@ -1174,6 +1325,28 @@ static bool AP_UnlockEngineByName(const std::string &name)
 		{"Yate Aerospace YAC 1000",   "Yate Aerospace YAe46"},
 		{"Kalmar Industries TK1",     "Kelling K1"},
 		{"Chugsworth Academy Bullet", "Kelling K6"},
+		/* Military Items Aircraft — items.py names vs in-game GRF names.
+		 * Fuzzy (starts-with) matching handles nicknames like
+		 *   "Avia B.3" → "Avia B.3 \"Bull\""
+		 *   "Aero L-29" → "Aero L-29 \"Dolphin\""
+		 * These aliases handle diacritics and naming differences. */
+		{"Letov S.328",                      "Letov \xC5\xA0-328"},       /* Š-328; GRF uses diacritic + hyphen */
+		{"Zlin Z.12",                        "Zl\xC3\xADn Z.12"},        /* í; GRF uses diacritic */
+		/* MiG-15/19/21: GRF uses "Mikoyan-Gurevich" (full name) — NO alias needed.
+		 * MiG-29: GRF uses "Mikoyan" (short modern name) — alias needed. */
+		{"Mikoyan-Gurevich MiG-29",          "Mikoyan MiG-29"},
+		{"Bell UH-1 Iroquois",               "Bell UH-1 Iroquois / HU-1 \"Huey\""},
+		{"Aerospatiale SA 321 Super Frelon", "A\xC3\xA9rospatiale SA 321 Super Frelon"}, /* é */
+		{"Aerospatiale SA 330 Puma",         "A\xC3\xA9rospatiale SA 330 Puma"},
+		{"Aero A.304 (courier)",             "Aero K-75"},              /* different GRF designation */
+		{"Kamov Ka-62",                      "Kamow Ka-62"},            /* GRF typo: 'w' instead of 'v' */
+		/* HEQS wagons/trailers: GRF registers names in square brackets */
+		{"Generic Medium Trailer",           "[Generic Medium Trailer]"},
+		{"Kander Trailer",                   "[Kander Trailer]"},
+		{"Tram Wagon 1",                     "[Tram Wagon 1]"},
+		{"Tram Wagon 2",                     "[Tram Wagon 2]"},
+		{"Tram Wagon 3",                     "[Tram Wagon 3]"},
+		{"Express Tram Wagon 1",             "[Express Tram Wagon 1]"},
 		/* Ships */
 		{"Bakewell Lake Cruiser",        "Bakewell Cargo Ship"},
 		{"Chugsworth Packet",            "Chugger-Chug Passenger Ferry"},
@@ -1187,15 +1360,45 @@ static bool AP_UnlockEngineByName(const std::string &name)
 	/* Resolve alias if needed */
 	std::string resolved = name;
 
-	/* Iron Horse engines are prefixed "IH: " in AP item names to avoid
-	 * collisions with vanilla engines (e.g. "IH: Dragon" vs vanilla "Dragon").
-	 * Strip the prefix before looking up in the engine map — Iron Horse
-	 * registers its vehicles with plain names like "4-4-2 Lark". */
+	/* NewGRF engines are prefixed in AP item names to avoid collisions with
+	 * vanilla engines. Strip the prefix before looking up in the engine map —
+	 * GRFs register their vehicles with plain names. */
 	static const std::string ih_prefix = "IH: ";
+	static const std::string mil_prefix = "MIL: ";
+	static const std::string shark_prefix = "SHARK: ";
+	static const std::string hv_prefix = "HV: ";
+	static const std::string heqs_prefix = "HEQS: ";
+	static const std::string vac_prefix = "VAC: ";
+	static const std::string ap25_prefix = "AP25: ";
+
 	if (resolved.size() > ih_prefix.size() &&
 	    resolved.substr(0, ih_prefix.size()) == ih_prefix) {
 		resolved = resolved.substr(ih_prefix.size());
 		Debug(misc, 1, "[AP] Iron Horse prefix stripped: '{}' → '{}'", name, resolved);
+	} else if (resolved.size() > mil_prefix.size() &&
+	           resolved.substr(0, mil_prefix.size()) == mil_prefix) {
+		resolved = resolved.substr(mil_prefix.size());
+		Debug(misc, 1, "[AP] Military Items prefix stripped: '{}' → '{}'", name, resolved);
+	} else if (resolved.size() > shark_prefix.size() &&
+	           resolved.substr(0, shark_prefix.size()) == shark_prefix) {
+		resolved = resolved.substr(shark_prefix.size());
+		Debug(misc, 1, "[AP] SHARK prefix stripped: '{}' → '{}'", name, resolved);
+	} else if (resolved.size() > hv_prefix.size() &&
+	           resolved.substr(0, hv_prefix.size()) == hv_prefix) {
+		resolved = resolved.substr(hv_prefix.size());
+		Debug(misc, 1, "[AP] Hover Vehicles prefix stripped: '{}' → '{}'", name, resolved);
+	} else if (resolved.size() > heqs_prefix.size() &&
+	           resolved.substr(0, heqs_prefix.size()) == heqs_prefix) {
+		resolved = resolved.substr(heqs_prefix.size());
+		Debug(misc, 1, "[AP] HEQS prefix stripped: '{}' → '{}'", name, resolved);
+	} else if (resolved.size() > vac_prefix.size() &&
+	           resolved.substr(0, vac_prefix.size()) == vac_prefix) {
+		resolved = resolved.substr(vac_prefix.size());
+		Debug(misc, 1, "[AP] Vactrain prefix stripped: '{}' → '{}'", name, resolved);
+	} else if (resolved.size() > ap25_prefix.size() &&
+	           resolved.substr(0, ap25_prefix.size()) == ap25_prefix) {
+		resolved = resolved.substr(ap25_prefix.size());
+		Debug(misc, 1, "[AP] Aircraftpack prefix stripped: '{}' → '{}'", name, resolved);
 	}
 
 	auto alias_it = aliases.find(resolved);
@@ -1204,10 +1407,61 @@ static bool AP_UnlockEngineByName(const std::string &name)
 		Debug(misc, 1, "[AP] Engine alias: '{}' → '{}'", name, resolved);
 	}
 
+	/* Trim whitespace and normalize quotes to match engine map keys. */
+	{
+		size_t s = resolved.find_first_not_of(" \t\r\n");
+		size_t e = resolved.find_last_not_of(" \t\r\n");
+		if (s != std::string::npos) resolved = resolved.substr(s, e - s + 1);
+	}
+	resolved = NormalizeQuotes(resolved);
+
 	auto it = _ap_engine_map.find(resolved);
 	if (it == _ap_engine_map.end()) {
+		/* Fuzzy match: some GRFs use full names (e.g. "Newport Container Feeder")
+		 * while items.py only stores the short prefix (e.g. "Newport").
+		 * Try starts-with matching as a fallback. */
+		for (const auto &pair : _ap_engine_map) {
+			if (pair.first.size() > resolved.size() &&
+			    pair.first.compare(0, resolved.size(), resolved) == 0 &&
+			    pair.first[resolved.size()] == ' ') {
+				resolved = pair.first;  /* update resolved to the full name */
+				it = _ap_engine_map.find(resolved);
+				AP_LOG(fmt::format("FUZZY_MATCH: '{}' => '{}' (eid {})", name, resolved, pair.second));
+				break;
+			}
+		}
+	}
+	if (it == _ap_engine_map.end()) {
+		/* Engines that vanilla has but are completely replaced/removed by GRFs.
+		 * Iron Horse (Vactrain) replaces Lev1/Lev2 engine slots entirely. */
+		static const std::set<std::string> known_absent = {
+			"Lev1 'Leviathan' (Electric)",
+			"Lev2 'Cyclops' (Electric)",
+		};
+		if (known_absent.count(resolved)) {
+			Debug(misc, 1, "[AP] UnlockEngine: '{}' replaced by GRF — skipping", resolved);
+			AP_LOG(fmt::format("UNLOCK_SKIP_GRF: '{}'", resolved));
+			return true;  /* not an error — GRF replaced it */
+		}
+
+		/* Non-vehicle items (traps, utilities, shop items) are expected to
+		 * fail engine lookup — they'll be handled by the trap/utility chain.
+		 * Don't log UNLOCK_FAIL for these to keep the log clean. */
+		static const std::set<std::string> non_vehicle_prefixes = {
+			"Breakdown Wave", "Maintenance Surge", "Signal Failure", "Fuel Shortage",
+			"Cash Injection", "Loan Reduction", "Cargo Bonus", "Reliability Boost",
+			"Town Growth Boost", "Free Station Upgrade", "Speed Boost",
+			"License Revoke", "Station Downgrade", "Industry Decline",
+		};
+		for (const auto &prefix : non_vehicle_prefixes) {
+			if (resolved.compare(0, prefix.size(), prefix) == 0) {
+				return false;  /* silently — not a vehicle */
+			}
+		}
+
 		Debug(misc, 1, "[AP] UnlockEngine: '{}' (resolved: '{}') not found in engine map",
 		      name, resolved);
+		AP_LOG(fmt::format("UNLOCK_FAIL: original='{}' resolved='{}' map_size={}", name, resolved, _ap_engine_map.size()));
 		return false;
 	}
 
@@ -1222,7 +1476,25 @@ static bool AP_UnlockEngineByName(const std::string &name)
 	 * EnableEngineForCompany() only sets company_avail, but the build-vehicle
 	 * window also checks EngineFlag::Available before showing any engine. */
 	e->flags.Set(EngineFlag::Available);
-	EnableEngineForCompany(it->second, cid);
+	if (_ap_bridge_mode) {
+		/* Bridge mode: unlock for ALL companies.
+		 * Use ::Post so the command propagates to all connected clients
+		 * via OpenTTD's network command system — prevents desync. */
+		e->company_avail.Set();
+		for (const Company *co : Company::Iterate()) {
+			CompanyID old = _current_company;
+			_current_company = OWNER_DEITY;
+			Command<CMD_ENGINE_CTRL>::Post(it->second, co->index, true);
+			_current_company = old;
+		}
+	} else {
+		/* Singleplayer: execute directly */
+		CompanyID old = _current_company;
+		_current_company = OWNER_DEITY;
+		Command<CMD_ENGINE_CTRL>::Do(DoCommandFlags{DoCommandFlag::Execute},
+			it->second, cid, true);
+		_current_company = old;
+	}
 
 	/* Unlock any additional engines that share this name (e.g. all three
 	 * "Oil Tanker" wagon variants — Rail, Monorail, Maglev). */
@@ -1233,7 +1505,21 @@ static bool AP_UnlockEngineByName(const std::string &name)
 			if (extra_e == nullptr) continue;
 			_ap_unlocked_engine_ids.insert(extra_eid);
 			extra_e->flags.Set(EngineFlag::Available);
-			EnableEngineForCompany(extra_eid, cid);
+			if (_ap_bridge_mode) {
+				extra_e->company_avail.Set();
+				for (const Company *co : Company::Iterate()) {
+					CompanyID old = _current_company;
+					_current_company = OWNER_DEITY;
+					Command<CMD_ENGINE_CTRL>::Post(extra_eid, co->index, true);
+					_current_company = old;
+				}
+			} else {
+				CompanyID old = _current_company;
+				_current_company = OWNER_DEITY;
+				Command<CMD_ENGINE_CTRL>::Do(DoCommandFlags{DoCommandFlag::Execute},
+					extra_eid, cid, true);
+				_current_company = old;
+			}
 		}
 	}
 
@@ -1285,13 +1571,15 @@ static void AP_ColbyArrestCallback(Window *, bool arrest)
 {
 	if (arrest) {
 		/* Arrest Colby — £10M reward */
+		AP_TRACE("ColbyEvent: Player chose ARREST — £10M reward");
 		CompanyID cid = _local_company;
 		Company *c = Company::GetIfValid(cid);
-		if (c != nullptr) c->money += (Money)10000000LL;
+		if (c != nullptr) AP_ChangeMoney(cid, (Money)10000000LL);
 		AP_ShowNews(fmt::format("[AP] Colby arrested! {} reward deposited into your account!", AP_Money((Money)10000000LL)));
 		AP_ShowNews(fmt::format("[AP] The town of {} is now free of Colby's influence.", _ap_colby_target_name));
 	} else {
 		/* Let Colby escape — start countdown to second popup */
+		AP_TRACE("ColbyEvent: Player chose ESCAPE — sacrifice popup pending");
 		_ap_colby_escaped     = true;
 		_ap_colby_escape_ticks = COLBY_ESCAPE_TICKS;
 		AP_ShowNews(fmt::format("[AP] Colby slips away into the night from {}... but he won't get far.", _ap_colby_target_name));
@@ -1304,12 +1592,14 @@ static void AP_ColbyArrestCallback(Window *, bool arrest)
 static void AP_ColbyEscapeCallback(Window *, bool imprison)
 {
 	if (imprison) {
+		AP_TRACE("ColbyEvent: Player chose IMPRISON");
 		AP_ShowNews("[AP] Colby has been handed over to the authorities. Justice is served.");
 	} else {
+		AP_TRACE("ColbyEvent: Player chose SACRIFICE — £2M + town growth burst");
 		/* Sacrifice — £2M + all-town growth burst */
 		CompanyID cid = _local_company;
 		Company *c = Company::GetIfValid(cid);
-		if (c != nullptr) c->money += (Money)2000000LL;
+		if (c != nullptr) AP_ChangeMoney(cid, (Money)2000000LL);
 		for (Town *t : Town::Iterate()) {
 			t->grow_counter = 0; /* immediate growth pulse in every town */
 		}
@@ -1591,6 +1881,7 @@ static void AP_ColbyTick()
 			int prev_step = _ap_colby_step;
 			_ap_colby_step_delivered = 0;
 			_ap_colby_step++;
+			AP_TRACE(fmt::format("ColbyStepComplete: step {}/5 -> {} town='{}'", prev_step, _ap_colby_step, _ap_colby_target_name));
 
 			AP_ColbyCleanupSource(); /* remove sign from previous step */
 
@@ -1641,6 +1932,7 @@ static void AP_ShowNews(const std::string &text, bool is_self)
 {
 	IConsolePrint(CC_INFO, "[AP] " + text);
 	Debug(misc, 0, "[AP] {}", text);
+	AP_TRACE(fmt::format("NEWS: is_self={} text='{}'", is_self, text));
 
 	/* Filter: 0=Off (never), 1=Self only, 2=All */
 	bool show = (_game_mode == GM_NORMAL) &&
@@ -1670,12 +1962,18 @@ static int         _ap_demigod_next_spawn_year = 0;
 static bool        _ap_demigod_pending_name   = false;   ///< Waiting one tick to name the new AI company
 static int         _ap_demigod_interval_min   = 5;       ///< Min years between spawns (from slot_data)
 static int         _ap_demigod_interval_max   = 15;      ///< Max years between spawns (from slot_data)
+static int64_t     _ap_demigod_player_value_at_spawn = 0; ///< Frozen: player company value when demigod spawned
+static int         _ap_demigod_chat_cooldown  = 0;        ///< Ticks until next chat message allowed
 /* Saved vehicle restrictions (restored on defeat) */
 static bool        _ap_demigod_veh_saved      = false;
 static bool        _ap_demigod_saved_train    = false;
 static bool        _ap_demigod_saved_roadveh  = false;
 static bool        _ap_demigod_saved_aircraft = false;
 static bool        _ap_demigod_saved_ship     = false;
+/* Easter egg: befriend the demigod by giving it more money than its company value */
+static bool        _ap_demigod_friendly       = false;  ///< true = AI has switched sides
+static int64_t     _ap_demigod_money_given    = 0;      ///< cumulative money given to AI via Give Money
+static int         _ap_demigod_last_transfer_year = 0;  ///< last year the friendly AI sent money to player
 
 /** Apply vehicle type restrictions matching a demigod theme. */
 static void AP_DemigodApplyTheme(const std::string &theme)
@@ -1712,6 +2010,150 @@ static void AP_DemigodRestoreRestrictions()
 	_ap_demigod_veh_saved = false;
 }
 
+/** Demigod trash-talk chat lines. */
+static const char *kDemigodChatLines[] = {
+	"Your pathetic little trains amuse me. Watch a REAL company at work!",
+	"I've built more track in one year than you have in your entire career.",
+	"The God of Wackens didn't send me here to lose. Get ready to cry!",
+	"Oh, you built a bus route? How adorable. I'm building an EMPIRE.",
+	"Is that the best you can do? My wagons carry more cargo than your whole fleet!",
+	"You call that a station? I've seen better infrastructure in the stone age!",
+	"The God of Wackens is watching. And he's laughing at your routes.",
+	"I'll be taking that subsidy, thank you very much!",
+	"Pro tip: try building something useful for once.",
+	"Do you even know what a signal is? Asking for a friend.",
+	"While you were reading this, I already built 3 new routes.",
+	"My trains run on time. Can you say the same? Didn't think so.",
+	"Cute little company you've got there. Would be a shame if someone... out-competed it.",
+	"I was moving cargo before you even laid your first track.",
+	"The God of Wackens sends his regards. And his freight trains.",
+};
+
+/** Friendly chat lines — used after the player befriends the demigod. */
+static const char *kDemigodFriendlyLines[] = {
+	"You know what, you're alright! Let me handle the freight for you.",
+	"Best business partner I ever had. The God of Wackens can stuff it!",
+	"I'm routing extra cargo your way. Don't tell the Elder Gods!",
+	"Who needs divine orders when you have a friend with deep pockets?",
+	"I'll keep the trains running. You keep being awesome!",
+	"The God of Wackens is going to be SO angry when he finds out about us.",
+	"Your generosity has won my loyalty. Here, have some of my profits!",
+	"Working together beats working against each other. Who knew?",
+	"I used to hate your routes. Now I think they're... adequate. That's high praise from me!",
+	"Consider me your silent partner. Well, not so silent, but you get the idea.",
+	"I'm sending my annual dividend your way. Friendship has its perks!",
+	"The other demigods would never believe this. ME, friends with a mortal?",
+};
+
+/** Calculate dynamic tribute cost: frozen 50% player value + 50% AI current value, cap 300M.
+ *  Returns 0 when the demigod is friendly (free dismiss). */
+static int64_t AP_CalcDemigodTributeCost()
+{
+	if (_ap_demigod_active_idx < 0) return 0;
+	/* Friendly demigod = free dismiss */
+	if (_ap_demigod_friendly) return 0;
+	/* Frozen part: 50% of player's company value at spawn time */
+	int64_t frozen_half = _ap_demigod_player_value_at_spawn / 2;
+	/* Dynamic part: 50% of AI's current company value */
+	int64_t ai_half = 0;
+	Company *ai_co = Company::GetIfValid(_ap_demigod_active_company);
+	if (ai_co != nullptr) ai_half = CalculateCompanyValue(ai_co, true) / 2;
+	int64_t total = frozen_half + ai_half;
+	/* Cap at 300 million */
+	return std::min(total, (int64_t)300000000);
+}
+
+/** Send periodic trash-talk (or friendly chat) from the demigod AI. */
+static void AP_DemigodChat()
+{
+	if (_ap_demigod_active_idx < 0 || _ap_demigod_pending_name) return;
+	if (_ap_demigod_chat_cooldown > 0) { _ap_demigod_chat_cooldown--; return; }
+	/* Random chance ~1/300 per tick = roughly every 75 seconds */
+	if (InteractiveRandomRange(300) != 0) return;
+
+	const APDemigodDef &def = _ap_demigod_defs[_ap_demigod_active_idx];
+	const char *line;
+	if (_ap_demigod_friendly) {
+		int idx = (int)InteractiveRandomRange((uint32_t)(sizeof(kDemigodFriendlyLines) / sizeof(kDemigodFriendlyLines[0])));
+		line = kDemigodFriendlyLines[idx];
+	} else {
+		int idx = (int)InteractiveRandomRange((uint32_t)(sizeof(kDemigodChatLines) / sizeof(kDemigodChatLines[0])));
+		line = kDemigodChatLines[idx];
+	}
+	std::string msg = fmt::format("[{}] {}", def.name, line);
+	NetworkAddChatMessage(CC_DEFAULT, 10, msg);
+	_ap_demigod_chat_cooldown = 60; /* minimum ~15 seconds between messages */
+}
+
+/** Called when player gives money to any company via CmdGiveMoney.
+ *  Checks if it's the demigod company and whether the threshold is crossed. */
+void AP_OnMoneyGivenToCompany(int dest_company, int64_t amount)
+{
+	if (_ap_demigod_active_idx < 0 || _ap_demigod_friendly) return;
+	if ((CompanyID)(uint8_t)dest_company != _ap_demigod_active_company) return;
+
+	_ap_demigod_money_given += amount;
+
+	/* Check threshold: total money given > AI's current company value */
+	Company *ai_co = Company::GetIfValid(_ap_demigod_active_company);
+	if (ai_co == nullptr) return;
+	int64_t ai_value = CalculateCompanyValue(ai_co, true);
+
+	if (_ap_demigod_money_given > ai_value) {
+		/* Befriend! */
+		_ap_demigod_friendly = true;
+		const APDemigodDef &def = _ap_demigod_defs[_ap_demigod_active_idx];
+
+		/* Announce the friendship in chat */
+		std::string msg = fmt::format("[{}] Wait... you're actually being NICE to me? "
+			"Nobody's ever done that before. I... I'm switching sides!", def.name);
+		NetworkAddChatMessage(CC_DEFAULT, 15, msg);
+
+		AP_ShowNews(fmt::format("[AP] The {} has been won over by your generosity! "
+			"They now work for YOU!", def.name));
+
+		_ap_demigod_chat_cooldown = 40; /* brief pause before friendly chat starts */
+
+		Debug(misc, 0, "[AP] Demigod befriended! money_given={} ai_value={}", _ap_demigod_money_given, ai_value);
+		AP_TRACE(fmt::format("DemigodBefriended: money_given={} ai_value={}", _ap_demigod_money_given, ai_value));
+
+		_ap_status_dirty.store(true);
+	}
+}
+
+/** Yearly transfer: friendly demigod sends half its account to the player. */
+static void AP_DemigodFriendlyTransfer()
+{
+	if (!_ap_demigod_friendly || _ap_demigod_active_idx < 0) return;
+
+	int cur_year = (int)TimerGameCalendar::year.base();
+	if (_ap_demigod_last_transfer_year >= cur_year) return; /* already done this year */
+	_ap_demigod_last_transfer_year = cur_year;
+
+	Company *ai_co = Company::GetIfValid(_ap_demigod_active_company);
+	if (ai_co == nullptr || ai_co->money <= 0) return;
+
+	Money transfer = ai_co->money / 2;
+	if (transfer <= 0) return;
+
+	/* Take from AI */
+	ai_co->money -= transfer;
+
+	/* Give to player */
+	CompanyID cid = _local_company;
+	Company *player = Company::GetIfValid(cid);
+	if (player != nullptr) {
+		AP_ChangeMoney(cid, transfer);
+	}
+
+	const APDemigodDef &def = _ap_demigod_defs[_ap_demigod_active_idx];
+	std::string msg = fmt::format("[{}] Here's your annual dividend: {}! "
+		"Friendship pays... literally.", def.name, AP_Money(transfer));
+	NetworkAddChatMessage(CC_DEFAULT, 12, msg);
+
+	Debug(misc, 0, "[AP] Demigod friendly transfer: {} to player", (int64_t)transfer);
+}
+
 /** God of Wackens newspaper lines for spawning. */
 static const char *kWackensSpawnLines[] = {
 	"The God of Wackens has grown bored... He summons the {} to humble the mortal transport companies!",
@@ -1743,6 +2185,11 @@ static void AP_DemigodSpawn()
 
 	const APDemigodDef &def = _ap_demigod_defs[pick];
 
+	/* Capture player's company value at spawn for tribute calculation + starting money */
+	Company *player = Company::GetIfValid(_local_company);
+	_ap_demigod_player_value_at_spawn = (player != nullptr)
+	    ? (int64_t)CalculateCompanyValue(player, true) : (int64_t)0;
+
 	/* Apply vehicle type restrictions for this theme */
 	AP_DemigodApplyTheme(def.theme);
 
@@ -1751,12 +2198,17 @@ static void AP_DemigodSpawn()
 
 	_ap_demigod_active_idx = pick;
 	_ap_demigod_pending_name = true; /* will set name on next tick */
+	_ap_demigod_chat_cooldown = 20;  /* 5 seconds grace before first chat */
+	_ap_demigod_friendly = false;    /* reset friendship for new demigod */
+	_ap_demigod_money_given = 0;
+	_ap_demigod_last_transfer_year = 0;
 
 	/* Show God of Wackens newspaper */
-	int line_idx = (int)(RandomRange((uint32_t)(sizeof(kWackensSpawnLines) / sizeof(kWackensSpawnLines[0]))));
+	int line_idx = (int)(InteractiveRandomRange((uint32_t)(sizeof(kWackensSpawnLines) / sizeof(kWackensSpawnLines[0]))));
 	AP_ShowNews(fmt::format(fmt::runtime(kWackensSpawnLines[line_idx]), def.name));
 
 	Debug(misc, 0, "[AP] Demigod spawned: {} (theme={}, tribute={})", def.name, def.theme, def.tribute_cost);
+	AP_TRACE(fmt::format("DemigodSpawn: name='{}' theme='{}' tribute={} idx={}", def.name, def.theme, def.tribute_cost, pick));
 }
 
 /** Calculate the next spawn year from the current year + random interval. */
@@ -1765,8 +2217,9 @@ static void AP_DemigodScheduleNext()
 	int cur = (int)TimerGameCalendar::year.base();
 	int min_iv = std::max(1, _ap_demigod_interval_min);
 	int max_iv = std::max(min_iv, _ap_demigod_interval_max);
-	_ap_demigod_next_spawn_year = cur + min_iv + (int)RandomRange((uint32_t)(max_iv - min_iv + 1));
+	_ap_demigod_next_spawn_year = cur + min_iv + (int)InteractiveRandomRange((uint32_t)(max_iv - min_iv + 1));
 	Debug(misc, 0, "[AP] Next demigod spawn scheduled for year {}", _ap_demigod_next_spawn_year);
+	AP_TRACE(fmt::format("DemigodScheduleNext: year={}", _ap_demigod_next_spawn_year));
 }
 
 /** Called every realtime tick. Handles pending naming, company health, and spawn timer. */
@@ -1788,10 +2241,16 @@ static void AP_DemigodTick()
 			const APDemigodDef &def = _ap_demigod_defs[_ap_demigod_active_idx];
 			c->name = def.name;
 			c->president_name = def.president_name;
+			/* Give demigod 50% of player's company value as starting money */
+			int64_t bonus = _ap_demigod_player_value_at_spawn / 2;
+			if (bonus > 0) {
+				c->money += bonus;
+				Debug(misc, 0, "[AP] Demigod starting bonus: {}", bonus);
+			}
 			_ap_demigod_active_company = newest;
 			_ap_demigod_pending_name = false;
 			InvalidateWindowClassesData(WC_COMPANY);
-			Debug(misc, 0, "[AP] Demigod company named: {} (CompanyID={})", def.name, (int)newest.base());
+			Debug(misc, 0, "[AP] Demigod company named: {} (CompanyID={}, bonus={})", def.name, (int)newest.base(), bonus);
 		}
 	}
 
@@ -1810,6 +2269,12 @@ static void AP_DemigodTick()
 			}
 		}
 	}
+
+	/* Demigod trash-talk (or friendly chat) */
+	AP_DemigodChat();
+
+	/* Friendly demigod: yearly dividend transfer to player */
+	AP_DemigodFriendlyTransfer();
 
 	/* Spawn timer — check if it's time to spawn */
 	if (_ap_demigod_active_idx < 0 && !_ap_demigod_pending_name && _ap_demigod_next_spawn_year > 0) {
@@ -1864,19 +2329,23 @@ static void AP_DemigodInit(const APSlotData &sd)
 	      _ap_demigod_active_idx, _ap_demigod_next_spawn_year);
 }
 
-/** Tribute payment — defeat the active demigod. Called from GUI. */
+/** Tribute payment or friendly dismiss — defeat/remove the active demigod. Called from GUI. */
 void AP_DemigodDefeat()
 {
 	if (_ap_demigod_active_idx < 0 || _ap_demigod_active_idx >= (int)_ap_demigod_defs.size()) return;
 	const APDemigodDef &def = _ap_demigod_defs[_ap_demigod_active_idx];
+	bool was_friendly = _ap_demigod_friendly;
 
-	/* Check player has enough money */
+	/* Check player has enough money — use dynamic tribute cost (0 when friendly) */
+	int64_t tribute = AP_CalcDemigodTributeCost();
 	CompanyID cid = _local_company;
 	Company *c = Company::GetIfValid(cid);
-	if (c == nullptr || c->money < (Money)def.tribute_cost) return;
+	if (c == nullptr || c->money < (Money)tribute) return;
 
-	/* Deduct tribute cost */
-	c->money -= (Money)def.tribute_cost;
+	/* Deduct tribute cost (0 when friendly = free) */
+	if (tribute > 0) {
+		AP_ChangeMoney(cid, -(Money)tribute);
+	}
 
 	/* Delete demigod company */
 	if (Company::IsValidID(_ap_demigod_active_company)) {
@@ -1893,13 +2362,22 @@ void AP_DemigodDefeat()
 
 	/* Record defeat */
 	_ap_demigod_defeated.insert(def.location);
+	AP_TRACE(fmt::format("DemigodDefeated: name='{}' location='{}' tribute={} friendly={} defeated_count={}/{}",
+		def.name, def.location, tribute, was_friendly, _ap_demigod_defeated.size(), _ap_demigod_defs.size()));
 
-	/* Show victory news */
-	AP_ShowNews(fmt::format("[AP] You have paid tribute to the Elder Gods! The {} fades from existence.", def.name));
+	/* Show news */
+	if (was_friendly) {
+		AP_ShowNews(fmt::format("[AP] You have dismissed the {}. They wave goodbye and ride off into the sunset.", def.name));
+	} else {
+		AP_ShowNews(fmt::format("[AP] You have paid tribute to the Elder Gods! The {} fades from existence.", def.name));
+	}
 
 	/* Clean up */
 	_ap_demigod_active_idx = -1;
 	_ap_demigod_active_company = CompanyID::Invalid();
+	_ap_demigod_friendly = false;
+	_ap_demigod_money_given = 0;
+	_ap_demigod_last_transfer_year = 0;
 
 	/* Check if all defeated */
 	if ((int)_ap_demigod_defeated.size() >= (int)_ap_demigod_defs.size()) {
@@ -1922,12 +2400,14 @@ DemigodStatus AP_GetDemigodStatus()
 	s.active_idx     = _ap_demigod_active_idx;
 	s.next_spawn_year = _ap_demigod_next_spawn_year;
 	s.active_company = -1;
+	s.friendly       = false;
 	if (s.active && _ap_demigod_active_idx < (int)_ap_demigod_defs.size()) {
 		const APDemigodDef &def = _ap_demigod_defs[_ap_demigod_active_idx];
 		s.active_name    = def.name;
 		s.active_theme   = def.theme;
-		s.tribute_cost   = def.tribute_cost;
+		s.tribute_cost   = AP_CalcDemigodTributeCost();
 		s.active_company = (int)_ap_demigod_active_company.base();
+		s.friendly       = _ap_demigod_friendly;
 	}
 	return s;
 }
@@ -1985,6 +2465,16 @@ void AP_SetDemigodState(const std::string &defeated, int active_idx, int company
 	_ap_demigod_saved_ship     = sv_ship;
 }
 
+int64_t AP_GetDemigodPlayerSpawnValue() { return _ap_demigod_player_value_at_spawn; }
+void    AP_SetDemigodPlayerSpawnValue(int64_t v) { _ap_demigod_player_value_at_spawn = v; }
+
+bool    AP_GetDemigodFriendly() { return _ap_demigod_friendly; }
+void    AP_SetDemigodFriendly(bool v) { _ap_demigod_friendly = v; }
+int64_t AP_GetDemigodMoneyGiven() { return _ap_demigod_money_given; }
+void    AP_SetDemigodMoneyGiven(int64_t v) { _ap_demigod_money_given = v; }
+int     AP_GetDemigodLastTransferYear() { return _ap_demigod_last_transfer_year; }
+void    AP_SetDemigodLastTransferYear(int v) { _ap_demigod_last_transfer_year = v; }
+
 /* =========================================================================
  * DAY / NIGHT CYCLE
  *
@@ -1992,9 +2482,95 @@ void AP_SetDemigodState(const std::string &defeated, int active_idx, int company
  * Jan–Jun = day, Jul–Dec = night.  Requires NightGFX to be installed.
  * ========================================================================= */
 
-static bool _ap_daynight_is_night = false; ///< true when NightGFX is active
+static bool _ap_daynight_is_night  = false; ///< true when NightGFX is active
+static bool _ap_daynight_disabled  = false; ///< user toggle: true = forced daytime
 static const char *kDayBaseSet   = "OpenGFX";
 static const char *kNightBaseSet = "NightGFX";
+
+/** Saved engine state — preserved across GfxLoadSprites() + StartupEngines()
+ *  so that mid-game baseset swaps don't destroy reliability curves. */
+struct SavedEngineState {
+	int32_t  age;
+	uint16_t reliability;
+	uint16_t reliability_spd_dec;
+	uint16_t reliability_start;
+	uint16_t reliability_max;
+	uint16_t reliability_final;
+	uint16_t duration_phase_1;
+	uint16_t duration_phase_2;
+	uint16_t duration_phase_3;
+	TimerGameCalendar::Date intro_date;
+	EngineFlags flags;
+	CompanyMask company_avail;
+	CompanyMask company_hidden;
+};
+static std::map<EngineID, SavedEngineState> _saved_engine_states;
+
+/** Save all engine reliability/availability data before a sprite reload. */
+static void AP_SaveEngineStates()
+{
+	_saved_engine_states.clear();
+	for (const Engine *e : Engine::Iterate()) {
+		SavedEngineState s;
+		s.age                = e->age;
+		s.reliability        = e->reliability;
+		s.reliability_spd_dec = e->reliability_spd_dec;
+		s.reliability_start  = e->reliability_start;
+		s.reliability_max    = e->reliability_max;
+		s.reliability_final  = e->reliability_final;
+		s.duration_phase_1   = e->duration_phase_1;
+		s.duration_phase_2   = e->duration_phase_2;
+		s.duration_phase_3   = e->duration_phase_3;
+		s.intro_date         = e->intro_date;
+		s.flags              = e->flags;
+		s.company_avail      = e->company_avail;
+		s.company_hidden     = e->company_hidden;
+		_saved_engine_states[e->index] = s;
+	}
+}
+
+/** Restore engine states after GfxLoadSprites() + StartupEngines(). */
+static void AP_RestoreEngineStates()
+{
+	for (Engine *e : Engine::Iterate()) {
+		auto it = _saved_engine_states.find(e->index);
+		if (it == _saved_engine_states.end()) continue;
+		const SavedEngineState &s = it->second;
+		e->age                = s.age;
+		e->reliability        = s.reliability;
+		e->reliability_spd_dec = s.reliability_spd_dec;
+		e->reliability_start  = s.reliability_start;
+		e->reliability_max    = s.reliability_max;
+		e->reliability_final  = s.reliability_final;
+		e->duration_phase_1   = s.duration_phase_1;
+		e->duration_phase_2   = s.duration_phase_2;
+		e->duration_phase_3   = s.duration_phase_3;
+		e->intro_date         = s.intro_date;
+		e->flags              = s.flags;
+		e->company_avail      = s.company_avail;
+		e->company_hidden     = s.company_hidden;
+	}
+	_saved_engine_states.clear();
+}
+
+/** Re-enable all AP-unlocked engines after a sprite reload.
+ *  GfxLoadSprites() reloads NewGRFs which resets engine availability.
+ *  The periodic lock sweep only *locks* non-unlocked engines but never
+ *  re-enables unlocked ones, so we must do it explicitly here. */
+static void AP_ReapplyEngineUnlocks()
+{
+	CompanyID cid = _local_company;
+	if (cid >= MAX_COMPANIES) return;
+	for (EngineID eid : _ap_unlocked_engine_ids) {
+		Engine *e = Engine::GetIfValid(eid);
+		if (e == nullptr) continue;
+		if (!e->company_avail.Test(cid)) {
+			e->company_avail.Set(cid);
+		}
+		e->company_hidden.Reset(cid);
+	}
+	InvalidateWindowClassesData(WC_BUILD_VEHICLE, 0);
+}
 
 /** Switch the base graphics set and reload all sprites mid-game. */
 static void AP_DayNightSwitch(bool to_night)
@@ -2009,10 +2585,73 @@ static void AP_DayNightSwitch(bool to_night)
 	}
 
 	_ap_daynight_is_night = to_night;
+	AP_SaveEngineStates();     /* preserve reliability/age/availability before reload */
 	GfxLoadSprites();
+	StartupEngines();          /* re-initialise engine pool after GRF reload */
+	AP_RestoreEngineStates();  /* restore reliability curves & availability */
+	AP_ReapplyEngineUnlocks(); /* re-enable any AP-unlocked engines */
 	MarkWholeScreenDirty();
 	Debug(misc, 0, "[AP] Day/Night: switched to {} ({})", to_night ? "night" : "day", target);
 }
+
+/** Toggle the day/night cycle on or off.  When disabled, forces daytime. */
+void AP_ToggleDayNight()
+{
+	_ap_daynight_disabled = !_ap_daynight_disabled;
+	if (_ap_daynight_disabled && _ap_daynight_is_night) {
+		/* Currently night — switch back to day immediately */
+		AP_DayNightSwitch(false);
+	}
+	AP_ShowConsole(fmt::format("[AP] Day/Night cycle {}",
+	    _ap_daynight_disabled ? "disabled (forced daytime)" : "enabled"));
+}
+
+/** Open the current singleplayer game to multiplayer.
+ *  Saves the game, then reloads it as a network server. */
+void AP_OpenToMultiplayer()
+{
+	extern bool _is_network_server;
+	extern SwitchMode _switch_mode;
+
+	if (_networking && _network_server) {
+		AP_ShowConsole("[AP] Already running as a multiplayer server.");
+		return;
+	}
+	if (_game_mode != GM_NORMAL) {
+		AP_ShowConsole("[AP] Can only open to multiplayer from a running game.");
+		return;
+	}
+
+	/* Save the current game to a temporary file */
+	static const std::string kMPSave = "ap_multiplayer.sav";
+	if (SaveOrLoad(kMPSave, SLO_SAVE, DFT_GAME_FILE, SAVE_DIR) != SL_OK) {
+		AP_ShowConsole("[AP] Failed to save game for multiplayer conversion.");
+		return;
+	}
+
+	/* Set up the file-to-load structure so SM_LOAD_GAME knows what to load */
+	_file_to_saveload.SetMode(FIOS_TYPE_FILE, SLO_LOAD);
+	std::string full = FioFindFullPath(SAVE_DIR, kMPSave);
+	_file_to_saveload.name = full.empty() ? kMPSave : full;
+
+	/* Ensure the server has a valid client name for multiplayer.
+	 * Without this, SERVER_CLIENT_INFO sends an empty name which
+	 * causes joining clients to reject the packet as malformed. */
+	if (_settings_client.network.client_name.empty()) {
+		_settings_client.network.client_name = _ap_last_slot.empty() ? "Host" : _ap_last_slot;
+	}
+
+	/* Tell the engine we want to be a server on next mode switch */
+	_is_network_server = true;
+
+	/* Trigger a reload — SwitchToMode will see _is_network_server and call NetworkServerStart() */
+	_switch_mode = SM_LOAD_GAME;
+
+	AP_ShowConsole("[AP] Opening game to multiplayer... Reloading as server.");
+	Debug(misc, 0, "[AP] OpenToMultiplayer: saving as '{}' and reloading as server", kMPSave);
+}
+
+bool AP_IsDayNightDisabled() { return _ap_daynight_disabled; }
 
 /** Called every game month from the calendar timer.
  *  Months 0-5 (Jan-Jun) = day, months 6-11 (Jul-Dec) = night. */
@@ -2020,6 +2659,7 @@ static void AP_DayNightTick()
 {
 	if (_game_mode != GM_NORMAL) return;
 	if (!AP_IsConnected()) return;
+	if (_ap_daynight_disabled) return; /* user toggled off */
 
 	/* Check if NightGFX is available at all */
 	static bool _night_available = true; /* optimistic — set false on first failure */
@@ -2039,7 +2679,11 @@ static void AP_DayNightTick()
 	}
 
 	_ap_daynight_is_night = want_night;
+	AP_SaveEngineStates();     /* preserve reliability/age/availability before reload */
 	GfxLoadSprites();
+	StartupEngines();          /* re-initialise engine pool after GRF reload */
+	AP_RestoreEngineStates();  /* restore reliability curves & availability */
+	AP_ReapplyEngineUnlocks(); /* re-enable any AP-unlocked engines */
 	MarkWholeScreenDirty();
 	Debug(misc, 0, "[AP] Day/Night: switched to {} (month={})",
 	      want_night ? "night" : "day", (int)TimerGameCalendar::month);
@@ -2068,10 +2712,10 @@ static int  _ap_wrath_limit_trees      = 10;
 
 /* ── Tracking (called from *_cmd.cpp hooks) ─────────────────────── */
 
-void AP_WrathTrackHouse()  { if (_ap_wrath_enabled) _ap_wrath_houses_year++;  }
-void AP_WrathTrackRoad()   { if (_ap_wrath_enabled) _ap_wrath_roads_year++;   }
-void AP_WrathTrackTerrain(){ if (_ap_wrath_enabled) _ap_wrath_terrain_year++; }
-void AP_WrathTrackTree()   { if (_ap_wrath_enabled) _ap_wrath_trees_year++;   }
+void AP_WrathTrackHouse()  { if (_ap_wrath_enabled) { _ap_wrath_houses_year++;  AP_TRACE(fmt::format("Wrath: house demolished (total this year: {})", _ap_wrath_houses_year)); } }
+void AP_WrathTrackRoad()   { if (_ap_wrath_enabled) { _ap_wrath_roads_year++;   AP_TRACE(fmt::format("Wrath: road demolished (total this year: {})", _ap_wrath_roads_year)); } }
+void AP_WrathTrackTerrain(){ if (_ap_wrath_enabled) { _ap_wrath_terrain_year++; AP_TRACE(fmt::format("Wrath: terrain modified (total this year: {})", _ap_wrath_terrain_year)); } }
+void AP_WrathTrackTree()   { if (_ap_wrath_enabled) { _ap_wrath_trees_year++;   AP_TRACE(fmt::format("Wrath: tree removed (total this year: {})", _ap_wrath_trees_year)); } }
 
 /* ── Newspaper messages ─────────────────────────────────────────── */
 
@@ -2111,9 +2755,9 @@ static void AP_WrathInfraDamage(CompanyID cid)
 			owned_rail.push_back(t);
 		}
 	}
-	int to_remove = std::min((int)owned_rail.size(), 5 + (int)RandomRange(4));
+	int to_remove = std::min((int)owned_rail.size(), 5 + (int)InteractiveRandomRange(4));
 	for (int i = 0; i < to_remove && !owned_rail.empty(); i++) {
-		int idx = (int)RandomRange((uint32_t)owned_rail.size());
+		int idx = (int)InteractiveRandomRange((uint32_t)owned_rail.size());
 		Command<CMD_LANDSCAPE_CLEAR>::Do(DoCommandFlag::Execute, owned_rail[idx]);
 		owned_rail[idx] = owned_rail.back();
 		owned_rail.pop_back();
@@ -2131,7 +2775,7 @@ static void AP_WrathSinkhole(CompanyID cid)
 		}
 	}
 	if (targets.empty()) return;
-	TileIndex center = targets[RandomRange((uint32_t)targets.size())];
+	TileIndex center = targets[InteractiveRandomRange((uint32_t)targets.size())];
 
 	for (int dx = -2; dx <= 2; dx++) {
 		for (int dy = -2; dy <= 2; dy++) {
@@ -2154,9 +2798,9 @@ static void AP_WrathStationDelete(CompanyID cid)
 	for (Station *st : Station::Iterate()) {
 		if (st->owner == cid) player_stations.push_back(st->index);
 	}
-	int to_delete = std::min((int)player_stations.size(), 1 + (int)RandomRange(2));
+	int to_delete = std::min((int)player_stations.size(), 1 + (int)InteractiveRandomRange(2));
 	for (int i = 0; i < to_delete && !player_stations.empty(); i++) {
-		int idx = (int)RandomRange((uint32_t)player_stations.size());
+		int idx = (int)InteractiveRandomRange((uint32_t)player_stations.size());
 		Station *victim = Station::GetIfValid(player_stations[idx]);
 		if (victim != nullptr) {
 			AP_ShowNews(fmt::format("The earth swallows {}!", victim->GetCachedName()));
@@ -2188,6 +2832,7 @@ static void AP_WrathSignalMadness(CompanyID cid)
 /** Apply punishment for the given anger level. */
 static void AP_WrathPunish(int level)
 {
+	AP_TRACE(fmt::format("WrathPunish: level={}", level));
 	CompanyID cid = _local_company;
 	Company *c = Company::GetIfValid(cid);
 	if (c == nullptr) return;
@@ -2211,7 +2856,7 @@ static void AP_WrathPunish(int level)
 				}
 			}
 			Money fine = std::max((Money)10000LL, c->money / 4);
-			c->money -= fine;
+			AP_ChangeMoney(cid, -fine);
 			AP_ShowNews(fmt::format("{} Divine fine: {}!",
 			    kWrathPunishLines[3], AP_Money(fine)));
 			break;
@@ -2285,6 +2930,12 @@ static void AP_WrathYearlyEval()
 
 	Debug(misc, 0, "[AP] Wrath yearly eval: anger {} -> {} (exceeded={})",
 	      old_anger, _ap_wrath_anger, exceeded);
+	AP_TRACE(fmt::format("WrathYearlyEval: anger {} -> {} exceeded={} houses={}/{} roads={}/{} terrain={}/{} trees={}/{}",
+		old_anger, _ap_wrath_anger, exceeded,
+		_ap_wrath_houses_year, _ap_wrath_limit_houses,
+		_ap_wrath_roads_year, _ap_wrath_limit_roads,
+		_ap_wrath_terrain_year, _ap_wrath_limit_terrain,
+		_ap_wrath_trees_year, _ap_wrath_limit_trees));
 }
 
 /* ── Init / Saveload ────────────────────────────────────────────── */
@@ -2345,7 +2996,7 @@ bool AP_IsWrathEnabled() { return _ap_wrath_enabled; }
  * ---------------------------------------------------------------------- */
 
 static APSlotData  _ap_pending_sd;
-static bool        _ap_pending_world_start         = false;
+bool               _ap_pending_world_start         = false; ///< Non-static: accessed by network_bridge_client.cpp
 static bool        _ap_goal_sent                   = false;
 static bool        _ap_session_started             = false; ///< True once we've done first-tick setup in GM_NORMAL
 static int         _ap_fuel_shortage_ticks         = 0;     ///< >0 while fuel shortage slowdown is active
@@ -2382,7 +3033,8 @@ std::atomic<bool> _ap_status_dirty{ false };
 
 /* Public accessors */
 const APSlotData &AP_GetSlotData() { return _ap_pending_sd; }
-bool              AP_IsConnected()  { return _ap_client != nullptr &&
+bool              AP_IsConnected()  { if (_ap_bridge_mode) return true;
+                                     return _ap_client != nullptr &&
                                      _ap_client->GetState() == APState::AUTHENTICATED; }
 bool              AP_IsColbyActive()     { return _ap_colby_enabled && !_ap_colby_done && _ap_colby_step >= 1; }
 bool              AP_IsColbyConfigured() { return _ap_colby_enabled; }
@@ -2417,6 +3069,12 @@ ColbyStatus AP_GetColbyStatus() {
 /* Forward declaration — defined later in this file */
 static void AP_AssignNamedEntities();
 
+/* MP Join state — declared here so AP_OnSlotData can access them.
+ * Functions that use these are defined in the Multiplayer section below. */
+static bool        _ap_mp_join_pending = false;  ///< Waiting for AP slot_data before joining MP
+static std::string _ap_mp_join_server;            ///< Game server address to connect to
+static std::string _ap_mp_join_slot;              ///< Slot name (used as player name)
+
 static void AP_OnSlotData(const APSlotData &sd)
 {
 	AP_OK("[CALLBACK] AP_OnSlotData called on main thread!");
@@ -2438,6 +3096,25 @@ static void AP_OnSlotData(const APSlotData &sd)
 	_ap_terraform_inited  = false;
 	_ap_town_actions_inited = false;
 	_ap_status_dirty.store(true);
+
+	/* ── MP Join path: apply NewGRFs from slot_data, then connect ── */
+	if (_ap_mp_join_pending) {
+		AP_OK("[OnSlotData] MP Join mode — applying NewGRFs from slot data...");
+		_ap_pending_world_start = true;
+		AP_ConsumeWorldStart();  /* Sets up _grfconfig_newgame with correct GRFs + params */
+		_ap_mp_join_pending = false;
+
+		/* Rescan GRFs so they're in _all_grfs for MP NewGRF check (step 2/6) */
+		IConsolePrint(CC_WHITE, "[AP] Rescanning NewGRF files for multiplayer...");
+		ScanNewGRFFiles(nullptr);
+
+		/* Connect to the game server NOW */
+		IConsolePrint(CC_WHITE, fmt::format("[AP] Connecting to game server: {}", _ap_mp_join_server));
+		NetworkClientConnectGame(_ap_mp_join_server, COMPANY_SPECTATOR, "");
+		AP_SetPendingJoinCompany0(true);
+		AP_OK("[OnSlotData] MP Join complete — connecting to game server.");
+		return;
+	}
 
 	/* Only auto-start world if we're on the main menu and haven't started yet */
 	if (_game_mode == GM_MENU && !_ap_world_started_this_session) {
@@ -2464,21 +3141,25 @@ static void AP_OnSlotData(const APSlotData &sd)
 static void AP_OnItemReceived(const APItem &item)
 {
 	Debug(misc, 1, "[AP] Item received: '{}' (id={} idx={})", item.item_name, item.item_id, item.server_index);
+	AP_TRACE(fmt::format("ItemReceived: name='{}' id={} server_idx={} session_started={}",
+		item.item_name, item.item_id, item.server_index, _ap_session_started));
 
 	/* Queue items that arrive before we've entered GM_NORMAL */
 	if (!_ap_session_started) {
+		AP_TRACE(fmt::format("ItemQueued: '{}' (session not started, queue_size={})", item.item_name, _ap_pending_items.size() + 1));
 		_ap_pending_items.push_back(item);
 		return;
 	}
 
-	/* Skip items we have already processed (e.g. AP resends all items on reconnect).
-	 * server_index == -1 means index unknown (old saves / edge cases) — process anyway. */
-	if (item.server_index >= 0 && item.server_index < _ap_items_received_count) {
-		Debug(misc, 1, "[AP] Skipping already-applied item idx={} '{}'", item.server_index, item.item_name);
-		return;
-	}
-	/* Advance counter to one past this item's index */
-	if (item.server_index >= 0) {
+	/* Deduplication: AP resends all items from index 0 on reconnect.
+	 * server_index == -1 means index unknown (old saves / edge cases) — process anyway.
+	 *
+	 * Vehicle unlocks and infrastructure unlocks are IDEMPOTENT — safe to re-apply.
+	 * Traps and consumables are NOT — they must be skipped on replay. */
+	bool is_replay = (item.server_index >= 0 && item.server_index < _ap_items_received_count);
+
+	/* Advance counter to one past this item's index (only for genuinely new items) */
+	if (!is_replay && item.server_index >= 0) {
 		_ap_items_received_count = item.server_index + 1;
 	}
 
@@ -2487,13 +3168,27 @@ static void AP_OnItemReceived(const APItem &item)
 		return;
 	}
 
-	/* Vehicle unlock — delegate entirely to EnableEngineForCompany */
+	/* Vehicle unlock — ALWAYS re-apply, even on replay (idempotent).
+	 * This ensures vehicles are restored after save/load reconnect. */
 	if (AP_UnlockEngineByName(item.item_name)) {
-		AP_ShowNews("[AP] Unlocked: " + item.item_name);
+		if (!is_replay) {
+			AP_TRACE(fmt::format("VehicleUnlock: '{}' (NEW)", item.item_name));
+			AP_ShowNews("[AP] Unlocked: " + item.item_name);
+		} else {
+			AP_TRACE(fmt::format("VehicleUnlock: '{}' (REPLAY re-apply)", item.item_name));
+			Debug(misc, 1, "[AP] Re-applied vehicle unlock on reconnect: '{}'", item.item_name);
+		}
+		return;
+	}
+
+	/* Everything below here is NON-idempotent — skip on replay */
+	if (is_replay) {
+		Debug(misc, 1, "[AP] Skipping already-applied item idx={} '{}'", item.server_index, item.item_name);
 		return;
 	}
 
 	/* Trap / utility items */
+	AP_TRACE(fmt::format("ProcessingItem: '{}' (not a vehicle — checking trap/utility)", item.item_name));
 	CompanyID cid = _local_company;
 	if (cid >= MAX_COMPANIES) return;
 	Company *c = Company::GetIfValid(cid);
@@ -2511,12 +3206,12 @@ static void AP_OnItemReceived(const APItem &item)
 	} else if (item.item_name == "Recession") {
 		if (c->money >= 0) {
 			/* Player has positive cash: halve it */
-			c->money = c->money / 2;
+			AP_ChangeMoney(cid, -(c->money / 2));
 			AP_ShowNews("[AP] TRAP: Recession! Money halved.");
 		} else {
 			/* Player already in debt: add 25% of max_loan as extra debt */
 			Money penalty = (Money)((int64_t)_ap_pending_sd.max_loan / 4);
-			c->money -= penalty;
+			AP_ChangeMoney(cid, -penalty);
 			AP_ShowNews(fmt::format("[AP] TRAP: Recession! Extra debt: {}.", AP_Money(penalty)));
 		}
 	} else if (item.item_name == "Maintenance Surge") {
@@ -2580,13 +3275,13 @@ static void AP_OnItemReceived(const APItem &item)
 
 		Industry *victim = nullptr;
 		if (!active_industries.empty()) {
-			victim = active_industries[RandomRange((uint32_t)active_industries.size())];
+			victim = active_industries[InteractiveRandomRange((uint32_t)active_industries.size())];
 		} else {
 			/* Fallback: any random industry */
 			int count = 0;
 			for ([[maybe_unused]] Industry *ind : Industry::Iterate()) { count++; }
 			if (count > 0) {
-				int target_i = RandomRange(count), i = 0;
+				int target_i = InteractiveRandomRange(count), i = 0;
 				for (Industry *ind : Industry::Iterate()) {
 					if (i++ == target_i) { victim = ind; break; }
 				}
@@ -2610,9 +3305,9 @@ static void AP_OnItemReceived(const APItem &item)
 		 * 1 in-game year ≈ 365 × 74 ticks = 27010 ticks. */
 		static const VehicleType types[]     = { VEH_TRAIN, VEH_ROAD, VEH_AIRCRAFT, VEH_SHIP };
 		static const char *const type_names[] = { "Trains", "Road Vehicles", "Aircraft", "Ships" };
-		int idx = (int)RandomRange(4);
+		int idx = (int)InteractiveRandomRange(4);
 		_ap_license_revoke_type  = (int)types[idx];
-		_ap_license_revoke_ticks = 27010 + (int)RandomRange(27010); /* 1–2 years */
+		_ap_license_revoke_ticks = 27010 + (int)InteractiveRandomRange(27010); /* 1–2 years */
 		int years_approx = (_ap_license_revoke_ticks / 27010) + 1;
 
 		/* Immediately hide all engines of this category for the local company */
@@ -2621,18 +3316,19 @@ static void AP_OnItemReceived(const APItem &item)
 			e->company_hidden.Set(cid);
 		}
 		MarkWholeScreenDirty();
+		AP_TRACE(fmt::format("TRAP LicenseRevoke: type={} ({}) ticks={} ~{} years", _ap_license_revoke_type, type_names[idx], _ap_license_revoke_ticks, years_approx));
 		AP_ShowNews(fmt::format("[AP] TRAP: Vehicle License Revoke! {} suspended for ~{} in-game year(s)!",
 		    type_names[idx], years_approx));
 
 	/* ── UTILITY ITEMS ─────────────────────────────────── */
 	} else if (item.item_name == "Cash Injection £50,000") {
-		c->money += (Money)50000LL;
+		AP_ChangeMoney(cid, (Money)50000LL);
 		AP_ShowNews(fmt::format("[AP] Bonus: +{}!", AP_Money((Money)50000LL)));
 	} else if (item.item_name == "Cash Injection £200,000") {
-		c->money += (Money)200000LL;
+		AP_ChangeMoney(cid, (Money)200000LL);
 		AP_ShowNews(fmt::format("[AP] Bonus: +{}!", AP_Money((Money)200000LL)));
 	} else if (item.item_name == "Cash Injection £500,000") {
-		c->money += (Money)500000LL;
+		AP_ChangeMoney(cid, (Money)500000LL);
 		AP_ShowNews(fmt::format("[AP] Bonus: +{}!", AP_Money((Money)500000LL)));
 	} else if (item.item_name == "Loan Reduction £100,000") {
 		Money reduce = (Money)100000LL;
@@ -2681,7 +3377,7 @@ static void AP_OnItemReceived(const APItem &item)
 		AP_ShowNews("[AP] Bonus: Free Station Upgrade! All your stations boosted to perfect rating for 30 days!");
 	} else if (item.item_name == "Cash Bonus" || item.item_name == "Extra Funding") {
 		/* Legacy names */
-		c->money += (Money)100000LL;
+		AP_ChangeMoney(cid, (Money)100000LL);
 		AP_ShowNews(fmt::format("[AP] Bonus: +{}!", AP_Money((Money)100000LL)));
 
 	/* ── TRACK DIRECTION UNLOCK ITEMS ───────────────────────────────────
@@ -2963,9 +3659,9 @@ static void AP_OnConnected()
 {
 	Debug(misc, 1, "[AP] Connected to Archipelago server.");
 	AP_OK("Connected to Archipelago server");
-	/* Force English immediately on connect so any subsequent string lookups
-	 * (including engine name map building) use English names. */
-	ForceEnglishLanguage();
+	/* NOTE: ForceEnglishLanguage() was moved to AP_ConsumeWorldStart()
+	 * to avoid a race condition in multiplayer — ReadLanguagePack()
+	 * replaces _langpack while GUI threads call GetString(). */
 	_ap_status_dirty.store(true);
 }
 
@@ -2978,6 +3674,8 @@ static void AP_OnDisconnected(const std::string &reason)
 	_ap_waiting_for_start_choice   = false;
 	_ap_pending_world_start = false;
 	_ap_session_started = false;
+	_ap_server_checked_locations.clear();
+	_ap_server_checked_pending = false;
 	AP_LOG("Session flags reset — next connect can start world");
 	_ap_status_dirty.store(true);
 }
@@ -3003,6 +3701,7 @@ void AP_SendDeath(const std::string &cause)
 	if (!AP_GetSlotData().death_link) return;
 	if (!_ap_session_started) return;
 	_ap_client->SendDeath(cause);
+	AP_TRACE(fmt::format("DeathLink SENT: cause='{}'", cause));
 	Debug(misc, 0, "[AP] Death sent: {}", cause);
 }
 
@@ -3027,7 +3726,7 @@ static void AP_OnDeathReceived(const std::string &source)
 	Company *c = Company::GetIfValid(cid);
 	if (c != nullptr) {
 		Money penalty = c->money / 2;
-		c->money -= penalty;
+		AP_ChangeMoney(cid, -penalty);
 
 		std::string msg = fmt::format("{} did not want to stay alive, "
 		    "and they are punishing you. Lost {}!", source, AP_Money(penalty));
@@ -3038,6 +3737,7 @@ static void AP_OnDeathReceived(const std::string &source)
 			{}
 		);
 		IConsolePrint(CC_ERROR, fmt::format("[AP] {}", msg));
+		AP_TRACE(fmt::format("DeathLink RECEIVED: source='{}' penalty={}", source, (int64_t)penalty));
 		Debug(misc, 0, "[AP] Death received from {} — 50% money penalty ({})", source, (int64_t)penalty);
 	}
 }
@@ -3047,6 +3747,8 @@ static void AP_OnDeathReceived(const std::string &source)
  * ---------------------------------------------------------------------- */
 
 static bool _handlers_registered = false;
+static void AP_OnCheckedLocations(const std::set<std::string> &locations); /* forward decl */
+static void AP_ApplyServerCheckedLocations(); /* forward decl */
 
 void EnsureHandlersRegistered()
 {
@@ -3059,6 +3761,7 @@ void EnsureHandlersRegistered()
 	_ap_client->callbacks.on_slot_data     = AP_OnSlotData;
 	_ap_client->callbacks.on_item_received = AP_OnItemReceived;
 	_ap_client->callbacks.on_death_received = AP_OnDeathReceived;
+	_ap_client->callbacks.on_checked_locations = AP_OnCheckedLocations;
 }
 
 /* -------------------------------------------------------------------------
@@ -3124,6 +3827,20 @@ void AP_ConsumeWorldStart()
 
 	const APSlotData &sd = _ap_pending_sd;
 
+	/* Debug: log AP slot data flags to file (stdout is DEVNULL in bridge mode) */
+	{
+		FILE *dbg = fopen("ap_debug.log", "a");
+		if (dbg) {
+			fmt::print(dbg, "[AP_ConsumeWorldStart] iron_horse={} military={} shark={} hover={} heqs={} vactrain={} aircraft={} firs={}\n",
+				sd.enable_iron_horse, sd.enable_military_items, sd.enable_shark_ships,
+				sd.enable_hover_vehicles, sd.enable_heqs, sd.enable_vactrain,
+				sd.enable_aircraftpack, sd.enable_firs);
+			fmt::print(dbg, "[AP_ConsumeWorldStart] missions={} shop_items={} locked_vehicles={} seed={}\n",
+				sd.missions.size(), sd.shop_item_names.size(), sd.locked_vehicles.size(), sd.world_seed);
+			fclose(dbg);
+		}
+	}
+
 	/* ── World generation ─────────────────────────────────────────── */
 	_settings_newgame.game_creation.starting_year =
 	    TimerGameCalendar::Year(sd.start_year);
@@ -3135,6 +3852,19 @@ void AP_ConsumeWorldStart()
 		_settings_newgame.game_creation.landscape = (LandscapeType)sd.landscape;
 	if (sd.land_generator <= 1)
 		_settings_newgame.game_creation.land_generator = sd.land_generator;
+	if (sd.terrain_type <= 4)
+		_settings_newgame.difficulty.terrain_type = sd.terrain_type;
+	if (sd.sea_level <= 3)
+		_settings_newgame.difficulty.quantity_sea_lakes = sd.sea_level;
+	if (sd.rivers <= 3)
+		_settings_newgame.game_creation.amount_of_rivers = sd.rivers;
+	if (sd.smoothness <= 3)
+		_settings_newgame.game_creation.tgen_smoothness = sd.smoothness;
+	if (sd.variety <= 5)
+		_settings_newgame.game_creation.variety = sd.variety;
+	if (sd.number_towns <= 4)
+		_settings_newgame.difficulty.number_towns = sd.number_towns;
+	_settings_newgame.game_creation.town_name = sd.town_name;
 
 	_ap_world_seed_to_use = (sd.world_seed != 0) ? sd.world_seed : GENERATE_NEW_SEED;
 
@@ -3164,6 +3894,12 @@ void AP_ConsumeWorldStart()
 	_settings_newgame.vehicle.plane_crashes            = sd.plane_crashes;
 	_settings_newgame.difficulty.vehicle_breakdowns    = sd.vehicle_breakdowns;
 
+	/* ── AP: always disable vehicle/airport expiry so engine names resolve
+	 * correctly for AP item matching. Set in _settings_newgame so it's
+	 * part of the initial game state (prevents desync in multiplayer). */
+	_settings_newgame.vehicle.never_expire_vehicles   = true;
+	_settings_newgame.station.never_expire_airports   = true;
+
 	/* ── Economy / Environment ───────────────────────────────────── */
 	_settings_newgame.economy.type                     = (EconomyType)sd.economy_type;
 	_settings_newgame.economy.bribe                    = sd.bribe;
@@ -3178,8 +3914,21 @@ void AP_ConsumeWorldStart()
 	_settings_newgame.difficulty.industry_density      = sd.industry_density;
 	_settings_newgame.economy.allow_town_roads         = sd.allow_town_roads;
 
+	/* ── Force English for engine-name matching ─────────────────── */
+	/* Must run here (GM_MENU) — safe from concurrent GetString()
+	 * calls that would race with ReadLanguagePack() in multiplayer. */
+	ForceEnglishLanguage();
+
 	/* ── Vehicles / Routing ──────────────────────────────────────── */
 	_settings_newgame.vehicle.road_side                = sd.road_side;
+
+	/* ── NewGRF list — start clean ──────────────────────────────────── */
+	/* The user's openttd.cfg may already contain some of our GRFs (from a
+	 * previous AP game or manual setup).  AppendToGRFConfigList removes
+	 * duplicates by keeping the *first* occurrence, which would be the old
+	 * entry WITHOUT the params we need (e.g. military-items.grf param[0]=1).
+	 * Clearing the list ensures our versions (with correct params) win. */
+	_grfconfig_newgame.clear();
 
 	/* ── NewGRF: Archipelago Ruins ───────────────────────────────────── */
 	{
@@ -3265,9 +4014,356 @@ void AP_ConsumeWorldStart()
 		}
 	}
 
-	Debug(misc, 0, "[AP] World start ready: seed={}, year={}, map={}x{}, landscape={}",
-	      _ap_world_seed_to_use, sd.start_year,
-	      (1 << sd.map_x), (1 << sd.map_y), (int)sd.landscape);
+	/* ── NewGRF: Military Items ─────────────────────────────────────── */
+	if (sd.enable_military_items) {
+		static const std::string MIL_FILENAME = "military-items.grf";
+		auto mg = std::make_unique<GRFConfig>(MIL_FILENAME);
+		mg->SetSuitablePalette();
+		if (!FillGRFDetails(*mg, false, NEWGRF_DIR)) {
+			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + MIL_FILENAME;
+			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + MIL_FILENAME;
+			bool copied = false;
+			{
+				FILE *fsrc = fopen(src.c_str(), "rb");
+				if (fsrc != nullptr) {
+					FILE *fdst = fopen(dst.c_str(), "wb");
+					if (fdst != nullptr) {
+						char buf[65536];
+						size_t n;
+						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
+						fclose(fdst);
+						copied = true;
+					}
+					fclose(fsrc);
+				}
+			}
+			if (copied) {
+				AP_OK(fmt::format("Military Items GRF installed from bundle to: {}", dst));
+				mg = std::make_unique<GRFConfig>(MIL_FILENAME);
+				mg->SetSuitablePalette();
+				if (!FillGRFDetails(*mg, false, NEWGRF_DIR)) {
+					ScanNewGRFFiles(nullptr);
+					mg = std::make_unique<GRFConfig>(MIL_FILENAME);
+					mg->SetSuitablePalette();
+					FillGRFDetails(*mg, false, NEWGRF_DIR);
+				}
+			} else {
+				AP_WARN(fmt::format("military-items.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
+			}
+		}
+		if (mg->status != GCS_NOT_FOUND && mg->status != GCS_DISABLED) {
+			/* Parameters for military-items.grf (12 total):
+			 *   [0]  Enable custom airports:  1 = All
+			 *   [1]  Disable airport noise:   1 = yes
+			 *   [2]  Purchase cost mult:      4 = 1x
+			 *   [3]  Running cost mult:       4 = 1x
+			 *   [4]  Aircraft ranges:         0 = disabled
+			 *   [5]  Date restrictions:       0 = off
+			 *   [6]  Czechoslovak aircraft:   1 = All
+			 *   [7]  European aircraft:       1 = All
+			 *   [8]  Soviet/Russian aircraft: 1 = All
+			 *   [9]  US aircraft:             1 = All
+			 *   [10] Other nations aircraft:  1 = All
+			 *   [11] Disable default aircraft:0 = no
+			 * Params 6-10 default to 0 (None) if unset, which hides ALL
+			 * military aircraft and prevents Action 4 name assignment. */
+			const uint32_t mil_params[] = {1, 1, 4, 4, 0, 0, 1, 1, 1, 1, 1, 0};
+			mg->SetParams(mil_params);
+			AppendToGRFConfigList(_grfconfig_newgame, std::move(mg));
+			AP_OK("Military Items GRF activated for new game (airports=All, noise=off).");
+		}
+	}
+
+	/* ── NewGRF: SHARK Ship Set ─────────────────────────────────────── */
+	if (sd.enable_shark_ships) {
+		static const std::string SHARK_FILENAME = "shark.grf";
+		auto sg = std::make_unique<GRFConfig>(SHARK_FILENAME);
+		sg->SetSuitablePalette();
+
+		if (!FillGRFDetails(*sg, false, NEWGRF_DIR)) {
+			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + SHARK_FILENAME;
+			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + SHARK_FILENAME;
+			bool copied = false;
+			{
+				FILE *fsrc = fopen(src.c_str(), "rb");
+				if (fsrc != nullptr) {
+					FILE *fdst = fopen(dst.c_str(), "wb");
+					if (fdst != nullptr) {
+						char buf[65536];
+						size_t n;
+						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
+						fclose(fdst);
+						copied = true;
+					}
+					fclose(fsrc);
+				}
+			}
+			if (copied) {
+				AP_OK(fmt::format("SHARK GRF installed from bundle to: {}", dst));
+				sg = std::make_unique<GRFConfig>(SHARK_FILENAME);
+				sg->SetSuitablePalette();
+				if (!FillGRFDetails(*sg, false, NEWGRF_DIR)) {
+					ScanNewGRFFiles(nullptr);
+					sg = std::make_unique<GRFConfig>(SHARK_FILENAME);
+					sg->SetSuitablePalette();
+					FillGRFDetails(*sg, false, NEWGRF_DIR);
+				}
+			} else {
+				AP_WARN(fmt::format("shark.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
+			}
+		}
+		if (sg->status != GCS_NOT_FOUND && sg->status != GCS_DISABLED) {
+			AppendToGRFConfigList(_grfconfig_newgame, std::move(sg));
+			AP_OK("SHARK Ship Set GRF activated for new game.");
+		}
+	}
+
+	/* ── NewGRF: Hover Vehicles ─────────────────────────────────────── */
+	if (sd.enable_hover_vehicles) {
+		static const std::string HV_FILENAME = "hoverv.grf";
+		auto hg = std::make_unique<GRFConfig>(HV_FILENAME);
+		hg->SetSuitablePalette();
+
+		if (!FillGRFDetails(*hg, false, NEWGRF_DIR)) {
+			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + HV_FILENAME;
+			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + HV_FILENAME;
+			bool copied = false;
+			{
+				FILE *fsrc = fopen(src.c_str(), "rb");
+				if (fsrc != nullptr) {
+					FILE *fdst = fopen(dst.c_str(), "wb");
+					if (fdst != nullptr) {
+						char buf[65536];
+						size_t n;
+						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
+						fclose(fdst);
+						copied = true;
+					}
+					fclose(fsrc);
+				}
+			}
+			if (copied) {
+				AP_OK(fmt::format("Hover Vehicles GRF installed from bundle to: {}", dst));
+				hg = std::make_unique<GRFConfig>(HV_FILENAME);
+				hg->SetSuitablePalette();
+				if (!FillGRFDetails(*hg, false, NEWGRF_DIR)) {
+					ScanNewGRFFiles(nullptr);
+					hg = std::make_unique<GRFConfig>(HV_FILENAME);
+					hg->SetSuitablePalette();
+					FillGRFDetails(*hg, false, NEWGRF_DIR);
+				}
+			} else {
+				AP_WARN(fmt::format("hoverv.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
+			}
+		}
+		if (hg->status != GCS_NOT_FOUND && hg->status != GCS_DISABLED) {
+			AppendToGRFConfigList(_grfconfig_newgame, std::move(hg));
+			AP_OK("Hover Vehicles GRF activated for new game.");
+		}
+	}
+
+	/* ── NewGRF: HEQS Heavy Equipment Set ──────────────────────────── */
+	if (sd.enable_heqs) {
+		static const std::string HEQS_FILENAME = "heqs.grf";
+		auto hq = std::make_unique<GRFConfig>(HEQS_FILENAME);
+		hq->SetSuitablePalette();
+
+		if (!FillGRFDetails(*hq, false, NEWGRF_DIR)) {
+			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + HEQS_FILENAME;
+			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + HEQS_FILENAME;
+			bool copied = false;
+			{
+				FILE *fsrc = fopen(src.c_str(), "rb");
+				if (fsrc != nullptr) {
+					FILE *fdst = fopen(dst.c_str(), "wb");
+					if (fdst != nullptr) {
+						char buf[65536];
+						size_t n;
+						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
+						fclose(fdst);
+						copied = true;
+					}
+					fclose(fsrc);
+				}
+			}
+			if (copied) {
+				AP_OK(fmt::format("HEQS GRF installed from bundle to: {}", dst));
+				hq = std::make_unique<GRFConfig>(HEQS_FILENAME);
+				hq->SetSuitablePalette();
+				if (!FillGRFDetails(*hq, false, NEWGRF_DIR)) {
+					ScanNewGRFFiles(nullptr);
+					hq = std::make_unique<GRFConfig>(HEQS_FILENAME);
+					hq->SetSuitablePalette();
+					FillGRFDetails(*hq, false, NEWGRF_DIR);
+				}
+			} else {
+				AP_WARN(fmt::format("heqs.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
+			}
+		}
+		if (hq->status != GCS_NOT_FOUND && hq->status != GCS_DISABLED) {
+			AppendToGRFConfigList(_grfconfig_newgame, std::move(hq));
+			AP_OK("HEQS Heavy Equipment GRF activated for new game.");
+		}
+	}
+
+	/* ── NewGRF: Vactrain Set ──────────────────────────────────────── */
+	if (sd.enable_vactrain) {
+		static const std::string VAC_FILENAME = "vactrain_1.0.1.grf";
+		auto vg = std::make_unique<GRFConfig>(VAC_FILENAME);
+		vg->SetSuitablePalette();
+
+		if (!FillGRFDetails(*vg, false, NEWGRF_DIR)) {
+			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + VAC_FILENAME;
+			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + VAC_FILENAME;
+			bool copied = false;
+			{
+				FILE *fsrc = fopen(src.c_str(), "rb");
+				if (fsrc != nullptr) {
+					FILE *fdst = fopen(dst.c_str(), "wb");
+					if (fdst != nullptr) {
+						char buf[65536];
+						size_t n;
+						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
+						fclose(fdst);
+						copied = true;
+					}
+					fclose(fsrc);
+				}
+			}
+			if (copied) {
+				AP_OK(fmt::format("Vactrain GRF installed from bundle to: {}", dst));
+				vg = std::make_unique<GRFConfig>(VAC_FILENAME);
+				vg->SetSuitablePalette();
+				if (!FillGRFDetails(*vg, false, NEWGRF_DIR)) {
+					ScanNewGRFFiles(nullptr);
+					vg = std::make_unique<GRFConfig>(VAC_FILENAME);
+					vg->SetSuitablePalette();
+					FillGRFDetails(*vg, false, NEWGRF_DIR);
+				}
+			} else {
+				AP_WARN(fmt::format("vactrain_1.0.1.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
+			}
+		}
+		if (vg->status != GCS_NOT_FOUND && vg->status != GCS_DISABLED) {
+			AppendToGRFConfigList(_grfconfig_newgame, std::move(vg));
+			AP_OK("Vactrain Set GRF activated for new game.");
+		}
+	}
+
+	/* ── NewGRF: Aircraftpack 2025 ─────────────────────────────────── */
+	if (sd.enable_aircraftpack) {
+		static const std::string AP25_FILENAME = "Aircraft2025.grf";
+		auto ag = std::make_unique<GRFConfig>(AP25_FILENAME);
+		ag->SetSuitablePalette();
+
+		if (!FillGRFDetails(*ag, false, NEWGRF_DIR)) {
+			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + AP25_FILENAME;
+			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + AP25_FILENAME;
+			bool copied = false;
+			{
+				FILE *fsrc = fopen(src.c_str(), "rb");
+				if (fsrc != nullptr) {
+					FILE *fdst = fopen(dst.c_str(), "wb");
+					if (fdst != nullptr) {
+						char buf[65536];
+						size_t n;
+						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
+						fclose(fdst);
+						copied = true;
+					}
+					fclose(fsrc);
+				}
+			}
+			if (copied) {
+				AP_OK(fmt::format("Aircraftpack 2025 GRF installed from bundle to: {}", dst));
+				ag = std::make_unique<GRFConfig>(AP25_FILENAME);
+				ag->SetSuitablePalette();
+				if (!FillGRFDetails(*ag, false, NEWGRF_DIR)) {
+					ScanNewGRFFiles(nullptr);
+					ag = std::make_unique<GRFConfig>(AP25_FILENAME);
+					ag->SetSuitablePalette();
+					FillGRFDetails(*ag, false, NEWGRF_DIR);
+				}
+			} else {
+				AP_WARN(fmt::format("Aircraft2025.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
+			}
+		}
+		if (ag->status != GCS_NOT_FOUND && ag->status != GCS_DISABLED) {
+			AppendToGRFConfigList(_grfconfig_newgame, std::move(ag));
+			AP_OK("Aircraftpack 2025 GRF activated for new game.");
+		}
+	}
+
+	/* ── NewGRF: FIRS Industries ───────────────────────────────────── */
+	if (sd.enable_firs) {
+		static const std::string FIRS_FILENAME = "firs.grf";
+		auto fg = std::make_unique<GRFConfig>(FIRS_FILENAME);
+		fg->SetSuitablePalette();
+
+		if (!FillGRFDetails(*fg, false, NEWGRF_DIR)) {
+			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + FIRS_FILENAME;
+			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + FIRS_FILENAME;
+			bool copied = false;
+			{
+				FILE *fsrc = fopen(src.c_str(), "rb");
+				if (fsrc != nullptr) {
+					FILE *fdst = fopen(dst.c_str(), "wb");
+					if (fdst != nullptr) {
+						char buf[65536];
+						size_t n;
+						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
+						fclose(fdst);
+						copied = true;
+					}
+					fclose(fsrc);
+				}
+			}
+			if (copied) {
+				AP_OK(fmt::format("FIRS Industries GRF installed from bundle to: {}", dst));
+				fg = std::make_unique<GRFConfig>(FIRS_FILENAME);
+				fg->SetSuitablePalette();
+				if (!FillGRFDetails(*fg, false, NEWGRF_DIR)) {
+					ScanNewGRFFiles(nullptr);
+					fg = std::make_unique<GRFConfig>(FIRS_FILENAME);
+					fg->SetSuitablePalette();
+					FillGRFDetails(*fg, false, NEWGRF_DIR);
+				}
+			} else {
+				AP_WARN(fmt::format("firs.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
+			}
+		}
+		if (fg->status != GCS_NOT_FOUND && fg->status != GCS_DISABLED) {
+			/* FIRS parameter 0 = Economy type (0=Temperate Basic, 1=Arctic Basic,
+			 * 2=Tropic Basic, 3=Steeltown, 4=In A Hot Country) */
+			std::vector<uint32_t> firs_params = {sd.firs_economy};
+			fg->SetParams(firs_params);
+			AppendToGRFConfigList(_grfconfig_newgame, std::move(fg));
+			AP_OK(fmt::format("FIRS Industries GRF activated (economy={}).", sd.firs_economy));
+		}
+	}
+
+	/* Count how many GRFs were added to _grfconfig_newgame */
+	{
+		int grf_count = 0;
+		for (const auto &g : _grfconfig_newgame) {
+			(void)g;
+			grf_count++;
+		}
+		Debug(misc, 0, "[AP] World start ready: seed={}, year={}, map={}x{}, landscape={}, grfs={}",
+		      _ap_world_seed_to_use, sd.start_year,
+		      (1 << sd.map_x), (1 << sd.map_y), (int)sd.landscape, grf_count);
+
+		/* Debug: log to file (stdout is DEVNULL in bridge mode) */
+		FILE *dbg = fopen("ap_debug.log", "a");
+		if (dbg) {
+			fmt::print(dbg, "[AP_ConsumeWorldStart] DONE: {} GRFs in _grfconfig_newgame, seed={}\n",
+				grf_count, _ap_world_seed_to_use);
+			for (const auto &g : _grfconfig_newgame) {
+				fmt::print(dbg, "  GRF: {} (status={})\n", g->filename, (int)g->status);
+			}
+			fclose(dbg);
+		}
+	}
 	Debug(misc, 0, "[AP] Game settings: loans={} trains={} roadveh={} train_len={} station_spread={}",
 	      sd.max_loan, sd.max_trains, sd.max_roadveh,
 	      sd.max_train_length, sd.station_spread);
@@ -3279,6 +4375,23 @@ void AP_ConsumeWorldStart()
 uint32_t AP_GetWorldSeed()
 {
 	return _ap_world_seed_to_use;
+}
+
+/**
+ * Called from the bridge server handler (network_bridge.cpp) to populate
+ * _ap_pending_sd with slot data received from the Python AP Bridge.
+ * After calling this, the caller should invoke AP_ConsumeWorldStart()
+ * to apply all settings and NewGRFs, then StartNewGameWithoutGUI().
+ */
+void AP_BridgeSetSlotData(const APSlotData &sd)
+{
+	_ap_pending_sd = sd;
+	_ap_pending_world_start = true;
+	_ap_session_started = false;
+	_ap_engine_map_built = false;
+	_ap_cargo_map_built = false;
+	Debug(misc, 1, "[AP] Bridge set slot_data: {} missions, year={}, map={}x{}",
+	      sd.missions.size(), sd.start_year, (1 << sd.map_x), (1 << sd.map_y));
 }
 
 /** Called from connect window when user clicks "Load Save".
@@ -3299,6 +4412,32 @@ bool AP_ShouldShowLoadDialog()
 
 bool AP_IsWaitingForStartChoice()        { return _ap_waiting_for_start_choice; }
 void AP_SetWaitingForStartChoice(bool v) { _ap_waiting_for_start_choice = v; }
+
+/* ── Multiplayer host flag (Phase 1+2) ─────────────────────────────── */
+static bool _ap_host_multiplayer = false;
+
+void AP_SetHostMultiplayer(bool v) { _ap_host_multiplayer = v; }
+bool AP_IsHostMultiplayer()        { return _ap_host_multiplayer; }
+
+/* ── Co-op auto-join: move spectator to Company 0 after map load ── */
+static bool _ap_pending_join_company0 = false;
+
+void AP_SetPendingJoinCompany0(bool v) { _ap_pending_join_company0 = v; }
+bool AP_IsPendingJoinCompany0()        { return _ap_pending_join_company0; }
+
+/* ── MP Join: deferred join — wait for slot_data + NewGRF setup ── */
+/* Variables declared earlier (before AP_OnSlotData callback) */
+
+void AP_RequestMPJoin(const std::string &game_server, const std::string &slot_name)
+{
+	_ap_mp_join_pending = true;
+	_ap_mp_join_server  = game_server;
+	_ap_mp_join_slot    = slot_name;
+	IConsolePrint(CC_WHITE, "[AP] Waiting for slot data before joining game server...");
+}
+
+bool AP_IsMPJoinPending() { return _ap_mp_join_pending; }
+bool AP_IsMultiplayerMode() { return _ap_pending_sd.multiplayer_mode; }
 
 /* -------------------------------------------------------------------------
  * Shop and location check API
@@ -3321,6 +4460,7 @@ void AP_SendCheckByName(const std::string &location_name)
 	else if (location_name.rfind("Mission_Medium_",  0) == 0) _ap_medium_completed++;
 	else if (location_name.rfind("Mission_Hard_",    0) == 0) _ap_hard_completed++;
 	else if (location_name.rfind("Mission_Extreme_", 0) == 0) _ap_extreme_completed++;
+	AP_TRACE(fmt::format("LocationCheck SENT: '{}'", location_name));
 	_ap_client->SendCheckByName(location_name);
 }
 
@@ -4003,12 +5143,14 @@ static void AP_CompleteTask(APTask &t)
 {
 	t.completed    = true;
 	t.removal_year = (int32_t)TimerGameCalendar::year.base() + 1; /* remove ~1 in-game year after completion */
+	AP_TRACE(fmt::format("TaskComplete: id={} desc='{}' reward_type={} reward_cash={}",
+		t.id, t.description.substr(0, 60), (int)t.reward_type, t.reward_cash));
 	CompanyID cid = _local_company;
 	if (!Company::IsValidID(cid)) return;
 	Company *c = Company::Get(cid);
 
 	if (t.reward_type == APTaskRewardType::CASH) {
-		c->money += (Money)t.reward_cash;
+		AP_ChangeMoney(cid, (Money)t.reward_cash);
 		AP_ShowNews(fmt::format("[Task] Completed! Reward: +{}",
 		    AP_FormatMoneyCompact_Task(t.reward_cash)));
 	} else {
@@ -4050,6 +5192,7 @@ static void AP_UpdateTasks()
 		if (cur_year > t.deadline_year) {
 			t.expired = true;
 			t.removal_year = cur_year + 1; /* remove ~1 in-game year after expiry */
+			AP_TRACE(fmt::format("TaskExpired: id={} desc='{}' deadline={}", t.id, t.description.substr(0, 60), t.deadline_year));
 			AP_ShowNews(fmt::format("[Task] Expired: {}", t.description.substr(0, 50)));
 			continue;
 		}
@@ -4166,7 +5309,7 @@ void AP_DeductShopPrice(const std::string &location_name)
 	Company *c = Company::GetIfValid(cid);
 	if (c == nullptr) return;
 	int64_t price = AP_GetShopPrice(location_name);
-	c->money -= (Money)price;
+	AP_ChangeMoney(cid, -(Money)price);
 }
 
 /* -------------------------------------------------------------------------
@@ -4240,7 +5383,19 @@ std::string AP_GetCompletedMissionsStr()
 
 void AP_SetCompletedMissionsStr(const std::string &s)
 {
-    if (s.empty()) return;
+    /* Stage for application after AP_OnSlotData overwrites _ap_pending_sd.
+     * During savegame load, _ap_pending_sd is stale (previous session).
+     * The staged string is applied in first-tick setup when the fresh
+     * mission list from the server is already in place. */
+    _ap_staging_completed_missions = s;
+    _ap_staging_completed_valid    = !s.empty();
+}
+
+static void AP_ApplyStagedCompletedMissions()
+{
+    if (!_ap_staging_completed_valid) return;
+    const std::string &s = _ap_staging_completed_missions;
+
     /* Split by comma and mark matching missions as completed */
     std::set<std::string> done;
     std::string token;
@@ -4253,9 +5408,7 @@ void AP_SetCompletedMissionsStr(const std::string &s)
         if (done.count(m.location)) m.completed = true;
     }
 
-    /* Rebuild per-difficulty counters from the now-updated mission structs.
-     * Without this the static counters stay at 0 after a save/load, causing
-     * the status window to show "0 / N" even though missions are completed. */
+    /* Rebuild per-difficulty counters from the now-updated mission structs. */
     _ap_easy_completed    = 0;
     _ap_medium_completed  = 0;
     _ap_hard_completed    = 0;
@@ -4267,6 +5420,10 @@ void AP_SetCompletedMissionsStr(const std::string &s)
         else if (m.location.rfind("Mission_Hard_",    0) == 0) _ap_hard_completed++;
         else if (m.location.rfind("Mission_Extreme_", 0) == 0) _ap_extreme_completed++;
     }
+
+    Debug(misc, 1, "[AP] Restored {} completed missions from savegame", done.size());
+    _ap_staging_completed_missions.clear();
+    _ap_staging_completed_valid = false;
 }
 
 void AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out)
@@ -4302,9 +5459,19 @@ std::string AP_GetMaintainCountersStr()
 
 void AP_SetMaintainCountersStr(const std::string &s)
 {
-    if (s.empty()) return;
+    /* Stage for application after AP_OnSlotData — same timing issue as missions. */
+    _ap_staging_maintain_counters = s;
+    _ap_staging_maintain_valid    = !s.empty();
+}
+
+static void AP_ApplyStagedMaintainCounters()
+{
+    if (!_ap_staging_maintain_valid) return;
+    const std::string &s = _ap_staging_maintain_counters;
+
     /* Parse "loc=N:P,..." — P is optional for backwards compat with old saves */
     std::string token;
+    int restored = 0;
     auto apply = [&](const std::string &t) {
         auto eq = t.find('=');
         if (eq == std::string::npos) return;
@@ -4328,6 +5495,7 @@ void AP_SetMaintainCountersStr(const std::string &s)
             if (m.location == loc) {
                 m.maintain_months_ok           = n;
                 m.maintain_first_month_pending = pending;
+                restored++;
                 break;
             }
         }
@@ -4337,6 +5505,10 @@ void AP_SetMaintainCountersStr(const std::string &s)
         else token += c;
     }
     apply(token);
+
+    Debug(misc, 1, "[AP] Restored {} maintain counters from savegame", restored);
+    _ap_staging_maintain_counters.clear();
+    _ap_staging_maintain_valid = false;
 }
 std::string AP_GetNamedEntityStr()
 {
@@ -4361,7 +5533,19 @@ static void AP_StrReplace(std::string &s, const std::string &from, const std::st
 
 void AP_SetNamedEntityStr(const std::string &s)
 {
-	if (s.empty()) return;
+	/* Stage for application after AP_OnSlotData overwrites _ap_pending_sd
+	 * and after AP_AssignNamedEntities() has set up the entity IDs.
+	 * The staged string is applied in first-tick setup. */
+	_ap_staging_named_entities = s;
+	_ap_staging_named_valid    = !s.empty();
+}
+
+/** Apply staged named entity cumulative progress.
+ *  Must run AFTER AP_AssignNamedEntities() so entity IDs are already set. */
+static void AP_ApplyStagedNamedEntities()
+{
+	if (!_ap_staging_named_valid) return;
+	const std::string &s = _ap_staging_named_entities;
 
 	std::string_view sv(s);
 	while (!sv.empty()) {
@@ -4388,16 +5572,18 @@ void AP_SetNamedEntityStr(const std::string &s)
 		std::string loc_str(loc_sv);
 		for (APMission &m : _ap_pending_sd.missions) {
 			if (m.location != loc_str) continue;
-			m.named_entity.id         = eid;
+			/* Only restore cumulative — entity ID is set by AP_AssignNamedEntities() */
 			m.named_entity.cumulative = cum;
-
-			/* Name/tile/cargo resolution requires live map pointers (ind->town etc.)
-			 * which are NOT valid during chunk Load — AfterLoadGame() resolves them later.
-			 * We set a flag here and defer the GetString calls to the first game tick. */
-			_ap_named_entity_refresh_needed = true;
 			break;
 		}
 	}
+
+	Debug(misc, 1, "[AP] Restored named entity cumulative progress from savegame");
+	_ap_named_entity_refresh_needed = true;
+
+	/* Clear staging */
+	_ap_staging_named_entities.clear();
+	_ap_staging_named_valid = false;
 }
 /* -------------------------------------------------------------------------
  * Named-destination missions: assign map entities and accumulate progress.
@@ -4461,7 +5647,7 @@ static int64_t AP_RuinCargoAmount()
 	int idx = std::clamp(diff, 0, 9);
 	int64_t lo = ranges[idx].lo;
 	int64_t hi = ranges[idx].hi;
-	return lo + (int64_t)(Random() % (uint32_t)(hi - lo + 1));
+	return lo + (int64_t)(InteractiveRandom() % (uint32_t)(hi - lo + 1));
 }
 
 /** Spawn a new ruin on the map with random cargo requirements. */
@@ -4474,7 +5660,7 @@ static bool AP_SpawnRuin()
 
 	AP_ResolveRuinTypes();
 
-	int variant = Random() % AP_NUM_RUIN_TYPES;
+	int variant = InteractiveRandom() % AP_NUM_RUIN_TYPES;
 	ObjectType ot = _ap_ruin_types[variant];
 	if (ot == INVALID_OBJECT_TYPE) {
 		for (int i = 0; i < AP_NUM_RUIN_TYPES; i++) {
@@ -4519,7 +5705,7 @@ static bool AP_SpawnRuin()
 					if (dx == 0 && dy == 0) continue; /* centre already placed */
 					TileIndex t2 = TileXY(x + dx, y + dy);
 					if (!IsValidTile(t2)) continue;
-					ObjectType ot2 = _ap_ruin_types[Random() % AP_NUM_RUIN_TYPES];
+					ObjectType ot2 = _ap_ruin_types[InteractiveRandom() % AP_NUM_RUIN_TYPES];
 					if (ot2 == INVALID_OBJECT_TYPE) ot2 = ot;
 					_current_company = _local_company;
 					Command<CMD_BUILD_OBJECT>::Do(
@@ -4550,13 +5736,13 @@ static bool AP_SpawnRuin()
 	const auto &cargo_list = AP_RuinCargoList();
 	int cargo_min = std::max(1, _ap_pending_sd.ruin_cargo_min);
 	int cargo_max = std::max(cargo_min, _ap_pending_sd.ruin_cargo_max);
-	int num_reqs = cargo_min + (int)(Random() % (uint32_t)(cargo_max - cargo_min + 1));
+	int num_reqs = cargo_min + (int)(InteractiveRandom() % (uint32_t)(cargo_max - cargo_min + 1));
 	if (num_reqs > (int)cargo_list.size()) num_reqs = (int)cargo_list.size();
 
 	std::vector<int> indices(cargo_list.size());
 	for (int i = 0; i < (int)indices.size(); i++) indices[i] = i;
 	for (int i = (int)indices.size() - 1; i > 0; i--) {
-		int j = Random() % (uint32_t)(i + 1);
+		int j = InteractiveRandom() % (uint32_t)(i + 1);
 		std::swap(indices[i], indices[j]);
 	}
 
@@ -4578,7 +5764,7 @@ static bool AP_SpawnRuin()
 			}
 			if (basic_idx >= 0) {
 				/* Swap it with a random non-first slot in the selected range */
-				int swap_pos = (num_reqs > 1) ? (int)(Random() % (uint32_t)num_reqs) : 0;
+				int swap_pos = (num_reqs > 1) ? (int)(InteractiveRandom() % (uint32_t)num_reqs) : 0;
 				std::swap(indices[swap_pos], indices[basic_idx]);
 			}
 		}
@@ -4609,6 +5795,8 @@ static bool AP_SpawnRuin()
 	            ruin.town_name, cargo_text));
 	AP_OK(fmt::format("Ruin {} spawned at tile {} near {} ({})", ruin.location_name, placed_tile,
 	      ruin.town_name, cargo_text));
+	AP_TRACE(fmt::format("RuinSpawned: loc='{}' tile={} town='{}' cargo=[{}] spawned_total={} active={}",
+		ruin.location_name, placed_tile, ruin.town_name, cargo_text, _ap_ruins_spawned, _ap_active_ruins.size()));
 	return true;
 }
 
@@ -4663,6 +5851,8 @@ static void AP_UpdateRuinProgress(CompanyID cid, std::set<CargoMonitorID> &drain
 
 			AP_ShowNews(fmt::format("Ruins near {} cleared! The God of Wacken retreats.", ruin.town_name));
 			AP_OK(fmt::format("Ruin {} completed and removed", ruin.location_name));
+			AP_TRACE(fmt::format("RuinCompleted: loc='{}' town='{}' completed={}/{} active_remaining={}",
+				ruin.location_name, ruin.town_name, _ap_ruins_completed + 1, _ap_pending_sd.ruin_pool_size, _ap_active_ruins.size() - 1));
 			_ap_ruins_completed++;
 			it = _ap_active_ruins.erase(it);
 
@@ -5070,6 +6260,70 @@ static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
  * Iterate all incomplete missions and send checks for any that are now met.
  * Called from the realtime timer every ~5 s.
  */
+/**
+ * Called when the AP server reports which locations have been checked.
+ * Marks matching missions as completed so the UI stays in sync — critical
+ * after save/load and in multiplayer when another player checks a location.
+ */
+static void AP_OnCheckedLocations(const std::set<std::string> &locations)
+{
+	/* Stage the checked locations for application after session init.
+	 * AP_InitSessionStats() clears _ap_sent_shop_locations and AP_OnSlotData()
+	 * resets mission completion flags, so we can't apply directly here. */
+	for (const auto &loc : locations) {
+		_ap_server_checked_locations.insert(loc);
+	}
+	_ap_server_checked_pending = true;
+	Debug(misc, 0, "[AP] Staged {} checked locations from AP server (total staged: {})",
+	      locations.size(), _ap_server_checked_locations.size());
+
+	/* If session is already started, apply immediately (RoomUpdate during play) */
+	if (_ap_session_started) {
+		AP_ApplyServerCheckedLocations();
+	}
+}
+
+/** Apply staged checked locations from AP server — runs after session init. */
+static void AP_ApplyServerCheckedLocations()
+{
+	if (!_ap_server_checked_pending) return;
+	_ap_server_checked_pending = false;
+
+	int missions_synced = 0;
+	int shop_synced = 0;
+
+	/* ── Sync missions ─────────────────────────────────────────── */
+	for (APMission &m : _ap_pending_sd.missions) {
+		if (m.completed) continue;
+		if (_ap_server_checked_locations.count(m.location)) {
+			m.completed = true;
+			missions_synced++;
+			Debug(misc, 0, "[AP] Synced completion from server: {} ({})", m.location, m.description);
+		}
+	}
+
+	/* ── Sync shop purchases ───────────────────────────────────── */
+	for (const std::string &loc : _ap_server_checked_locations) {
+		if (loc.rfind("Shop_Purchase_", 0) == 0) {
+			if (_ap_sent_shop_locations.find(loc) == _ap_sent_shop_locations.end()) {
+				_ap_sent_shop_locations.insert(loc);
+				shop_synced++;
+			}
+		}
+	}
+
+	if (missions_synced > 0) {
+		IConsolePrint(CC_WHITE, fmt::format("[AP] Synced {} completed missions from AP server.", missions_synced));
+	}
+	if (shop_synced > 0) {
+		IConsolePrint(CC_WHITE, fmt::format("[AP] Synced {} shop purchases from AP server.", shop_synced));
+	}
+	if (missions_synced > 0 || shop_synced > 0) {
+		SetWindowClassesDirty(WC_ARCHIPELAGO);
+		_ap_status_dirty.store(true);
+	}
+}
+
 static void CheckMissions()
 {
 	if (_ap_client == nullptr) return;
@@ -5083,6 +6337,7 @@ static void CheckMissions()
 		if (EvaluateMission(m)) {
 			m.completed = true;
 			completed_this_pass++;
+			AP_TRACE(fmt::format("MissionComplete: loc='{}' desc='{}' difficulty='{}'", m.location, m.description, m.difficulty));
 			AP_SendCheckByName(m.location);
 			AP_ShowNews("[AP] Mission complete: " + m.description);
 			Debug(misc, 0, "[AP] Mission completed: {} ({})", m.location, m.description);
@@ -5104,36 +6359,114 @@ void AP_NotifyShopPurchased()
 static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 	{ std::chrono::milliseconds(250), TimerGameRealtime::ALWAYS },
 	[](auto) {
-		if (_ap_client == nullptr) return;
-		EnsureHandlersRegistered();
-
-		/* Dispatch inbound AP events */
-		_ap_client->Tick();
-
-		/* Deferred named-entity name resolution: AP_SetNamedEntityStr skips
-		 * GetString calls during chunk Load (ind->town is null then).
-		 * AfterLoadGame() resolves all pointers before the first game tick,
-		 * so it is safe to call GetString here. Runs regardless of AP state. */
-		if (_ap_named_entity_refresh_needed &&
+		/* ── Co-op auto-join: move spectator → Company 0 after map load ── */
+		if (_ap_pending_join_company0 &&
 		    _game_mode == GM_NORMAL &&
-		    _local_company < MAX_COMPANIES) {
-			AP_RefreshNamedEntityNames();
-			_ap_status_dirty.store(true);
+		    _local_company == COMPANY_SPECTATOR) {
+			_ap_pending_join_company0 = false;
+			NetworkClientRequestMove(CompanyID(0));
+			IConsolePrint(CC_WHITE, "[AP] Auto-joining host's company (Company 0)...");
 		}
 
-		/* First-tick session setup when we enter GM_NORMAL */
-		if (!_ap_session_started &&
-		    _game_mode == GM_NORMAL &&
-		    _local_company < MAX_COMPANIES &&
-		    _ap_client->GetState() == APState::AUTHENTICATED) {
+		/* ── MP Join: pump AP client until slot_data arrives ── */
+		if (_ap_mp_join_pending && _ap_client != nullptr) {
+			EnsureHandlersRegistered();
+			_ap_client->Tick();
+			/* AP_OnSlotData callback handles everything when slot_data arrives:
+			 * NewGRF setup + ScanNewGRFFiles + NetworkClientConnectGame.
+			 * We just need to keep pumping Tick() until that happens.
+			 * Fallback: if client already had cached slot_data, trigger manually. */
+			if (_ap_mp_join_pending && _ap_client->HasSlotData()) {
+				/* Re-feed slot_data to our callback manually */
+				AP_OnSlotData(_ap_client->GetSlotData());
+			}
+			return;
+		}
+
+		/* In multiplayer, only the server/host processes AP events.
+		 * Clients receive state via network commands and map download. */
+		if (_networking && !_network_server) return;
+
+		/* Bridge mode: the dedicated server has no _ap_client — session
+		 * management is driven by the bridge TCP connection instead.
+		 * Skip _ap_client processing but fall through to session setup. */
+		if (!_ap_bridge_mode) {
+			if (_ap_client == nullptr) return;
+			EnsureHandlersRegistered();
+
+			/* Dispatch inbound AP events */
+			_ap_client->Tick();
+
+			/* Deferred named-entity name resolution */
+			if (_ap_named_entity_refresh_needed &&
+			    _game_mode == GM_NORMAL &&
+			    _local_company < MAX_COMPANIES) {
+				AP_RefreshNamedEntityNames();
+				_ap_status_dirty.store(true);
+			}
+		} else {
+			/* Bridge mode: deferred named-entity refresh uses Company 0 */
+			if (_ap_named_entity_refresh_needed &&
+			    _game_mode == GM_NORMAL &&
+			    Company::GetIfValid(CompanyID(0)) != nullptr) {
+				AP_RefreshNamedEntityNames();
+				_ap_status_dirty.store(true);
+			}
+		}
+
+		/* First-tick session setup when we enter GM_NORMAL.
+		 * Bridge mode: no _ap_client, use Company 0 (first player's company).
+		 * Singleplayer: uses _ap_client->GetState() and _local_company. */
+		bool session_ready = false;
+		if (_ap_bridge_mode) {
+			/* Bridge mode: run session start immediately when GM_NORMAL.
+			 * Do NOT wait for Company 0 — lock engines before any client connects.
+			 * This prevents desync (client downloads map with locked engines). */
+			session_ready = !_ap_session_started &&
+			    _game_mode == GM_NORMAL;
+		} else {
+			session_ready = !_ap_session_started &&
+			    _game_mode == GM_NORMAL &&
+			    _local_company < MAX_COMPANIES &&
+			    _ap_client->GetState() == APState::AUTHENTICATED;
+		}
+
+		if (session_ready) {
 
 			_ap_session_started = true;
 
-			CompanyID cid = _local_company;
+			/* Auto-open console log file so every IConsolePrint() line is
+			 * captured to ap_console.log for post-game debugging.  Uses the
+			 * same mechanism as the in-game "script" command. */
+			{
+				extern std::optional<FileHandle> _iconsole_output_file;
+				if (!_iconsole_output_file.has_value()) {
+					_iconsole_output_file = FileHandle::Open(std::string("ap_console.log"), std::string_view("wb"));
+					if (_iconsole_output_file.has_value()) {
+						IConsolePrint(CC_INFO, "[AP] Console log opened: ap_console.log");
+					}
+				}
+			}
+
+			/* Autosave — always save on exit during AP sessions */
+			_settings_client.gui.autosave_on_exit = true;
+
+			CompanyID cid = _ap_bridge_mode ? CompanyID(0) : _local_company;
 			Company *c = Company::GetIfValid(cid);
 
-			/* Force English so that engine names match AP item names */
-			ForceEnglishLanguage();
+			/* Debug: log session start to file */
+			{
+				FILE *dbg = fopen("ap_debug.log", "a");
+				if (dbg) {
+					fmt::print(dbg, "[SessionStart] bridge_mode={} cid={} company_valid={} missions={} locked_vehicles={}\n",
+						(int)_ap_bridge_mode, (int)cid.base(), c != nullptr ? 1 : 0,
+						_ap_pending_sd.missions.size(), _ap_pending_sd.locked_vehicles.size());
+					fclose(dbg);
+				}
+			}
+
+			/* English was forced in AP_ConsumeWorldStart() — safe there
+			 * because _game_mode == GM_MENU (no concurrent string lookups). */
 
 			/* Disable vehicle/airport expiry NOW — before building the engine
 			 * map.  EngineNameContext::PurchaseList only returns a name for
@@ -5173,6 +6506,16 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				/* Apply shop sent locations staged by saveload (must run after AP_InitSessionStats) */
 				AP_ApplyStagedShopSent();
 
+				/* Apply completed missions staged by saveload (must run after AP_OnSlotData
+				 * has overwritten _ap_pending_sd with the fresh mission list from the server) */
+				AP_ApplyStagedCompletedMissions();
+				AP_ApplyStagedMaintainCounters();
+
+				/* Apply checked locations received from the AP server (Connected/RoomUpdate).
+				 * Must run AFTER AP_InitSessionStats (which clears shop set) and AFTER
+				 * AP_ApplyStagedCompletedMissions (savegame data first, server overrides). */
+				AP_ApplyServerCheckedLocations();
+
 				/* Apply task data staged by saveload (must run after AP_InitSessionStats) */
 				if (_ap_staging_has_data) {
 					AP_ApplyTasksStr(_ap_staging_tasks);
@@ -5185,6 +6528,10 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 
 				/* Assign named map entities to named-destination missions */
 				AP_AssignNamedEntities();
+				/* Restore cumulative progress staged by saveload (must run AFTER
+				 * AP_AssignNamedEntities sets up entity IDs, and AFTER AP_OnSlotData
+				 * has overwritten _ap_pending_sd with fresh server data) */
+				AP_ApplyStagedNamedEntities();
 				/* Refresh names for missions restored from savegame (deferred from Load()) */
 				if (_ap_named_entity_refresh_needed) AP_RefreshNamedEntityNames();
 				/* Refresh task entity names (deferred from savegame load) */
@@ -5197,6 +6544,17 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 
 				/* Rename towns using multiworld player names or custom list */
 				AP_RenameTowns();
+
+				/* Multiplayer mode — disable features that cause desync in MP.
+				 * These use Command::Do(DC_EXEC) directly and RandomRange(),
+				 * which diverges server/client game state. */
+				if (_ap_pending_sd.multiplayer_mode) {
+					IConsolePrint(CC_WHITE, "[AP] Multiplayer mode: disabling ruins, Colby, Demigod, Wrath.");
+					_ap_pending_sd.ruin_pool_size   = 0;
+					_ap_pending_sd.colby_event      = false;
+					_ap_pending_sd.demigod_enabled  = false;
+					_ap_pending_sd.wrath_enabled    = false;
+				}
 
 				/* Colby Event — initialise town selection and cargo type */
 				_ap_colby_enabled    = _ap_pending_sd.colby_event;
@@ -5232,20 +6590,23 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			const bool lock_wagons  = _ap_pending_sd.enable_wagon_unlocks;
 			int locked_count = 0;
 			for (Engine *e : Engine::Iterate()) {
-				if (!e->company_avail.Test(cid)) { continue; }
 				bool is_wagon = (e->type == VEH_TRAIN &&
 				                 e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON);
 				if (is_wagon && !lock_wagons) { continue; }
-				/* When we have a lock list (new-style AP), lock ALL engines.
-				 * The player only gets engines that AP gives them.  This is
-				 * robust regardless of GRF callback names or missing entries
-				 * in IRON_HORSE_ENGINES — every engine starts locked, and
-				 * AP_UnlockEngineByName selectively unlocks them. */
-				e->company_avail.Reset(cid);
+				if (_ap_bridge_mode) {
+					/* Bridge mode: lock for ALL companies (company-agnostic).
+					 * This runs before any client connects, so no desync risk.
+					 * The map state already has locked engines when clients download it. */
+					e->company_avail = CompanyMask{};
+				} else {
+					if (!e->company_avail.Test(cid)) { continue; }
+					e->company_avail.Reset(cid);
+				}
 				locked_count++;
 			}
-			Debug(misc, 1, "[AP] Session lock complete: {} engines locked (has_lock_list={})",
-			      locked_count, has_lock_list);
+			Debug(misc, 1, "[AP] Session lock complete: {} engines locked (has_lock_list={}, bridge={})",
+			      locked_count, has_lock_list, _ap_bridge_mode);
+			AP_TRACE(fmt::format("SessionLock: {} engines locked (has_lock_list={}, bridge_mode={})", locked_count, has_lock_list, _ap_bridge_mode));
 
 			/* Unlock ALL rail and road types unconditionally — ensures any
 			 * AP-randomised engine's track/road type is always buildable. */
@@ -5278,6 +6639,10 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_WATER);
 			InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_AIR);
 			AP_OK(fmt::format("AP session started: {} engines locked, all railtypes/roadtypes unlocked.", locked_count));
+			AP_TRACE(fmt::format("=== SESSION START SUMMARY === missions={} starting_vehicles={} pending_items={} wrath={} colby={} demigod={} ruin_pool={}",
+				(int)_ap_pending_sd.missions.size(), (int)_ap_pending_sd.starting_vehicles.size(),
+				(int)_ap_pending_items.size(), (int)_ap_pending_sd.wrath_enabled, (int)_ap_pending_sd.colby_event,
+				(int)_ap_pending_sd.demigod_enabled, _ap_pending_sd.ruin_pool_size));
 
 			/* Unlock all starting vehicles.
 			 * The APWorld is responsible for ensuring only climate-compatible
@@ -5312,7 +6677,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				};
 				int tier = std::clamp(_ap_pending_sd.starting_cash_bonus, 0, 4);
 				if (tier > 0) {
-					c->money += bonus_amounts[tier];
+					AP_ChangeMoney(cid, bonus_amounts[tier]);
 					AP_ShowNews(fmt::format("[AP] Starting bonus: {} added to your account!",
 					    AP_Money(bonus_amounts[tier])));
 					AP_OK(fmt::format("[AP] Starting cash bonus tier {} = +{}",
@@ -5429,11 +6794,12 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				_ap_town_actions_inited = false;
 			}
 
+			AP_TRACE(fmt::format("FlushPendingItems: processing {} queued items", _ap_pending_items.size()));
 			for (const APItem &item : _ap_pending_items) AP_OnItemReceived(item);
 			_ap_pending_items.clear();
 
-			/* Open the status overlay */
-			ShowArchipelagoStatusWindow();
+			/* Open the status overlay (skip on dedicated server — no GUI) */
+			if (!_network_dedicated) ShowArchipelagoStatusWindow();
 
 			AP_OK(fmt::format("AP session started. {} engines in map. Mission evaluation active.",
 			      _ap_engine_map.size()));
@@ -5450,11 +6816,14 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		/* Timed effects only count down and apply while actually playing.
 		 * Paused game or being in a menu must not drain effect duration. */
 		if (_game_mode == GM_NORMAL) {
+			/* Bridge mode uses Company 0 (host company) on dedicated server */
+			CompanyID tick_cid = _ap_bridge_mode ? CompanyID(0) : _local_company;
+
 			/* Fuel Shortage: re-apply speed cap every tick while active */
 			if (_ap_fuel_shortage_ticks > 0) {
 				_ap_fuel_shortage_ticks--;
 				if (_ap_session_started) {
-					CompanyID cid = _local_company;
+					CompanyID cid = tick_cid;
 					for (Vehicle *v : Vehicle::Iterate()) {
 						if (v->owner == cid && v->IsPrimaryVehicle()) {
 							const Engine *e = v->GetEngine();
@@ -5474,7 +6843,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			if (_ap_reliability_boost_ticks > 0) {
 				_ap_reliability_boost_ticks--;
 				if (_ap_session_started) {
-					CompanyID cid = _local_company;
+					CompanyID cid = tick_cid;
 					for (Vehicle *v : Vehicle::Iterate()) {
 						if (v->owner == cid && v->IsPrimaryVehicle()) {
 							const Engine *e = v->GetEngine();
@@ -5491,7 +6860,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			if (_ap_station_boost_ticks > 0) {
 				_ap_station_boost_ticks--;
 				if (_ap_session_started) {
-					CompanyID cid = _local_company;
+					CompanyID cid = tick_cid;
 					for (Station *st : Station::Iterate()) {
 						if (st->owner != cid) continue;
 						for (CargoType ct = 0; ct < NUM_CARGO; ct++) {
@@ -5506,7 +6875,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			if (_ap_license_revoke_ticks > 0 && _ap_session_started) {
 				_ap_license_revoke_ticks--;
 				if (_ap_license_revoke_ticks == 0) {
-					CompanyID cid = _local_company;
+					CompanyID cid = tick_cid;
 					for (Engine *e : Engine::Iterate()) {
 						if ((int)e->type != _ap_license_revoke_type) continue;
 						if (_ap_unlocked_engine_ids.count(e->index) || !_ap_engine_map_built) {
@@ -5515,6 +6884,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 					}
 					_ap_license_revoke_type = -1;
 					MarkWholeScreenDirty();
+					AP_TRACE("LicenseRestored: vehicle type restored after revoke expired");
 					AP_ShowNews("[AP] Vehicle License restored! You may build that vehicle type again.");
 				}
 			}
@@ -5529,7 +6899,16 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		}
 
 		/* ── Engine lock sweep: every ~5 s ─────────────────────────────── */
-		if (_ap_realtime_ticks % 20 == 0 &&
+		/* DISABLED in bridge mode: causes desync because the realtime timer
+		 * is NOT synchronised between server and client.  Direct state
+		 * modifications (company_avail, railtypes) at different ticks → crash.
+		 * In bridge mode this sweep is also unnecessary because:
+		 *   - AP_IsActive() blocks vanilla engine introduction
+		 *   - Initial locking happens in session-start (part of map state)
+		 *   - Unlocks go through CMD_ENGINE_CTRL::Post (network-distributed)
+		 *   - DoStartupNewCompany gives all railtypes in bridge mode */
+		if (!_ap_bridge_mode &&
+		    _ap_realtime_ticks % 20 == 0 &&
 		    _ap_session_started &&
 		    _game_mode == GM_NORMAL) {
 
@@ -5568,13 +6947,20 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Accumulate cargo/profit from completed economy periods */
 			AP_UpdateSessionStats();
 
-			/* Accumulate named-destination progress (town/industry deliveries) */
+			/* Accumulate named-destination progress (town/industry deliveries).
+			 * NOTE: In multiplayer, skip this because it contains Ruin spawning
+			 * which calls RandomRange() and Command::Do(Execute), causing desync
+			 * with clients that don't run AP code. */
 			AP_UpdateNamedMissions();
 
 			/* Evaluate all incomplete missions and refresh the mission window */
 			CheckMissions();
 			SetWindowClassesDirty(WC_ARCHIPELAGO);
 
+			/* The following subsystems modify game state (tiles, companies, vehicles)
+			 * using direct Command::Do(Execute) and RandomRange() calls.
+			 * In multiplayer these MUST be skipped to avoid desync — clients don't
+			 * run AP code, so their game state would diverge from the server's. */
 			/* Drive Colby Event progression */
 			if (_ap_colby_enabled && !_ap_colby_done) AP_ColbyTick();
 
@@ -5592,8 +6978,12 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			_ap_realtime_ticks = 0;
 			if (CheckWinCondition(_ap_pending_sd)) {
 				_ap_goal_sent = true;
-				_ap_client->SendGoal();
+				if (_ap_client != nullptr) {
+					_ap_client->SendGoal();
+				}
+				/* Bridge mode: victory is detected by the bridge via win_progress */
 				Debug(misc, 0, "[AP] Win condition reached! Goal sent.");
+				AP_TRACE("WIN_CONDITION_REACHED: Goal sent to AP server!");
 				AP_OK("*** WIN CONDITION REACHED! Goal sent to server! ***");
 				AP_ShowNews("[AP] WIN CONDITION REACHED! Goal sent to server!");
 				ShowAPVictoryScreen();
@@ -5744,9 +7134,9 @@ static void RebuildNamePool()
 	constexpr int N = (int)(sizeof(kCommunityNames) / sizeof(kCommunityNames[0]));
 	_ap_name_pool.resize(N);
 	for (int i = 0; i < N; i++) _ap_name_pool[i] = i;
-	/* Fisher-Yates using OpenTTD's Random() */
+	/* Fisher-Yates using InteractiveRandom (safe for multiplayer — won't desync game RNG) */
 	for (int i = N - 1; i > 0; i--) {
-		int j = (int)(RandomRange((uint32_t)(i + 1)));
+		int j = (int)(InteractiveRandomRange((uint32_t)(i + 1)));
 		std::swap(_ap_name_pool[i], _ap_name_pool[j]);
 	}
 }
@@ -5776,9 +7166,9 @@ void AP_OnVehicleCreated(Vehicle *v)
 
 	std::string chosen;
 
-	if (RandomRange(100) < 5 && (int)_ap_used_rare.size() < kRareCount) {
+	if (InteractiveRandomRange(100) < 5 && (int)_ap_used_rare.size() < kRareCount) {
 		/* Rare name — no suffix, no repeats */
-		int ri = RandomRange(kRareCount);
+		int ri = InteractiveRandomRange(kRareCount);
 		int tries = kRareCount;
 		while (_ap_used_rare.count(ri) && tries-- > 0) ri = (ri + 1) % kRareCount;
 		if (!_ap_used_rare.count(ri)) {
@@ -5794,7 +7184,7 @@ void AP_OnVehicleCreated(Vehicle *v)
 		chosen = kCommunityNames[idx];
 
 		/* ~60% chance: append a suffix (round-robin to spread them evenly) */
-		if (RandomRange(100) < 60) {
+		if (InteractiveRandomRange(100) < 60) {
 			chosen += kNameSuffixes[_ap_suffix_index % kSuffixCount];
 			_ap_suffix_index++;
 		}

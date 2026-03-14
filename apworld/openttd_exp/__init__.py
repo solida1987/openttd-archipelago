@@ -19,6 +19,8 @@ from .items import (
     VANILLA_TRAINS, VANILLA_WAGONS, VANILLA_ROAD_VEHICLES,
     VANILLA_AIRCRAFT, VANILLA_SHIPS, IRON_HORSE_ENGINES,
     VANILLA_RAIL_ENGINES,
+    MILITARY_ITEMS_AIRCRAFT, SHARK_SHIPS, HOVER_VEHICLES,
+    HEQS_ROAD_VEHICLES, HEQS_TRAINS, VACTRAIN_ENGINES, AIRCRAFTPACK_AIRCRAFT,
     ARCTIC_TROPIC_ONLY_TRAINS, TEMPERATE_ONLY_TRAINS,
     NON_TEMPERATE_ROAD_VEHICLES, NON_ARCTIC_ROAD_VEHICLES, NON_TROPIC_ROAD_VEHICLES,
     ALL_TRACK_DIRECTION_ITEMS, TRACK_ITEMS_BY_RAILTYPE,
@@ -43,7 +45,6 @@ from .rules import set_rules
 _TOYLAND_ONLY_VEHICLES: frozenset = frozenset({
     # Trains — engines
     "Ploddyphut Choo-Choo", "Powernaut Choo-Choo", "MightyMover Choo-Choo",
-    "Ploddyphut Diesel",    "Powernaut Diesel",
     "Wizzowow Z99",         # Monorail
     "Wizzowow Rocketeer",   # Maglev
     # Trains — wagons (Toyland-only cargo)
@@ -72,6 +73,13 @@ _TOYLAND_ONLY_VEHICLES: frozenset = frozenset({
     "Ploddyphut 100", "Ploddyphut 500", "Flashbang X1", "Flashbang Wizzer",
     "Juggerplane M1", "Powernaut Helicopter",
     # NOTE: Guru Galaxy is Temperate/Arctic/Tropic — NOT Toyland-only
+})
+
+# Universal vehicles — available on ALL climates including Toyland.
+# These are included in the Toyland pool even though they are not in _TOYLAND_ONLY_VEHICLES.
+_UNIVERSAL_VEHICLES: frozenset = frozenset({
+    "Passenger Carriage", "Mail Van",
+    "Guru Galaxy",  # Helicopter available on all climates
 })
 
 
@@ -146,12 +154,48 @@ class OpenTTDWorld(World):
         # IH engines in-game, so they are excluded from the pool to avoid giving
         # the player useless locked items. Monorail and Maglev are unaffected.
         if is_toyland:
-            eligible_count = len(ALL_VEHICLES)
+            eligible_count = sum(1 for v in ALL_VEHICLES if v in _TOYLAND_ONLY_VEHICLES
+                                 or v in _UNIVERSAL_VEHICLES)
         else:
             eligible_count = sum(1 for v in ALL_VEHICLES if v not in _TOYLAND_ONLY_VEHICLES)
+            # Apply climate-specific train/RV exclusions so the count matches create_items
+            if landscape == 0:   _climate_exclude = ARCTIC_TROPIC_ONLY_TRAINS | NON_TEMPERATE_ROAD_VEHICLES
+            elif landscape == 1: _climate_exclude = TEMPERATE_ONLY_TRAINS | NON_ARCTIC_ROAD_VEHICLES
+            else:                _climate_exclude = TEMPERATE_ONLY_TRAINS | NON_TROPIC_ROAD_VEHICLES
+            eligible_count -= sum(1 for v in _climate_exclude if v not in _TOYLAND_ONLY_VEHICLES)
         if ih_enabled:
             eligible_count += len(IRON_HORSE_ENGINES)
-            eligible_count -= len(VANILLA_RAIL_ENGINES)  # IH replaces these
+            # Only subtract vanilla rail engines that are actually in the pool for this climate
+            if landscape == 0:
+                eligible_count -= sum(1 for v in VANILLA_RAIL_ENGINES if v not in ARCTIC_TROPIC_ONLY_TRAINS)
+            else:
+                eligible_count -= sum(1 for v in VANILLA_RAIL_ENGINES if v not in TEMPERATE_ONLY_TRAINS)
+
+        mil_enabled = bool(self.options.enable_military_items.value) and not is_toyland
+        if mil_enabled:
+            eligible_count += len(MILITARY_ITEMS_AIRCRAFT)
+
+        shark_enabled = bool(self.options.enable_shark_ships.value) and not is_toyland
+        if shark_enabled:
+            eligible_count += len(SHARK_SHIPS)
+            # Only subtract vanilla ships that are actually in the pool (exclude Toyland ships)
+            eligible_count -= sum(1 for v in ALL_SHIPS if v not in _TOYLAND_ONLY_VEHICLES)
+
+        hv_enabled = bool(self.options.enable_hover_vehicles.value) and not is_toyland
+        if hv_enabled:
+            eligible_count += len(HOVER_VEHICLES)
+
+        heqs_enabled = bool(self.options.enable_heqs.value) and not is_toyland
+        if heqs_enabled:
+            eligible_count += len(HEQS_ROAD_VEHICLES) + len(HEQS_TRAINS)
+
+        vac_enabled = bool(self.options.enable_vactrain.value) and not is_toyland
+        if vac_enabled:
+            eligible_count += len(VACTRAIN_ENGINES)
+
+        ap25_enabled = bool(self.options.enable_aircraftpack.value) and not is_toyland
+        if ap25_enabled:
+            eligible_count += len(AIRCRAFTPACK_AIRCRAFT)
 
         trap_count   = self.options.trap_count.value
         utility_count = self.options.utility_count.value
@@ -185,7 +229,11 @@ class OpenTTDWorld(World):
 
         # If wagon unlocks disabled, remove wagons from pool count
         if not bool(self.options.enable_wagon_unlocks.value):
-            wagon_count = sum(1 for v in ALL_WAGONS if (is_toyland or v not in _TOYLAND_ONLY_VEHICLES))
+            if is_toyland:
+                wagon_count = sum(1 for v in ALL_WAGONS if v in _TOYLAND_ONLY_VEHICLES
+                                  or v in _UNIVERSAL_VEHICLES)
+            else:
+                wagon_count = sum(1 for v in ALL_WAGONS if v not in _TOYLAND_ONLY_VEHICLES)
             eligible_count -= wagon_count
 
         speed_boost_count = 20  # SPEED_BOOST_ITEMS = ["Speed Boost"] * 20
@@ -210,6 +258,16 @@ class OpenTTDWorld(World):
 
     def generate_early(self) -> None:
         """Generate mission content before items are placed."""
+        # ── Sphere master toggle → auto-set all infrastructure sub-options ──
+        if bool(self.options.enable_sphere_progression.value):
+            from Options import Toggle
+            for attr in ("enable_rail_direction_unlocks", "enable_road_direction_unlocks",
+                         "enable_signal_unlocks", "enable_bridge_unlocks",
+                         "enable_tunnel_unlocks", "enable_airport_unlocks",
+                         "enable_terraform_unlocks", "enable_wagon_unlocks",
+                         "enable_tree_unlocks", "enable_town_action_unlocks"):
+                getattr(self.options, attr).value = 1
+
         try:
             player_count = len(self.multiworld.player_ids)
         except Exception:
@@ -451,11 +509,40 @@ class OpenTTDWorld(World):
         else:
             train_pool = [v for v in ALL_TRAINS if v not in climate_exclude]
 
+        mil_enabled = bool(self.options.enable_military_items.value) and not is_toyland
+        aircraft_pool = [v for v in ALL_AIRCRAFT if v not in climate_exclude]
+        if mil_enabled:
+            aircraft_pool += list(MILITARY_ITEMS_AIRCRAFT)
+
+        shark_enabled = bool(self.options.enable_shark_ships.value) and not is_toyland
+        if shark_enabled:
+            ship_pool = list(SHARK_SHIPS)  # SHARK replaces vanilla ships
+        else:
+            ship_pool = [v for v in ALL_SHIPS if v not in climate_exclude]
+
+        hv_enabled = bool(self.options.enable_hover_vehicles.value) and not is_toyland
+        rv_pool = [v for v in ALL_ROAD_VEHICLES if v not in climate_exclude]
+        if hv_enabled:
+            rv_pool += list(HOVER_VEHICLES)
+
+        heqs_enabled = bool(self.options.enable_heqs.value) and not is_toyland
+        if heqs_enabled:
+            rv_pool += list(HEQS_ROAD_VEHICLES)
+            train_pool += list(HEQS_TRAINS)
+
+        vac_enabled = bool(self.options.enable_vactrain.value) and not is_toyland
+        if vac_enabled:
+            train_pool += list(VACTRAIN_ENGINES)
+
+        ap25_enabled = bool(self.options.enable_aircraftpack.value) and not is_toyland
+        if ap25_enabled:
+            aircraft_pool += list(AIRCRAFTPACK_AIRCRAFT)
+
         type_pools = {
             "train":        train_pool,
-            "road_vehicle": [v for v in ALL_ROAD_VEHICLES if v not in climate_exclude],
-            "aircraft":     [v for v in ALL_AIRCRAFT if v not in climate_exclude],
-            "ship":         [v for v in ALL_SHIPS    if v not in climate_exclude],
+            "road_vehicle": rv_pool,
+            "aircraft":     aircraft_pool,
+            "ship":         ship_pool,
         }
 
         count = max(1, self.options.starting_vehicle_count.value)
@@ -484,10 +571,45 @@ class OpenTTDWorld(World):
 
         self.random.shuffle(unique_starters)
 
-        # Pick `count` vehicles; wrap around if count > pool size
-        # This means if you ask for 20 trains and there are only 15, you get 15 unique ones.
-        # We do NOT repeat vehicles — cap at pool size.
-        starting_vehicles: List[str] = unique_starters[:count]
+        # ── Diversity-aware selection for "any" with count > 1 ──────────
+        # When the player picks "any" type and wants multiple starters,
+        # we try to give them different vehicle types (train, road, aircraft,
+        # ship) instead of e.g. two trains. Each subsequent pick has a 50%
+        # chance to force a different type than what was already chosen.
+        if start_type == 0 and count > 1:
+            vehicle_to_type: Dict[str, str] = {}
+            for tkey, tpool in type_pools.items():
+                for v in tpool:
+                    vehicle_to_type[v] = tkey
+
+            remaining = list(unique_starters)
+            starting_vehicles: List[str] = []
+
+            # First pick: completely random
+            first = remaining.pop(0)
+            starting_vehicles.append(first)
+            types_used = {vehicle_to_type.get(first, "unknown")}
+
+            for _ in range(min(count, len(remaining) + 1) - 1):
+                if not remaining:
+                    break
+                # 50% chance to force a different vehicle type
+                if self.random.random() < 0.5:
+                    different = [v for v in remaining
+                                 if vehicle_to_type.get(v, "unknown") not in types_used]
+                    if different:
+                        pick = different[0]  # remaining already shuffled
+                        remaining.remove(pick)
+                        starting_vehicles.append(pick)
+                        types_used.add(vehicle_to_type.get(pick, "unknown"))
+                        continue
+                # Otherwise: next from shuffled list
+                pick = remaining.pop(0)
+                starting_vehicles.append(pick)
+                types_used.add(vehicle_to_type.get(pick, "unknown"))
+        else:
+            # Specific type or count == 1: simple slice
+            starting_vehicles = unique_starters[:count]
 
         starting_vehicle = starting_vehicles[0]
         for sv in starting_vehicles:
@@ -498,37 +620,38 @@ class OpenTTDWorld(World):
         # Extra starters list (C++ client reads this to unlock all starting vehicles)
         self._slot_data["starting_vehicles"] = starting_vehicles
 
-        # ── Track direction + wagon guarantee ─────────────────────────────
+        # ── Track direction guarantee ───────────────────────────────────
         # When EnableRailDirectionUnlocks is active: for each starting train,
-        # precollect (a) one random track direction for its rail type, and
-        # (b) one universal starter wagon (Passenger Carriage or Mail Van),
-        # so the player can immediately do something with their starting loco.
-        #
-        # Rules:
-        #  - One direction precollect per UNIQUE rail type among starting trains.
-        #  - One wagon precollect per starting train (can be same wagon type twice
-        #    if two trains of the same family are starting vehicles — AP stacks copies).
-        #  - IH engines: all treated as Normal Rail (0).
-        #  - Precollected items are removed from pool automatically by AP framework.
+        # precollect one random track direction for its rail type so the
+        # player can immediately lay track.
         if self.options.enable_rail_direction_unlocks.value:
             seen_railtypes: set = set()
             for sv in starting_vehicles:
-                # Determine rail type for this starting vehicle
                 if sv in TRAIN_TO_RAILTYPE:
                     rt = TRAIN_TO_RAILTYPE[sv]
                 elif sv.startswith("IH: "):
                     rt = 0  # All IH engines use Normal Rail
                 else:
-                    continue  # Not a train (road vehicle, aircraft, ship) — skip
+                    continue  # Not a train — skip
 
-                # Precollect one random track direction for this rail type (once per type)
                 if rt not in seen_railtypes:
                     seen_railtypes.add(rt)
                     dir_items = list(TRACK_ITEMS_BY_RAILTYPE[rt])
                     self.random.shuffle(dir_items)
                     self.multiworld.push_precollected(self.create_item(dir_items[0]))
 
-                # Precollect one universal starter wagon per starting train
+        # ── Wagon guarantee ─────────────────────────────────────────────
+        # When wagon unlocks are enabled and ANY starting vehicle is a train,
+        # precollect exactly one universal starter wagon (Passenger Carriage
+        # or Mail Van — both work on all climates without industry chains).
+        # Only 1 wagon total, regardless of how many trains are in the set.
+        if self.options.enable_wagon_unlocks.value:
+            has_train = any(
+                sv in TRAIN_TO_RAILTYPE or sv.startswith("IH: ")
+                or sv.startswith("HEQS: ") or sv.startswith("VAC: ")
+                for sv in starting_vehicles
+            )
+            if has_train:
                 wagon_choices = list(UNIVERSAL_STARTER_WAGONS)
                 self.random.shuffle(wagon_choices)
                 self.multiworld.push_precollected(self.create_item(wagon_choices[0]))
@@ -537,7 +660,8 @@ class OpenTTDWorld(World):
         # If road direction unlocks are enabled and a starting vehicle is a road vehicle,
         # precollect one road direction so the player can immediately build roads.
         if self.options.enable_road_direction_unlocks.value:
-            has_road = any(sv in ALL_ROAD_VEHICLES for sv in starting_vehicles)
+            _all_rv = set(ALL_ROAD_VEHICLES) | set(HOVER_VEHICLES) | set(HEQS_ROAD_VEHICLES)
+            has_road = any(sv in _all_rv for sv in starting_vehicles)
             if has_road:
                 road_dirs = list(ROAD_DIRECTION_ITEMS)
                 self.random.shuffle(road_dirs)
@@ -590,7 +714,8 @@ class OpenTTDWorld(World):
         # _compute_pool_size) so the vehicle count is always consistent.
         vehicle_slots = total_locations - reserved
         if is_toyland:
-            eligible_vehicles = list(ALL_VEHICLES)
+            eligible_vehicles = [v for v in ALL_VEHICLES if v in _TOYLAND_ONLY_VEHICLES
+                                 or v in _UNIVERSAL_VEHICLES]
         else:
             # Build climate exclude set for this landscape
             _climate_rv_exclude: frozenset
@@ -619,6 +744,49 @@ class OpenTTDWorld(World):
             # are replaced in-game by IH engines, so they are removed from the pool.
             # Monorail and Maglev are NOT replaced by IH and remain in the pool.
             eligible_vehicles = [v for v in eligible_vehicles if v not in VANILLA_RAIL_ENGINES]
+
+        # ── Military Items: add aircraft to pool if enabled ──────────────────
+        mil_enabled = bool(self.options.enable_military_items.value) and not is_toyland
+        self._slot_data["enable_military_items"] = 1 if mil_enabled else 0
+        if mil_enabled:
+            eligible_vehicles = eligible_vehicles + MILITARY_ITEMS_AIRCRAFT
+
+        # ── SHARK: add ships to pool if enabled ──────────────────────────────
+        shark_enabled = bool(self.options.enable_shark_ships.value) and not is_toyland
+        self._slot_data["enable_shark_ships"] = 1 if shark_enabled else 0
+        if shark_enabled:
+            eligible_vehicles = eligible_vehicles + SHARK_SHIPS
+            # SHARK replaces vanilla ships in-game — remove vanilla ships from pool
+            eligible_vehicles = [v for v in eligible_vehicles if v not in ALL_SHIPS]
+
+        # ── Hover Vehicles: add road vehicles to pool if enabled ─────────────
+        hv_enabled = bool(self.options.enable_hover_vehicles.value) and not is_toyland
+        self._slot_data["enable_hover_vehicles"] = 1 if hv_enabled else 0
+        if hv_enabled:
+            eligible_vehicles = eligible_vehicles + HOVER_VEHICLES
+
+        # ── HEQS: add heavy equipment to pool if enabled ───────────────────
+        heqs_enabled = bool(self.options.enable_heqs.value) and not is_toyland
+        self._slot_data["enable_heqs"] = 1 if heqs_enabled else 0
+        if heqs_enabled:
+            eligible_vehicles = eligible_vehicles + HEQS_ROAD_VEHICLES + HEQS_TRAINS
+
+        # ── Vactrain: add vacuum-tube trains to pool if enabled ────────────
+        vac_enabled = bool(self.options.enable_vactrain.value) and not is_toyland
+        self._slot_data["enable_vactrain"] = 1 if vac_enabled else 0
+        if vac_enabled:
+            eligible_vehicles = eligible_vehicles + VACTRAIN_ENGINES
+
+        # ── Aircraftpack 2025: add aircraft to pool if enabled ─────────────
+        ap25_enabled = bool(self.options.enable_aircraftpack.value) and not is_toyland
+        self._slot_data["enable_aircraftpack"] = 1 if ap25_enabled else 0
+        if ap25_enabled:
+            eligible_vehicles = eligible_vehicles + AIRCRAFTPACK_AIRCRAFT
+
+        # ── FIRS Industries: flag only — no vehicles, just tells C++ to load GRF
+        firs_enabled = bool(self.options.enable_firs.value) and not is_toyland
+        self._slot_data["enable_firs"] = 1 if firs_enabled else 0
+
         # ── Wagon Unlock Toggle ────────────────────────────────────────────
         if not self.options.enable_wagon_unlocks.value:
             # Wagons disabled: remove all wagons from eligible pool; they're freely available
@@ -787,6 +955,13 @@ class OpenTTDWorld(World):
             "map_y": self.options.map_size_y.map_bits,
             "landscape": self.options.landscape.value,
             "land_generator": self.options.land_generator.value,
+            "terrain_type": self.options.terrain_type.value,
+            "sea_level": self.options.sea_level.value,
+            "rivers": self.options.rivers.value,
+            "smoothness": self.options.smoothness.value,
+            "variety": self.options.variety.value,
+            "number_towns": self.options.number_towns.value,
+            "town_name": self.options.town_names.value,
             "item_id_to_name": item_id_to_name,
             "locked_vehicles": locked_vehicles_list,
             "shop_prices": self._generate_shop_prices(),
@@ -834,6 +1009,7 @@ class OpenTTDWorld(World):
             "industry_density":           self.options.industry_density.value,
             "allow_town_roads":           bool(self.options.allow_town_roads.value),
             "road_side":                  self.options.road_side.value,
+            "firs_economy":               self.options.firs_economy.value,
             # ── Wagon pool mode (backward compat: 0=all wagons, 1=no wagons)
             "wagon_pool_mode":            0 if bool(self.options.enable_wagon_unlocks.value) else 1,
             # ── Item Pool unlocks ──────────────────────────────────
@@ -873,6 +1049,13 @@ class OpenTTDWorld(World):
             "demigod_spawn_interval_max": max(self.options.demigod_spawn_interval_min.value,
                                               self.options.demigod_spawn_interval_max.value),
             "demigods":                   self._generate_demigod_defs(computed_dg),
+            # ── God of Wackens (Wrath) ─────────────────────────────
+            "wrath_enabled":              bool(self.options.enable_wrath.value),
+            "wrath_limit_houses":         self.options.wrath_limit_houses.value,
+            "wrath_limit_roads":          self.options.wrath_limit_roads.value,
+            "wrath_limit_terrain":        self.options.wrath_limit_terrain.value,
+            # ── Multiplayer ────────────────────────────────────────
+            "multiplayer_mode":           bool(self.options.multiplayer_mode.value),
             # ── Difficulty / balance ───────────────────────────────
             "starting_cash_bonus":        self.options.starting_cash_bonus.value,
             "starting_vehicle_count":     self.options.starting_vehicle_count.value,

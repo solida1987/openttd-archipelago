@@ -743,7 +743,7 @@ static CommandCost ClearTile_Town(TileIndex tile, DoCommandFlags flags)
 
 	ChangeTownRating(t, -rating, RATING_HOUSE_MINIMUM, flags);
 	if (flags.Test(DoCommandFlag::Execute)) {
-		if (AP_IsActive() && Company::IsValidID(_current_company)) AP_WrathTrackHouse();
+		if (AP_IsActive() && _current_company == _local_company) AP_WrathTrackHouse();
 		ClearTownHouse(t, tile);
 	}
 

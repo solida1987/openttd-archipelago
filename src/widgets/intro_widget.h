@@ -28,6 +28,7 @@ enum SelectGameIntroWidgets : WidgetID {
 	WID_SGI_CONTENT_DOWNLOAD,      ///< Content Download button.
 	WID_SGI_EXIT,                  ///< Exit button.
 	WID_SGI_ARCHIPELAGO,           ///< Archipelago connect button.
+	WID_SGI_JOIN_MULTIPLAYER,      ///< Join AP multiplayer game button.
 };
 
 #endif /* WIDGETS_INTRO_WIDGET_H */
