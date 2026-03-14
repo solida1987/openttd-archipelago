@@ -8,6 +8,7 @@
 #include "stdafx.h"
 #include "archipelago.h"
 #include "debug.h"
+#include <cmath>
 
 #include "3rdparty/nlohmann/json.hpp"
 using json = nlohmann::json;
@@ -443,6 +444,10 @@ void ArchipelagoClient::Tick()
 				AP_LOG(fmt::format("[Tick] Dispatching DEATH_RECEIVED from {}", ev.text));
 				if (callbacks.on_death_received) callbacks.on_death_received(ev.text);
 				break;
+			case InboundEvent::CHECKED_LOCATIONS:
+				AP_LOG(fmt::format("[Tick] Dispatching CHECKED_LOCATIONS: {} locations", ev.locations.size()));
+				if (callbacks.on_checked_locations) callbacks.on_checked_locations(ev.locations);
+				break;
 		}
 	}
 }
@@ -505,6 +510,13 @@ static APSlotData ParseSlotData(const json &msg)
 	sd.map_y                = (uint8_t)d.value("map_y", 8);
 	sd.landscape            = (uint8_t)d.value("landscape", 0);
 	sd.land_generator       = (uint8_t)d.value("land_generator", 1);
+	sd.terrain_type         = (uint8_t)d.value("terrain_type", 1);
+	sd.sea_level            = (uint8_t)d.value("sea_level", 1);
+	sd.rivers               = (uint8_t)d.value("rivers", 2);
+	sd.smoothness           = (uint8_t)d.value("smoothness", 1);
+	sd.variety              = (uint8_t)d.value("variety", 0);
+	sd.number_towns         = (uint8_t)d.value("number_towns", 2);
+	sd.town_name            = (uint8_t)d.value("town_name", 0);
 
 	/* Win condition (multi-target — all 6 must be met simultaneously) */
 	sd.win_target_company_value   = d.value("win_target_company_value",   (int64_t)8'000'000);
@@ -564,6 +576,14 @@ static APSlotData ParseSlotData(const json &msg)
 
 	/* NewGRF options */
 	sd.enable_iron_horse         = (bool)d.value("enable_iron_horse", 0);
+	sd.enable_military_items     = (bool)d.value("enable_military_items", 0);
+	sd.enable_shark_ships        = (bool)d.value("enable_shark_ships", 0);
+	sd.enable_hover_vehicles     = (bool)d.value("enable_hover_vehicles", 0);
+	sd.enable_heqs               = (bool)d.value("enable_heqs", 0);
+	sd.enable_vactrain           = (bool)d.value("enable_vactrain", 0);
+	sd.enable_aircraftpack       = (bool)d.value("enable_aircraftpack", 0);
+	sd.enable_firs               = (bool)d.value("enable_firs", 0);
+	sd.firs_economy              = (uint8_t)d.value("firs_economy", 0);
 
 	/* Item Pool unlock options */
 	sd.enable_rail_direction_unlocks = d.value("enable_rail_direction_unlocks", false);
@@ -622,6 +642,9 @@ static APSlotData ParseSlotData(const json &msg)
 	sd.wrath_limit_terrain = d.value("wrath_limit_terrain", 25);
 	sd.wrath_limit_trees   = d.value("wrath_limit_trees", 10);
 
+	/* Multiplayer mode — disables ruins/colby/demigod/wrath for MP compatibility */
+	sd.multiplayer_mode    = d.value("multiplayer_mode", false);
+
 	/* Tier unlock requirements — how many of prev tier needed before next tier opens */
 	if (d.contains("tier_unlock_requirements") && d["tier_unlock_requirements"].is_object()) {
 		const auto &tu = d["tier_unlock_requirements"];
@@ -662,6 +685,7 @@ static APSlotData ParseSlotData(const json &msg)
 			}
 		}
 		Debug(misc, 0, "[AP] SlotData: {} shop prices loaded", sd.shop_prices.size());
+	}
 
 	/* shop_item_names — APWorld sends {location_name: item_name} */
 	if (d.contains("shop_item_names") && d["shop_item_names"].is_object()) {
@@ -670,7 +694,6 @@ static APSlotData ParseSlotData(const json &msg)
 				sd.shop_item_names[loc] = name.get<std::string>();
 		}
 		Debug(misc, 0, "[AP] SlotData: {} shop item names loaded", sd.shop_item_names.size());
-	}
 	}
 
 	/* locked_vehicles — the exact set of vehicle names to lock at session start.
@@ -1146,6 +1169,28 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			sdev.slot = sd;
 			PushEvent(std::move(sdev));
 
+			/* Parse checked_locations from Connected message (AP protocol).
+			 * These are location IDs the server already has as checked. */
+			if (msg.contains("checked_locations") && msg["checked_locations"].is_array()) {
+				std::lock_guard<std::mutex> lg3(slot_mutex);
+				std::set<std::string> checked_names;
+				for (const auto &loc_id : msg["checked_locations"]) {
+					if (!loc_id.is_number_integer()) continue;
+					int64_t id = loc_id.get<int64_t>();
+					auto it2 = location_id_to_name.find(id);
+					if (it2 != location_id_to_name.end()) {
+						checked_names.insert(it2->second);
+					}
+				}
+				if (!checked_names.empty()) {
+					AP_OK(fmt::format("Connected: {} locations already checked", checked_names.size()));
+					InboundEvent cev;
+					cev.type = InboundEvent::CHECKED_LOCATIONS;
+					cev.locations = std::move(checked_names);
+					PushEvent(std::move(cev));
+				}
+			}
+
 		} else if (cmd == "ConnectionRefused") {
 			std::string reason;
 			if (msg.contains("errors") && msg["errors"].is_array()) {
@@ -1282,10 +1327,33 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			}
 			if (is_deathlink && msg.contains("data") && msg["data"].is_object()) {
 				double death_time = msg["data"].value("time", 0.0);
-				if (death_time != last_death_link_time) {
+				/* Use epsilon window (50ms) for dedup — floating-point round-trip
+				 * through JSON serialization can introduce tiny differences. */
+				if (std::abs(death_time - last_death_link_time) > 0.05) {
 					last_death_link_time = std::max(death_time, last_death_link_time);
 					std::string source = msg["data"].value("source", "unknown");
 					PushEvent({ InboundEvent::DEATH_RECEIVED, source, {}, {} });
+				}
+			}
+		} else if (cmd == "RoomUpdate") {
+			/* RoomUpdate may contain newly checked_locations (live sync for MP). */
+			if (msg.contains("checked_locations") && msg["checked_locations"].is_array()) {
+				std::lock_guard<std::mutex> lg(slot_mutex);
+				std::set<std::string> checked_names;
+				for (const auto &loc_id : msg["checked_locations"]) {
+					if (!loc_id.is_number_integer()) continue;
+					int64_t id = loc_id.get<int64_t>();
+					auto it2 = location_id_to_name.find(id);
+					if (it2 != location_id_to_name.end()) {
+						checked_names.insert(it2->second);
+					}
+				}
+				if (!checked_names.empty()) {
+					AP_LOG(fmt::format("RoomUpdate: {} locations checked", checked_names.size()));
+					InboundEvent cev;
+					cev.type = InboundEvent::CHECKED_LOCATIONS;
+					cev.locations = std::move(checked_names);
+					PushEvent(std::move(cev));
 				}
 			}
 		}

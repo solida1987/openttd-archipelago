@@ -288,7 +288,7 @@ std::tuple<CommandCost, Money, TileIndex> CmdTerraformLand(DoCommandFlags flags,
 	}
 
 	if (flags.Test(DoCommandFlag::Execute)) {
-		if (AP_IsActive() && Company::IsValidID(_current_company)) AP_WrathTrackTerrain();
+		if (AP_IsActive() && _current_company == _local_company) AP_WrathTrackTerrain();
 
 		/* Mark affected areas dirty. */
 		for (const auto &t : ts.dirty_tiles) {

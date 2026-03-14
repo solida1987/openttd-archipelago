@@ -205,27 +205,10 @@ struct SelectGameWindow : public Window {
 			EnsureHandlersRegistered();
 			_ap_client->Tick();
 
-			/* If slot data arrived, ask whether to generate a new world or load a save. */
+			/* If slot data arrived, show the 3-choice start dialog. */
 			if (AP_ShouldStartWorld() && !AP_IsWaitingForStartChoice()) {
 				AP_SetWaitingForStartChoice(true);
-				ShowQuery(
-					GetEncodedString(STR_ARCHIPELAGO_START_CHOICE_CAPTION),
-					GetEncodedString(STR_ARCHIPELAGO_START_CHOICE_MESSAGE),
-					nullptr,
-					[](Window *, bool confirmed) {
-						AP_SetWaitingForStartChoice(false);
-						if (confirmed) {
-							/* Yes — generate new world */
-							AP_ConsumeWorldStart();
-							uint32_t seed = AP_GetWorldSeed();
-							IConsolePrint(CC_WHITE, fmt::format("[AP] Generating world (seed={})...", seed));
-							StartNewGameWithoutGUI(seed);
-						} else {
-							/* No — load existing save */
-							AP_SetPendingLoadSave();
-							ShowSaveLoadDialog(FT_SAVEGAME, SLO_LOAD);
-						}
-					});
+				ShowAPStartChoiceWindow();
 			}
 		}
 
@@ -387,6 +370,7 @@ struct SelectGameWindow : public Window {
 				break;
 			case WID_SGI_EXIT:            HandleExitGameRequest(); break;
 		case WID_SGI_ARCHIPELAGO:     ShowArchipelagoConnectWindow(); break;
+		case WID_SGI_JOIN_MULTIPLAYER: ShowAPJoinMultiplayerWindow(); break;
 		}
 	}
 };
@@ -435,8 +419,9 @@ static constexpr std::initializer_list<NWidgetPart> _nested_select_game_widgets 
 			EndContainer(),
 
 			/* Archipelago multiworld randomizer */
-			NWidget(NWID_VERTICAL),
+			NWidget(NWID_VERTICAL), SetPIP(0, WidgetDimensions::unscaled.vsep_normal, 0),
 				NWidget(WWT_PUSHIMGTEXTBTN, COLOUR_ORANGE, WID_SGI_ARCHIPELAGO), SetToolbarMinimalSize(1), SetSpriteStringTip((SpriteID)712 /* AP: slot 712 replaced by archipelago_icons.grf */, STR_INTRO_ARCHIPELAGO, STR_INTRO_TOOLTIP_ARCHIPELAGO), SetAlignment(SA_LEFT | SA_VERT_CENTER), SetFill(1, 0),
+				NWidget(WWT_PUSHIMGTEXTBTN, COLOUR_ORANGE, WID_SGI_JOIN_MULTIPLAYER), SetToolbarMinimalSize(1), SetSpriteStringTip(SPR_IMG_COMPANY_GENERAL, STR_INTRO_JOIN_MULTIPLAYER, STR_INTRO_TOOLTIP_JOIN_MULTIPLAYER), SetAlignment(SA_LEFT | SA_VERT_CENTER), SetFill(1, 0),
 			EndContainer(),
 		EndContainer(),
 	EndContainer(),

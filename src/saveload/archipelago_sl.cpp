@@ -16,21 +16,65 @@
 #include <charconv>
 #include <algorithm>
 
-/* Minimal key=value serialiser — values may not contain '|' or '=' */
+/* Minimal key=value serialiser with escaping for '|', '=', and '\'. */
+static std::string KVEscape(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '|':  out += "\\p";  break;
+            case '=':  out += "\\e";  break;
+            default:   out += c;      break;
+        }
+    }
+    return out;
+}
+
+static std::string KVUnescape(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            switch (s[i + 1]) {
+                case '\\': out += '\\'; i++; break;
+                case 'p':  out += '|';  i++; break;
+                case 'e':  out += '=';  i++; break;
+                default:   out += s[i];      break;
+            }
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
 static std::string KVGet(const std::string &blob, const std::string &key, const std::string &def = "")
 {
     std::string search = key + "=";
-    auto pos = blob.find(search);
-    if (pos == std::string::npos) return def;
-    pos += search.size();
-    auto end = blob.find('|', pos);
-    return (end == std::string::npos) ? blob.substr(pos) : blob.substr(pos, end - pos);
+    /* Search for key= at the start of the blob or right after a '|' separator */
+    size_t pos = 0;
+    while (pos < blob.size()) {
+        auto found = blob.find(search, pos);
+        if (found == std::string::npos) return def;
+        /* Ensure it's at the start or right after '|' (not inside a value) */
+        if (found == 0 || blob[found - 1] == '|') {
+            size_t val_start = found + search.size();
+            auto end = blob.find('|', val_start);
+            std::string raw = (end == std::string::npos) ? blob.substr(val_start) : blob.substr(val_start, end - val_start);
+            return KVUnescape(raw);
+        }
+        pos = found + 1;
+    }
+    return def;
 }
 
 static void KVSet(std::string &blob, const std::string &key, const std::string &val)
 {
     if (!blob.empty()) blob += '|';
-    blob += key + '=' + val;
+    blob += key + '=' + KVEscape(val);
 }
 
 /* string -> int/int64/uint16 helpers using std::from_chars (not banned) */
@@ -168,6 +212,14 @@ void         AP_GetDemigodState(std::string *defeated, int *active_idx, int *com
 void         AP_SetDemigodState(const std::string &defeated, int active_idx, int company,
                                 int next_year, bool veh_saved, bool sv_train,
                                 bool sv_road, bool sv_air, bool sv_ship);
+int64_t      AP_GetDemigodPlayerSpawnValue();
+void         AP_SetDemigodPlayerSpawnValue(int64_t v);
+bool         AP_GetDemigodFriendly();
+void         AP_SetDemigodFriendly(bool v);
+int64_t      AP_GetDemigodMoneyGiven();
+void         AP_SetDemigodMoneyGiven(int64_t v);
+int          AP_GetDemigodLastTransferYear();
+void         AP_SetDemigodLastTransferYear(int v);
 void         AP_GetWrathState(int *anger, int *houses, int *roads, int *terrain, int *trees, int *last_eval_year);
 void         AP_SetWrathState(int anger, int houses, int roads, int terrain, int trees, int last_eval_year);
 
@@ -270,6 +322,10 @@ struct APSTChunkHandler : ChunkHandler {
             KVSet(_ap_sl_blob, "dg_sv_road",   IStr(sr));
             KVSet(_ap_sl_blob, "dg_sv_air",    IStr(sa));
             KVSet(_ap_sl_blob, "dg_sv_ship",   IStr(ss));
+            KVSet(_ap_sl_blob, "dg_pval",      IStr(AP_GetDemigodPlayerSpawnValue()));
+            KVSet(_ap_sl_blob, "dg_friendly",  IStr(AP_GetDemigodFriendly() ? 1 : 0));
+            KVSet(_ap_sl_blob, "dg_mgiven",    IStr(AP_GetDemigodMoneyGiven()));
+            KVSet(_ap_sl_blob, "dg_xfer_yr",   IStr(AP_GetDemigodLastTransferYear()));
         }
 
         /* Wrath of the God of Wackens */
@@ -399,6 +455,10 @@ struct APSTChunkHandler : ChunkHandler {
                 KVGet(_ap_sl_blob, "dg_sv_air", "0") == "1",
                 KVGet(_ap_sl_blob, "dg_sv_ship", "0") == "1"
             );
+            AP_SetDemigodPlayerSpawnValue(getint64("dg_pval"));
+            AP_SetDemigodFriendly(KVGet(_ap_sl_blob, "dg_friendly", "0") == "1");
+            AP_SetDemigodMoneyGiven(getint64("dg_mgiven"));
+            AP_SetDemigodLastTransferYear(getint("dg_xfer_yr"));
 
             /* Wrath of the God of Wackens */
             AP_SetWrathState(
@@ -409,8 +469,11 @@ struct APSTChunkHandler : ChunkHandler {
                 getint("wr_trees"),
                 getint("wr_eval_yr")
             );
+        } catch (const std::exception &) {
+            /* KV escaping should prevent parse errors; if we still get here
+             * the AP state string was corrupt — silently start fresh. */
         } catch (...) {
-            /* Parsing failed — AP progress lost but game loads. */
+            /* Unknown exception — start fresh. */
         }
     }
 };

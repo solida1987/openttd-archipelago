@@ -734,7 +734,7 @@ static CommandCost ClearTile_Trees(TileIndex tile, DoCommandFlags flags)
 	if (IsInsideMM(GetTreeType(tile), TREE_RAINFOREST, TREE_CACTUS)) num *= 4;
 
 	if (flags.Test(DoCommandFlag::Execute)) {
-		if (AP_IsActive() && Company::IsValidID(_current_company)) AP_WrathTrackTree();
+		if (AP_IsActive() && _current_company == _local_company) AP_WrathTrackTree();
 		DoClearSquare(tile);
 	}
 

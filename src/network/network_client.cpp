@@ -32,6 +32,7 @@
 #include "../core/backup_type.hpp"
 #include "../thread.h"
 #include "../social_integration.h"
+#include "../newgrf_config.h"  /* _all_grfs — AP debug logging */
 
 #include "table/strings.h"
 
@@ -117,6 +118,11 @@ ClientNetworkGameSocketHandler::~ClientNetworkGameSocketHandler()
 NetworkRecvStatus ClientNetworkGameSocketHandler::CloseConnection(NetworkRecvStatus status)
 {
 	assert(status != NETWORK_RECV_STATUS_OKAY);
+	IConsolePrint(CC_ERROR, fmt::format("[AP-NET] CloseConnection called! status={} client_status={}", (int)status, (int)this->status));
+	{
+		FILE *f = fopen("ap_net_trace.log", "a");
+		if (f) { fmt::print(f, "[CLIENT] CloseConnection! recv_status={} client_status={}\n", (int)status, (int)this->status); fclose(f); }
+	}
 	if (this->IsPendingDeletion()) return status;
 
 	assert(this->sock != INVALID_SOCKET);
@@ -286,6 +292,13 @@ NetworkRecvStatus ClientNetworkGameSocketHandler::SendJoin()
 {
 	Debug(net, 9, "Client::SendJoin()");
 
+	/* Start fresh trace log for this join attempt */
+	{
+		FILE *f = fopen("ap_net_trace.log", "w");
+		if (f) { fmt::print(f, "=== NEW JOIN ATTEMPT ===\n[CLIENT] SendJoin() — starting join flow\n"); fclose(f); }
+	}
+	IConsolePrint(CC_WHITE, "[AP-NET] SendJoin() — starting join flow...");
+
 	Debug(net, 9, "Client::status = JOIN");
 	my_client->status = STATUS_JOIN;
 	Debug(net, 9, "Client::join_status = AUTHORIZING");
@@ -340,6 +353,11 @@ NetworkRecvStatus ClientNetworkGameSocketHandler::SendAuthResponse()
 NetworkRecvStatus ClientNetworkGameSocketHandler::SendGetMap()
 {
 	Debug(net, 9, "Client::SendGetMap()");
+	IConsolePrint(CC_WHITE, "[AP-NET] SendGetMap() — requesting map download (step 3)...");
+	{
+		FILE *f = fopen("ap_net_trace.log", "a");
+		if (f) { fmt::print(f, "[CLIENT] SendGetMap() — requesting map download\n"); fclose(f); }
+	}
 
 	Debug(net, 9, "Client::status = MAP_WAIT");
 	my_client->status = STATUS_MAP_WAIT;
@@ -527,12 +545,28 @@ NetworkRecvStatus ClientNetworkGameSocketHandler::Receive_SERVER_CLIENT_INFO(Pac
 	std::string name = p.Recv_string(NETWORK_NAME_LENGTH);
 	std::string public_key = p.Recv_string(NETWORK_PUBLIC_KEY_LENGTH);
 
-	if (this->status < STATUS_AUTHORIZED) return NETWORK_RECV_STATUS_MALFORMED_PACKET;
+	/* AP trace: log CLIENT_INFO details */
+	{
+		FILE *f = fopen("ap_net_trace.log", "a");
+		if (f) {
+			fmt::print(f, "[CLIENT_INFO] client_id={} playas={} name='{}' name_len={} status={}\n",
+				client_id, playas, name, name.size(), (int)this->status);
+			fclose(f);
+		}
+	}
+
+	if (this->status < STATUS_AUTHORIZED) {
+		{ FILE *f = fopen("ap_net_trace.log", "a"); if (f) { fmt::print(f, "[CLIENT_INFO] FAIL: status {} < AUTHORIZED\n", (int)this->status); fclose(f); } }
+		return NETWORK_RECV_STATUS_MALFORMED_PACKET;
+	}
 	if (this->HasClientQuit()) return NETWORK_RECV_STATUS_CLIENT_QUIT;
 	/* The server validates the name when receiving it from clients, so when it is wrong
 	 * here something went really wrong. In the best case the packet got malformed on its
 	 * way too us, in the worst case the server is broken or compromised. */
-	if (!NetworkIsValidClientName(name)) return NETWORK_RECV_STATUS_MALFORMED_PACKET;
+	if (!NetworkIsValidClientName(name)) {
+		{ FILE *f = fopen("ap_net_trace.log", "a"); if (f) { fmt::print(f, "[CLIENT_INFO] FAIL: invalid client name '{}' (empty={} starts_space={})\n", name, name.empty(), (!name.empty() && name[0] == ' ')); fclose(f); } }
+		return NETWORK_RECV_STATUS_MALFORMED_PACKET;
+	}
 
 	ci = NetworkClientInfo::GetByClientID(client_id);
 	if (ci != nullptr) {
@@ -562,7 +596,10 @@ NetworkRecvStatus ClientNetworkGameSocketHandler::Receive_SERVER_CLIENT_INFO(Pac
 	 * has gone wrong somewhere, i.e. the server has more info than it
 	 * has actual clients. That means the server is feeding us an invalid
 	 * state. So, bail out! This server is broken. */
-	if (!NetworkClientInfo::CanAllocateItem()) return NETWORK_RECV_STATUS_MALFORMED_PACKET;
+	if (!NetworkClientInfo::CanAllocateItem()) {
+		{ FILE *f = fopen("ap_net_trace.log", "a"); if (f) { fmt::print(f, "[CLIENT_INFO] FAIL: CanAllocateItem() returned false!\n"); fclose(f); } }
+		return NETWORK_RECV_STATUS_MALFORMED_PACKET;
+	}
 
 	/* We don't have this client_id yet, find an empty client_id, and put the data there */
 	ci = new NetworkClientInfo(client_id);
@@ -609,6 +646,11 @@ NetworkRecvStatus ClientNetworkGameSocketHandler::Receive_SERVER_ERROR(Packet &p
 	NetworkErrorCode error = (NetworkErrorCode)p.Recv_uint8();
 
 	Debug(net, 9, "Client::Receive_SERVER_ERROR(): error={}", error);
+	IConsolePrint(CC_ERROR, fmt::format("[AP-NET] Received SERVER_ERROR! error_code={} status={}", (int)error, (int)this->status));
+	{
+		FILE *f = fopen("ap_net_trace.log", "a");
+		if (f) { fmt::print(f, "[CLIENT] Receive_SERVER_ERROR! error_code={} status={}\n", (int)error, (int)this->status); fclose(f); }
+	}
 
 	StringID err = STR_NETWORK_ERROR_LOSTCONNECTION;
 	if (error < (ptrdiff_t)lengthof(network_error_strings)) err = network_error_strings[error];
@@ -636,6 +678,13 @@ NetworkRecvStatus ClientNetworkGameSocketHandler::Receive_SERVER_CHECK_NEWGRFS(P
 
 	Debug(net, 9, "Client::Receive_SERVER_CHECK_NEWGRFS(): grf_count={}", grf_count);
 
+	/* AP debug: log to file so we can see exactly what's happening */
+	FILE *dbg = fopen("ap_newgrf_check.log", "w");
+	if (dbg) fmt::print(dbg, "[AP NewGRF Check] Server requires {} GRFs\n", grf_count);
+
+	uint total = grf_count;
+	uint idx = 0;
+
 	/* Check all GRFs */
 	for (; grf_count > 0; grf_count--) {
 		GRFIdentifier c;
@@ -646,16 +695,54 @@ NetworkRecvStatus ClientNetworkGameSocketHandler::Receive_SERVER_CHECK_NEWGRFS(P
 		if (f == nullptr) {
 			/* We do not know this GRF, bail out of initialization */
 			Debug(grf, 0, "NewGRF {:08X} not found; checksum {}", std::byteswap(c.grfid), FormatArrayAsHex(c.md5sum));
+			if (dbg) fmt::print(dbg, "  [{}] MISSING: grfid={:08X} md5={}\n",
+				idx, std::byteswap(c.grfid), FormatArrayAsHex(c.md5sum));
 			ret = NETWORK_RECV_STATUS_NEWGRF_MISMATCH;
+		} else {
+			if (dbg) fmt::print(dbg, "  [{}] OK: grfid={:08X} file='{}' md5={}\n",
+				idx, std::byteswap(c.grfid), f->filename, FormatArrayAsHex(c.md5sum));
 		}
+		idx++;
+	}
+
+	if (dbg) {
+		fmt::print(dbg, "\nResult: {} of {} GRFs matched. {}\n",
+			(ret == NETWORK_RECV_STATUS_OKAY) ? total : 0, total,
+			(ret == NETWORK_RECV_STATUS_OKAY) ? "SUCCESS" : "MISMATCH — connection will fail");
+
+		/* Also dump what's in _all_grfs for debugging */
+		int all_count = 0;
+		for ([[maybe_unused]] const auto &g : _all_grfs) { all_count++; }
+		fmt::print(dbg, "\n_all_grfs contains {} entries:\n", all_count);
+		for (const auto &g : _all_grfs) {
+			fmt::print(dbg, "  grfid={:08X} file='{}' md5={}\n",
+				std::byteswap(g->ident.grfid), g->filename, FormatArrayAsHex(g->ident.md5sum));
+		}
+		fclose(dbg);
 	}
 
 	if (ret == NETWORK_RECV_STATUS_OKAY) {
 		/* Start receiving the map */
-		return SendNewGRFsOk();
+		IConsolePrint(CC_WHITE, "[AP-NET] NewGRF check PASSED — sending NewGRFsOk to server...");
+		{
+			FILE *f = fopen("ap_net_trace.log", "a");
+			if (f) { fmt::print(f, "[CLIENT] NewGRF check PASSED. Calling SendNewGRFsOk()...\n"); fclose(f); }
+		}
+		NetworkRecvStatus r = SendNewGRFsOk();
+		{
+			FILE *f = fopen("ap_net_trace.log", "a");
+			if (f) { fmt::print(f, "[CLIENT] SendNewGRFsOk() returned {}. Waiting for SERVER_WELCOME...\n", (int)r); fclose(f); }
+		}
+		IConsolePrint(CC_WHITE, fmt::format("[AP-NET] SendNewGRFsOk returned {}. Waiting for server welcome...", (int)r));
+		return r;
 	}
 
 	/* NewGRF mismatch, bail out */
+	IConsolePrint(CC_ERROR, "[AP-NET] NewGRF check FAILED — mismatch!");
+	{
+		FILE *f = fopen("ap_net_trace.log", "a");
+		if (f) { fmt::print(f, "[CLIENT] NewGRF check FAILED — mismatch!\n"); fclose(f); }
+	}
 	ShowErrorMessage(GetEncodedString(STR_NETWORK_ERROR_NEWGRF_MISMATCH), {}, WL_CRITICAL);
 	return ret;
 }
@@ -679,6 +766,11 @@ NetworkRecvStatus ClientNetworkGameSocketHandler::Receive_SERVER_AUTH_REQUEST(Pa
 	this->status = STATUS_AUTH_GAME;
 
 	Debug(net, 9, "Client::Receive_SERVER_AUTH_REQUEST()");
+	IConsolePrint(CC_WHITE, "[AP-NET] Received AUTH_REQUEST from server...");
+	{
+		FILE *f = fopen("ap_net_trace.log", "a");
+		if (f) { fmt::print(f, "[CLIENT] Receive_SERVER_AUTH_REQUEST()\n"); fclose(f); }
+	}
 
 	if (this->authentication_handler == nullptr) {
 		this->authentication_handler = NetworkAuthenticationClientHandler::Create(std::make_shared<ClientGamePasswordRequestHandler>(),
@@ -702,6 +794,11 @@ NetworkRecvStatus ClientNetworkGameSocketHandler::Receive_SERVER_ENABLE_ENCRYPTI
 	if (this->status != STATUS_AUTH_GAME || this->authentication_handler == nullptr) return NETWORK_RECV_STATUS_MALFORMED_PACKET;
 
 	Debug(net, 9, "Client::Receive_SERVER_ENABLE_ENCRYPTION()");
+	IConsolePrint(CC_WHITE, "[AP-NET] Received ENABLE_ENCRYPTION — encryption active!");
+	{
+		FILE *f = fopen("ap_net_trace.log", "a");
+		if (f) { fmt::print(f, "[CLIENT] Receive_SERVER_ENABLE_ENCRYPTION()\n"); fclose(f); }
+	}
 
 	if (!this->authentication_handler->ReceiveEnableEncryption(p)) return NETWORK_RECV_STATUS_MALFORMED_PACKET;
 
@@ -712,18 +809,41 @@ NetworkRecvStatus ClientNetworkGameSocketHandler::Receive_SERVER_ENABLE_ENCRYPTI
 	Debug(net, 9, "Client::status = ENCRYPTED");
 	this->status = STATUS_ENCRYPTED;
 
+	IConsolePrint(CC_WHITE, "[AP-NET] Sending IDENTIFY to server...");
+	{
+		FILE *f = fopen("ap_net_trace.log", "a");
+		if (f) { fmt::print(f, "[CLIENT] status=ENCRYPTED. Sending IDENTIFY...\n"); fclose(f); }
+	}
 	return this->SendIdentify();
 }
 
 NetworkRecvStatus ClientNetworkGameSocketHandler::Receive_SERVER_WELCOME(Packet &p)
 {
-	if (this->status < STATUS_ENCRYPTED || this->status >= STATUS_AUTHORIZED) return NETWORK_RECV_STATUS_MALFORMED_PACKET;
+	{
+		FILE *f = fopen("ap_net_trace.log", "a");
+		if (f) { fmt::print(f, "[CLIENT] Receive_SERVER_WELCOME() called! status={}\n", (int)this->status); fclose(f); }
+	}
+	IConsolePrint(CC_WHITE, fmt::format("[AP-NET] Received SERVER_WELCOME! client status={}", (int)this->status));
+
+	if (this->status < STATUS_ENCRYPTED || this->status >= STATUS_AUTHORIZED) {
+		IConsolePrint(CC_ERROR, fmt::format("[AP-NET] SERVER_WELCOME REJECTED — bad status {}!", (int)this->status));
+		{
+			FILE *f = fopen("ap_net_trace.log", "a");
+			if (f) { fmt::print(f, "[CLIENT] SERVER_WELCOME REJECTED — bad status {}!\n", (int)this->status); fclose(f); }
+		}
+		return NETWORK_RECV_STATUS_MALFORMED_PACKET;
+	}
 	Debug(net, 9, "Client::status = AUTHORIZED");
 	this->status = STATUS_AUTHORIZED;
 
 	_network_own_client_id = (ClientID)p.Recv_uint32();
 
 	Debug(net, 9, "Client::Receive_SERVER_WELCOME(): client_id={}", _network_own_client_id);
+	IConsolePrint(CC_WHITE, fmt::format("[AP-NET] Welcome accepted! client_id={}. Requesting map...", _network_own_client_id));
+	{
+		FILE *f = fopen("ap_net_trace.log", "a");
+		if (f) { fmt::print(f, "[CLIENT] Welcome accepted! client_id={}. Calling SendGetMap()...\n", _network_own_client_id); fclose(f); }
+	}
 
 	/* Start receiving the map */
 	return SendGetMap();

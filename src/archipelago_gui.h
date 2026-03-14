@@ -16,6 +16,8 @@
 void ShowArchipelagoConnectWindow();
 void ShowArchipelagoStatusWindow();
 void ShowAPVictoryScreen();
+void ShowAPStartChoiceWindow();
+void ShowAPJoinMultiplayerWindow();
 void ShowArchipelagoMissionsWindow();
 void ShowArchipelagoShopWindow();
 void ShowArchipelagoColbyWindow();
@@ -26,6 +28,9 @@ void AP_ShowConsole(const std::string &msg);
 
 extern std::string _ap_last_host;
 extern uint16_t    _ap_last_port;
+
+/** True when AP is controlled by an external Bridge (multiplayer mode). */
+extern bool _ap_bridge_mode;
 extern std::string _ap_last_slot;
 extern std::string _ap_last_pass;
 extern bool        _ap_last_ssl;
@@ -60,10 +65,16 @@ void     AP_DeductShopPrice(const std::string &location_name);
 bool     AP_ShouldStartWorld();
 void     AP_ConsumeWorldStart();   /* applies settings, clears flag */
 uint32_t AP_GetWorldSeed();        /* seed to pass to StartNewGameWithoutGUI */
+void     AP_BridgeSetSlotData(const APSlotData &sd); /* populate _ap_pending_sd from bridge */
+extern bool _ap_pending_world_start; /* resettable by bridge client handler */
 void     AP_SetPendingLoadSave();  /* signal that user wants to load a save */
 bool     AP_ShouldShowLoadDialog(); /* consumed by intro_gui to open file picker */
 bool     AP_IsWaitingForStartChoice();
 void     AP_SetWaitingForStartChoice(bool v);
+void     AP_SetHostMultiplayer(bool v);
+bool     AP_IsHostMultiplayer();
+void     AP_SetPendingJoinCompany0(bool v);
+bool     AP_IsPendingJoinCompany0();
 
 /// Returns true while the 2x cargo payment bonus is active (used by economy.cpp)
 bool AP_GetCargoBonusActive();

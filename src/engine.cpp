@@ -1153,11 +1153,26 @@ void CalendarEnginesMonthlyLoop()
 			if (!e->IsEnabled()) continue;
 
 			if (!e->flags.Test(EngineFlag::Available) && TimerGameCalendar::date >= (e->intro_date + CalendarTime::DAYS_IN_YEAR)) {
-				/* Archipelago: block vanilla date-based introduction.
-				 * AP_IsActive() returns true when an AP session is authenticated.
-				 * The AP manager will call EnableEngineForCompany() directly when
-				 * the server sends us the unlock item for this engine. */
-				if (AP_IsActive()) continue;
+				/* Archipelago: block vanilla date-based introduction for the
+				 * human player — AP will unlock via items.  But AI companies
+				 * need normal engine introduction to function. */
+				if (AP_IsActive()) {
+					e->flags.Set(EngineFlag::Available);
+					for (Company *c : Company::Iterate()) {
+						if (!c->is_ai) continue;
+						e->company_avail.Set(c->index);
+						if (e->type == VEH_TRAIN) {
+							RailTypes intro = GetAllIntroducesRailTypes(e->VehInfo<RailVehicleInfo>().railtypes);
+							c->avail_railtypes = AddDateIntroducedRailTypes(c->avail_railtypes | intro, TimerGameCalendar::date);
+						} else if (e->type == VEH_ROAD) {
+							c->avail_roadtypes = AddDateIntroducedRoadTypes(
+								c->avail_roadtypes | GetRoadTypeInfo(e->VehInfo<RoadVehicleInfo>().roadtype)->introduces_roadtypes,
+								TimerGameCalendar::date);
+						}
+					}
+					if (!IsVehicleTypeDisabled(e->type, true)) AI::BroadcastNewEvent(new ScriptEventEngineAvailable(e->index));
+					continue;
+				}
 
 				/* Introduce it to all companies */
 				NewVehicleAvailable(e);

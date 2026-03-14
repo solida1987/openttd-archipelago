@@ -43,6 +43,8 @@
 #include "timer/timer_window.h"
 
 #include "widgets/statusbar_widget.h"
+#include "archipelago_gui.h"
+#include "archipelago.h"
 
 #include "table/strings.h"
 #include "table/company_face.h"
@@ -620,6 +622,13 @@ Company *DoStartupNewCompany(bool is_ai, CompanyID company = CompanyID::Invalid(
 
 	c->avail_railtypes = GetCompanyRailTypes(c->index);
 	c->avail_roadtypes = GetCompanyRoadTypes(c->index);
+	/* Bridge mode: engines are locked (CompanyMask{}) so GetCompanyRailTypes
+	 * returns nothing.  Give all railtypes/roadtypes unconditionally — the
+	 * AP session-start will maintain the correct lock state. */
+	if (_ap_bridge_mode) {
+		c->avail_railtypes = GetRailTypes(true);
+		c->avail_roadtypes = GetRoadTypes(true);
+	}
 	c->inaugurated_year = TimerGameEconomy::year;
 	c->inaugurated_year_calendar = TimerGameCalendar::year;
 
@@ -1309,7 +1318,7 @@ uint32_t CompanyInfrastructure::GetRoadTramTotal(RoadTramType rtt) const
  * companies if you have paid off your loan (either explicitly, or implicitly
  * given the fact that you have more money than loan).
  * @param flags operation to perform
- * @param money the amount of money to transfer; max 20.000.000
+ * @param money the amount of money to transfer; max 20.000.000 (uncapped when Archipelago is active)
  * @param dest_company the company to transfer the money to
  * @return the cost of this operation or an error
  */
@@ -1318,7 +1327,9 @@ CommandCost CmdGiveMoney(DoCommandFlags flags, Money money, CompanyID dest_compa
 	if (!_settings_game.economy.give_money) return CMD_ERROR;
 
 	const Company *c = Company::Get(_current_company);
-	CommandCost amount(EXPENSES_OTHER, std::min<Money>(money, 20000000LL));
+	/* When Archipelago is active, remove the 20M cap so the player can befriend the demigod */
+	Money cap = AP_IsActive() ? money : std::min<Money>(money, 20000000LL);
+	CommandCost amount(EXPENSES_OTHER, cap);
 
 	/* You can only transfer funds that is in excess of your loan */
 	if (c->money - c->current_loan < amount.GetCost() || amount.GetCost() < 0) return CommandCost(STR_ERROR_INSUFFICIENT_FUNDS);
@@ -1335,6 +1346,11 @@ CommandCost CmdGiveMoney(DoCommandFlags flags, Money money, CompanyID dest_compa
 			std::string from_company_name = GetString(STR_COMPANY_NAME, _current_company);
 
 			NetworkTextMessage(NETWORK_ACTION_GIVE_MONEY, GetDrawStringCompanyColour(_current_company), false, from_company_name, dest_company_name, amount.GetCost());
+		}
+
+		/* Notify Archipelago demigod system about the money transfer */
+		if (AP_IsActive()) {
+			AP_OnMoneyGivenToCompany((int)dest_company.base(), (int64_t)amount.GetCost());
 		}
 	}
 

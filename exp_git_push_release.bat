@@ -5,7 +5,7 @@ setlocal EnableDelayedExpansion
 ::  Pusher til: github.com/solida1987/openttd-archipelago-exp
 :: ============================================================
 set PROJECT_DIR=C:\Users\marco\OneDrive\Desktop\OpenTTD 15.2 with Archipelago-exp
-set AP_VERSION=exp-3.0
+set AP_VERSION=exp-4.0
 
 echo.
 echo ============================================================
@@ -87,6 +87,17 @@ git add src\window_type.h
 git add src\aircraft_cmd.cpp
 git add src\train_cmd.cpp
 git add src\roadveh_cmd.cpp
+git add src\openttd.cpp
+git add src\company_cmd.cpp
+
+:: Network / Bridge (multiplayer foundation)
+git add src\network\network_bridge.cpp
+git add src\network\network_bridge_client.cpp
+git add src\network\network_bridge_client.h
+git add src\network\network_bridge.h
+git add src\network\core\tcp_game.cpp
+git add src\network\network_client.cpp
+git add src\video\dedicated_v.cpp
 
 :: Tables / data
 git add src\table\cargo_const.h
@@ -127,6 +138,9 @@ git add INSTALL.md
 git add README.md
 git add FEATURE_BACKLOG.md
 
+:: Reference (NewGRF mapping data, docs)
+git add Reference\
+
 :: Gitignore
 git add .gitignore
 
@@ -144,7 +158,7 @@ echo       OK.
 
 :: ── Commit ───────────────────────────────────────────────────
 echo [3/5] Committer...
-git commit -m "exp-3.0: Ruins Tracker, Demigod System, Vehicle Index, Rendering Fixes"
+git commit -m "exp-4.0: Multiplayer Mode Toggle, Check Completion Sync, Bridge Architecture, Join Warning"
 if errorlevel 1 (
     echo       Intet nyt at committe - fortsætter til push.
 )

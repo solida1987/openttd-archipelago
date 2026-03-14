@@ -80,6 +80,7 @@
 #include "timer/timer_game_realtime.h"
 #include "timer/timer_game_tick.h"
 #include "social_integration.h"
+#include "archipelago_gui.h"
 #include "core/string_consumer.hpp"
 
 #include "linkgraph/linkgraphschedule.h"
@@ -863,6 +864,14 @@ static void MakeNewGameDone()
 
 	/* In a dedicated server, the server does not play */
 	if (!VideoDriver::GetInstance()->HasGUI()) {
+		/* Bridge mode: create Company 0 just like singleplayer does.
+		 * Session-start needs a Company for railtypes, cash bonus,
+		 * and engine locking per company.  Without this, company_valid=0
+		 * and all company-dependent operations fail silently. */
+		if (_ap_bridge_mode) {
+			Company *c = DoStartupNewCompany(false);
+			if (c != nullptr) c->settings = _settings_client.company;
+		}
 		OnStartGame(true);
 		if (_settings_client.gui.pause_on_newgame) Command<CMD_PAUSE>::Post(PauseMode::Normal, true);
 		return;

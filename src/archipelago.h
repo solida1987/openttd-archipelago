@@ -151,6 +151,13 @@ struct APSlotData {
 	uint8_t                 map_y                = 8;
 	uint8_t                 landscape            = 0;
 	uint8_t                 land_generator       = 1;
+	uint8_t                 terrain_type         = 1;   ///< 0=very flat,1=flat,2=hilly,3=mountainous,4=alpinist
+	uint8_t                 sea_level            = 1;   ///< 0=very low,1=low,2=medium,3=high (quantity_sea_lakes)
+	uint8_t                 rivers               = 2;   ///< 0=none,1=few,2=moderate,3=many (amount_of_rivers)
+	uint8_t                 smoothness           = 1;   ///< 0=very smooth,1=smooth,2=rough,3=very rough (tgen_smoothness)
+	uint8_t                 variety              = 0;   ///< 0=none,1=very low..5=very high
+	uint8_t                 number_towns         = 2;   ///< 0=very low,1=low,2=normal,3=high,4=custom
+	uint8_t                 town_name            = 0;   ///< town name generator index
 
 	/* ── Game settings (Accounting) ─────────────────────────────────── */
 	bool                    infinite_money       = false;
@@ -203,6 +210,14 @@ struct APSlotData {
 
 	/* ── NewGRF options ─────────────────────────────────────────────── */
 	bool                    enable_iron_horse    = false;
+	bool                    enable_military_items = false;
+	bool                    enable_shark_ships   = false;
+	bool                    enable_hover_vehicles = false;
+	bool                    enable_heqs          = false;
+	bool                    enable_vactrain      = false;
+	bool                    enable_aircraftpack  = false;
+	bool                    enable_firs          = false;
+	uint8_t                 firs_economy         = 0;   ///< 0=Temperate Basic,1=Arctic Basic,2=Tropic Basic,3=Steeltown,4=In A Hot Country
 
 	/* ── Item Pool unlock options ───────────────────────────────────── */
 	bool                    enable_rail_direction_unlocks = false;
@@ -265,6 +280,9 @@ struct APSlotData {
 	int     wrath_limit_roads          = 2;    ///< Town roads destroyed/year before anger
 	int     wrath_limit_terrain        = 25;   ///< Terrain tiles modified/year before anger
 	int     wrath_limit_trees          = 10;   ///< Trees removed/year before anger
+
+	/* ── Multiplayer mode ─────────────────────────────────────────── */
+	bool    multiplayer_mode           = false; ///< When true, disables ruins/colby/demigod/wrath for MP compatibility
 };
 
 /** Callbacks fired on the main thread via Tick(). */
@@ -277,6 +295,9 @@ struct APCallbacks {
 	/** Fired when a Death Link bounce arrives from another player.
 	 *  @param source  The slot name that sent the death. */
 	std::function<void(const std::string &source)> on_death_received;
+	/** Fired when the AP server reports which locations have been checked.
+	 *  Contains location NAMES (resolved from IDs). Fired on connect and on RoomUpdate. */
+	std::function<void(const std::set<std::string> &)> on_checked_locations;
 };
 
 /** Archipelago WebSocket client. Networking runs in a background thread. */
@@ -370,10 +391,11 @@ private:
 	std::atomic<bool>  stop_requested{ false };
 
 	struct InboundEvent {
-		enum Type : uint8_t { CONNECTED, DISCONNECTED, ITEM, PRINT, SLOT_DATA, DEATH_RECEIVED } type;
+		enum Type : uint8_t { CONNECTED, DISCONNECTED, ITEM, PRINT, SLOT_DATA, DEATH_RECEIVED, CHECKED_LOCATIONS } type;
 		std::string text;
 		APItem      item;
 		APSlotData  slot;
+		std::set<std::string> locations; ///< For CHECKED_LOCATIONS events
 	};
 	std::mutex               inbound_mutex;
 	std::deque<InboundEvent> inbound_queue;
@@ -420,6 +442,17 @@ void ShowArchipelagoIndexWindow();
 
 /** Returns true if the given EngineID has been unlocked via Archipelago items. */
 bool AP_IsEngineUnlocked(uint32_t engine_id);
+
+/** Unlock an engine by its AP item name.  Used by both singleplayer AP and bridge mode. */
+bool AP_UnlockEngineByName(const std::string &name);
+
+/** Toggle the day/night cycle on or off. When disabled, forces daytime. */
+void AP_ToggleDayNight();
+void AP_OpenToMultiplayer(); ///< Save + reload current SP game as MP server
+void AP_RequestMPJoin(const std::string &game_server, const std::string &slot_name); ///< Start deferred MP join (wait for slot_data + NewGRFs)
+bool AP_IsMPJoinPending(); ///< True while waiting for AP slot_data before joining MP
+bool AP_IsMultiplayerMode(); ///< True when slot_data has multiplayer_mode enabled
+bool AP_IsDayNightDisabled();
 
 /** Returns true if Colby Event is active and not yet completed. */
 bool AP_IsColbyActive();
@@ -470,6 +503,7 @@ bool AP_IsTownActionLocked(uint8_t action_idx); ///< action_idx: 0-7 (TownAction
 bool AP_IsTownActionLocked();                   ///< true if ANY town action is locked
 
 /** Save/load getters and setters for infrastructure locks. */
+void     AP_SetLockedTrackDirs(uint8_t railtype, uint8_t mask);
 uint8_t  AP_GetLockedRoadDirs();
 void     AP_SetLockedRoadDirs(uint8_t mask);
 uint8_t  AP_GetLockedSignals();
@@ -517,10 +551,12 @@ struct DemigodStatus {
 	int64_t     tribute_cost;
 	int         active_company;  ///< CompanyID raw value, -1 = invalid
 	int         next_spawn_year; ///< 0 = N/A
+	bool        friendly;        ///< Easter egg: AI has been befriended by player
 };
 DemigodStatus AP_GetDemigodStatus();
-void AP_DemigodDefeat();   ///< Called from GUI on tribute click
+void AP_DemigodDefeat();   ///< Called from GUI on tribute/dismiss click
 bool AP_IsDemigodEnabled();
+void AP_OnMoneyGivenToCompany(int dest_company, int64_t amount); ///< Called from CmdGiveMoney
 
 /* ── Wrath of the God of Wackens ──────────────────────────────── */
 void AP_WrathTrackHouse();      ///< Called from town_cmd.cpp on house demolition
@@ -636,5 +672,13 @@ void AP_GetDemigodState(std::string *defeated, int *active_idx, int *company,
 void AP_SetDemigodState(const std::string &defeated, int active_idx, int company,
                         int next_year, bool veh_saved, bool sv_train,
                         bool sv_road, bool sv_air, bool sv_ship);
+int64_t AP_GetDemigodPlayerSpawnValue();
+void    AP_SetDemigodPlayerSpawnValue(int64_t v);
+bool    AP_GetDemigodFriendly();
+void    AP_SetDemigodFriendly(bool v);
+int64_t AP_GetDemigodMoneyGiven();
+void    AP_SetDemigodMoneyGiven(int64_t v);
+int     AP_GetDemigodLastTransferYear();
+void    AP_SetDemigodLastTransferYear(int v);
 
 #endif /* ARCHIPELAGO_H */

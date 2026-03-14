@@ -2296,6 +2296,26 @@ STR_ARCHIPELAGO_TAB_TASKS                                       :{BLACK}Tasks
 STR_ARCHIPELAGO_NEWS                                            :{RAW_STRING}
 STR_ARCHIPELAGO_START_CHOICE_CAPTION                            :{BLACK}Archipelago
 STR_ARCHIPELAGO_START_CHOICE_MESSAGE                            :{BLACK}Connected! Generate a new world?{}{}Yes = New Game     No = Load Save
+STR_ARCHIPELAGO_START_CHOICE_CAPTION_V2                         :{BLACK}Archipelago - Start
+STR_ARCHIPELAGO_START_SINGLE                                    :{BLACK}Single Player
+STR_ARCHIPELAGO_START_HOST                                      :{BLACK}Host Multiplayer
+STR_ARCHIPELAGO_START_LOAD                                      :{BLACK}Load Save
+STR_ARCHIPELAGO_START_MESSAGE                                   :{BLACK}Connected! Choose how to start:
+STR_AP_JOIN_CAPTION                                             :{BLACK}Join Archipelago Game
+STR_AP_JOIN_LABEL_APSERVER                                      :{BLACK}AP Server:
+STR_AP_JOIN_LABEL_SLOT                                          :{BLACK}Slot name:
+STR_AP_JOIN_LABEL_PASSWORD                                      :{BLACK}Password:
+STR_AP_JOIN_LABEL_PLAYERNAME                                    :{BLACK}Player Name:
+STR_AP_JOIN_LABEL_GAMESERVER                                    :{BLACK}Game Server:
+STR_AP_JOIN_BTN_CONNECT                                         :{BLACK}Join Game
+STR_AP_JOIN_STATUS_CONNECTING                                   :{BLACK}Connecting to game server...
+STR_AP_JOIN_STATUS_AP_CONNECTING                                :{BLACK}Connecting to AP server...
+STR_AP_JOIN_STATUS_DONE                                         :{BLACK}Connected!
+STR_AP_JOIN_STATUS_FAILED                                       :{BLACK}Connection failed.
+STR_AP_OPEN_MP_BTN                                              :{BLACK}Open to Multiplayer
+STR_AP_OPEN_MP_STATUS                                           :{BLACK}Server running on port {NUM}
+STR_INTRO_JOIN_MULTIPLAYER                                      :{BLACK}Join AP Game
+STR_INTRO_TOOLTIP_JOIN_MULTIPLAYER                              :{BLACK}Join an Archipelago multiplayer game hosted by another player
 STR_ARCHIPELAGO_SHOP_CAPTION                                    :Archipelago - Shop
 STR_ARCHIPELAGO_SHOP_BUY                                        :{BLACK}Buy Selected Item
 STR_ARCHIPELAGO_GUIDE_CAPTION                                   :Archipelago - Guide & Tips
@@ -2308,6 +2328,7 @@ STR_ARCHIPELAGO_NEWS_ALL                                        :{BLACK}All
 STR_ARCHIPELAGO_BTN_DEMIGOD                                     :{BLACK}Demigods
 STR_ARCHIPELAGO_DEMIGOD_CAPTION                                 :God of Wackens - Demigods
 STR_ARCHIPELAGO_DEMIGOD_PAY_TRIBUTE                             :{BLACK}Pay Tribute
+STR_ARCHIPELAGO_DEMIGOD_DISMISS                                 :{BLACK}Dismiss Friend
 STR_ARCHIPELAGO_DEMIGOD_CLOSE                                   :{BLACK}Close
 STR_ARCHIPELAGO_RUIN_CAPTION                                    :{WHITE}Ancient Ruin
 STR_ARCHIPELAGO_RUIN_LOCATION                                   :{BLACK}Location: {STRING}
@@ -2329,6 +2350,8 @@ STR_ARCHIPELAGO_INDEX_TAB_AIRCRAFT                              :{BLACK}Aircraft
 STR_ARCHIPELAGO_INDEX_TAB_SHIPS                                 :{BLACK}Ships
 STR_ARCHIPELAGO_INDEX_TAB_WAGONS                                :{BLACK}Wagons
 STR_ARCHIPELAGO_BTN_RUINS                                       :{BLACK}Ruins
+STR_ARCHIPELAGO_BTN_DAYNIGHT_ON                                 :{BLACK}Night: On
+STR_ARCHIPELAGO_BTN_DAYNIGHT_OFF                                :{BLACK}Night: Off
 STR_ARCHIPELAGO_RUINS_CAPTION                                   :Archipelago - Ruins Tracker
 STR_ERROR_ARCHIPELAGO_RAIL_DIR_LOCKED                           :This track direction is locked. Unlock it via Archipelago.
 STR_ERROR_ARCHIPELAGO_ROAD_DIR_LOCKED                           :This road direction is locked. Unlock it via Archipelago.
