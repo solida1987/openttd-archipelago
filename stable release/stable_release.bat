@@ -255,7 +255,7 @@ echo       OK.
 
 :: ── STEP 4: Commit ──────────────────────────────────────────
 echo [4/8] Committer...
-git commit -m "v%AP_VERSION%: Fix victory sphere logic, improve foreign item placement, fix music baseset"
+git commit -m "v%AP_VERSION%: Fix demigod spawn glitch, fix wagon climate filtering, add progression balancing options"
 if errorlevel 1 (
     echo       Intet nyt at committe - fortsaetter til push.
 )
@@ -289,12 +289,18 @@ gh release create %TAG% "%ZIP_PATH%" ^
     --title "OpenTTD Archipelago v%AP_VERSION%" ^
     --notes "## OpenTTD Archipelago v%AP_VERSION% (Patch)
 
-**Bugfix release** built from OpenTTD 15.2.
+**Patch release** built from OpenTTD 15.2.
 
 ### Fixes
-- **Victory sphere logic**: Victory no longer appears reachable in sphere 2 of spoiler logs. Now requires 15+ vehicles, cargo capability, and full infrastructure (bridges/tunnels, terraform, rail/road directions, signals) when sphere progression is enabled.
-- **Foreign item placement**: Other players' progression items now land in early, reachable locations (Easy/Medium missions, first 50 shop slots) instead of being randomly scattered. Late shop slots (51+) are excluded from receiving foreign progression items.
-- **Music baseset**: Rebuilt openmsx-0.4.2.tar from working files to fix potential MIDI playback issues on some systems.
+- **Demigod spawn graphical glitch**: Grey rendering corruption on toolbar/viewport when the God of Wackens spawns a rival company. AI company creation did not trigger a full screen redraw (dirty rectangle bug).
+- **Wagon climate filtering**: Paper Truck (Arctic-only) and other climate-specific wagons appeared in wrong climate item pools. Wagon exclusion lists were missing entirely.
+- **Victory sphere logic**: Victory now requires 15+ vehicles and full infrastructure when sphere progression is enabled.
+- **Foreign item placement**: Other players' progression items now land in early, reachable locations instead of being randomly scattered.
+- **Music baseset**: Rebuilt openmsx-0.4.2.tar from working files.
+
+### New Features
+- **9 Progression Balancing options**: Configure where progression items land — mission tier priorities, victory vehicle requirement, Hard/Extreme tier multipliers.
+- **Item Placement (Advanced Balancing)** option group in YAML.
 
 ### Installation
 1. Extract the ZIP to any folder

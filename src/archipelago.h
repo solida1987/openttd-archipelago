@@ -533,6 +533,7 @@ struct ColbyStatus {
 	int64_t     step_amount;
 	bool        escaped;
 	bool        popup_shown;
+	bool        popup_pending;  ///< true = popup dismissed without choosing, can be reopened
 	int         escape_ticks;
 	std::string town_name;
 	TownID      town_id         = (TownID)UINT16_MAX;
@@ -541,6 +542,13 @@ struct ColbyStatus {
 	std::string cargo_name;    ///< "packages"
 };
 ColbyStatus AP_GetColbyStatus();
+
+/* Colby decision window — called from archipelago_gui.cpp */
+void AP_ColbyDecisionArrest();
+void AP_ColbyDecisionEscape();
+void AP_ColbyDecisionImprison();
+void AP_ColbyDecisionSacrifice();
+void AP_ColbyReopenPopup();
 
 /** Demigod system status snapshot for the GUI. */
 struct DemigodStatus {
