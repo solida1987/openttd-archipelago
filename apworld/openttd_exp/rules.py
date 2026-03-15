@@ -372,5 +372,59 @@ def set_rules(world: "OpenTTDWorld") -> None:
     # ------------------------------------------------------------------
     # Victory
     # ------------------------------------------------------------------
+    # Victory requires reaching the endgame: the player must have enough
+    # vehicles to access Extreme-tier missions (since completing 35+
+    # missions requires all tiers), cargo capability, and — when sphere
+    # progression is on — the full infrastructure chain (bridge/tunnel +
+    # terraform).  This prevents the spoiler log from showing victory as
+    # reachable in sphere 2.
+    # ------------------------------------------------------------------
     victory = multiworld.get_location("Goal_Victory", player)
-    victory.access_rule = lambda state: has_cargo_capability(state, player) and has_transport_vehicles(state, player, 10)
+
+    # Vehicle requirement: at least Extreme tier, never less than 15
+    victory_vehicle_req = max(15, extreme_vehicle_req)
+
+    # Build infrastructure requirement for victory (same as extreme tier)
+    victory_infra_checks = []
+    opts = world.options
+
+    # Bridge / Tunnel (need at least one crossing method)
+    bridge_on = bool(opts.enable_bridge_unlocks.value)
+    tunnel_on = bool(opts.enable_tunnel_unlocks.value)
+    if bridge_on and tunnel_on:
+        victory_infra_checks.append(
+            lambda state: has_any_bridge(state, player) or has_tunnel(state, player)
+        )
+    elif bridge_on:
+        victory_infra_checks.append(lambda state: has_any_bridge(state, player))
+    elif tunnel_on:
+        victory_infra_checks.append(lambda state: has_tunnel(state, player))
+
+    # Terraform
+    if opts.enable_terraform_unlocks.value:
+        victory_infra_checks.append(lambda state: has_any_terraform(state, player))
+
+    # Rail directions (need tracks to run trains)
+    if opts.enable_rail_direction_unlocks.value:
+        victory_infra_checks.append(lambda state: has_any_rail_direction(state, player))
+
+    # Road directions
+    if opts.enable_road_direction_unlocks.value:
+        victory_infra_checks.append(lambda state: has_any_road_direction(state, player))
+
+    # Signals (essential for any serious rail network)
+    if opts.enable_signal_unlocks.value:
+        victory_infra_checks.append(lambda state: has_any_signal(state, player))
+
+    if victory_infra_checks:
+        _vic_infra = tuple(victory_infra_checks)
+        victory.access_rule = lambda state: (
+            has_cargo_capability(state, player)
+            and has_transport_vehicles(state, player, victory_vehicle_req)
+            and all(fn(state) for fn in _vic_infra)
+        )
+    else:
+        victory.access_rule = lambda state: (
+            has_cargo_capability(state, player)
+            and has_transport_vehicles(state, player, victory_vehicle_req)
+        )
