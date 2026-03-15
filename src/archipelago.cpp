@@ -1521,12 +1521,13 @@ void ArchipelagoClient::WorkerThread()
 	AP_OK("WS connection established.");
 #endif
 
-	/* Set recv timeout AFTER handshake — 30s so the loop can poll stop_requested */
+	/* Set recv timeout AFTER handshake — short timeout so incoming items/checks
+	 * are processed quickly instead of blocking for up to 30s. */
 #ifdef _WIN32
-	DWORD timeout_ms = 30000;
+	DWORD timeout_ms = 500;
 	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout_ms, sizeof(timeout_ms));
 #else
-	struct timeval tv{30, 0};
+	struct timeval tv{0, 500000};
 	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 #endif
 

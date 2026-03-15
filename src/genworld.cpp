@@ -18,6 +18,7 @@
 #include "gfxinit.h"
 #include "window_func.h"
 #include "network/network.h"
+#include "network/network_bridge.h"
 #include "heightmap.h"
 #include "viewport_func.h"
 #include "timer/timer_game_calendar.h"
@@ -213,6 +214,13 @@ static void _GenerateWorld()
 		ShowNewGRFError();
 
 		if (_network_dedicated) Debug(net, 3, "Map generated, starting game");
+
+		/* Notify the AP Bridge that the world has been generated. */
+		if (_ap_bridge_mode && ServerNetworkBridgeHandler::current != nullptr) {
+			ServerNetworkBridgeHandler::current->SendWorldReady(
+				_settings_game.game_creation.generation_seed);
+		}
+
 		Debug(desync, 1, "new_map: {:08x}", _settings_game.game_creation.generation_seed);
 
 		if (_debug_desync_level > 0) {

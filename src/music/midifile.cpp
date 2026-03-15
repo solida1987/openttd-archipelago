@@ -851,7 +851,7 @@ bool MidiFile::LoadSong(const MusicSongInfo &song)
 			}
 		}
 		default:
-			NOT_REACHED();
+			return false;
 	}
 }
 

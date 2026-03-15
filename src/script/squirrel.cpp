@@ -187,9 +187,9 @@ void Squirrel::CompileError(HSQUIRRELVM vm, std::string_view desc, std::string_v
 	Squirrel *engine = (Squirrel *)sq_getforeignptr(vm);
 	engine->crashed = true;
 	SQPrintFunc *func = engine->print_func;
-	if (func == nullptr) {
-		Debug(misc, 0, "[Squirrel] Compile error: {}", msg);
-	} else {
+	/* Always log to debug console so long paths are not truncated */
+	Debug(misc, 0, "[Squirrel] Compile error: {}", msg);
+	if (func != nullptr) {
 		(*func)(true, msg);
 	}
 }
@@ -703,6 +703,9 @@ bool Squirrel::LoadScript(HSQUIRRELVM vm, const std::string &script, bool in_roo
 			vm->_ops_till_suspend = ops_left;
 			return true;
 		}
+		Debug(misc, 0, "[squirrel] sq_call failed for '{}' (compiled OK, runtime error)", script);
+	} else {
+		Debug(misc, 0, "[squirrel] LoadFile/compile failed for '{}'", script);
 	}
 
 	vm->_ops_till_suspend = ops_left;

@@ -235,6 +235,13 @@ std::unique_ptr<Packet> ServerNetworkGameSocketHandler::ReceivePacket()
 NetworkRecvStatus ServerNetworkGameSocketHandler::CloseConnection(NetworkRecvStatus status)
 {
 	assert(status != NETWORK_RECV_STATUS_OKAY);
+
+	IConsolePrint(CC_ERROR, fmt::format("[AP-NET-SRV] CloseConnection for client {} — recv_status={} server_status={}", this->client_id, (int)status, (int)this->status));
+	{
+		FILE *f = fopen("ap_net_trace_server.log", "a");
+		if (f) { fmt::print(f, "[SERVER] CloseConnection for client {} — recv_status={} server_status={}\n", this->client_id, (int)status, (int)this->status); fclose(f); }
+	}
+
 	/*
 	 * Sending a message just before leaving the game calls cs->SendPackets.
 	 * This might invoke this function, which means that when we close the
@@ -411,6 +418,13 @@ NetworkRecvStatus ServerNetworkGameSocketHandler::SendNewGRFCheck()
 	Debug(net, 9, "client[{}] status = NEWGRFS_CHECK", this->client_id);
 	this->status = STATUS_NEWGRFS_CHECK;
 
+	uint grf_total = std::ranges::count_if(_grfconfig, [](const auto &c){ return !c->flags.Test(GRFConfigFlag::Static); });
+	IConsolePrint(CC_WHITE, fmt::format("[AP-NET-SRV] SendNewGRFCheck to client {} — {} GRFs to check", this->client_id, grf_total));
+	{
+		FILE *f = fopen("ap_net_trace_server.log", "a");
+		if (f) { fmt::print(f, "[SERVER] SendNewGRFCheck to client {} — {} GRFs\n", this->client_id, grf_total); fclose(f); }
+	}
+
 	if (_grfconfig.empty()) {
 		/* There are no NewGRFs, so they're welcome. */
 		return this->SendWelcome();
@@ -474,10 +488,22 @@ NetworkRecvStatus ServerNetworkGameSocketHandler::SendWelcome()
 	Debug(net, 9, "client[{}] SendWelcome()", this->client_id);
 
 	/* Invalid packet when status is anything but STATUS_NEWGRFS_CHECK. */
-	if (this->status != STATUS_NEWGRFS_CHECK) return this->CloseConnection(NETWORK_RECV_STATUS_MALFORMED_PACKET);
+	if (this->status != STATUS_NEWGRFS_CHECK) {
+		IConsolePrint(CC_ERROR, fmt::format("[AP-NET-SRV] SendWelcome FAILED — status {} != NEWGRFS_CHECK!", (int)this->status));
+		{
+			FILE *f = fopen("ap_net_trace_server.log", "a");
+			if (f) { fmt::print(f, "[SERVER] SendWelcome FAILED — status {} != NEWGRFS_CHECK!\n", (int)this->status); fclose(f); }
+		}
+		return this->CloseConnection(NETWORK_RECV_STATUS_MALFORMED_PACKET);
+	}
 
 	Debug(net, 9, "client[{}] status = AUTHORIZED", this->client_id);
 	this->status = STATUS_AUTHORIZED;
+	IConsolePrint(CC_WHITE, fmt::format("[AP-NET-SRV] SendWelcome() — client {} is now AUTHORIZED. Sending welcome packet...", this->client_id));
+	{
+		FILE *f = fopen("ap_net_trace_server.log", "a");
+		if (f) { fmt::print(f, "[SERVER] SendWelcome() — client {} AUTHORIZED. Sending welcome packet.\n", this->client_id); fclose(f); }
+	}
 
 	/* Reset 'lag' counters */
 	this->last_frame = this->last_frame_server = _frame_counter;
@@ -833,13 +859,29 @@ NetworkRecvStatus ServerNetworkGameSocketHandler::Receive_CLIENT_GAME_INFO(Packe
 
 NetworkRecvStatus ServerNetworkGameSocketHandler::Receive_CLIENT_NEWGRFS_CHECKED(Packet &)
 {
+	IConsolePrint(CC_WHITE, fmt::format("[AP-NET-SRV] Receive_CLIENT_NEWGRFS_CHECKED from client {} — server status={}", this->client_id, (int)this->status));
+	{
+		FILE *f = fopen("ap_net_trace_server.log", "a");
+		if (f) { fmt::print(f, "[SERVER] Receive_CLIENT_NEWGRFS_CHECKED from client {} — status={}\n", this->client_id, (int)this->status); fclose(f); }
+	}
+
 	if (this->status != STATUS_NEWGRFS_CHECK) {
 		/* Illegal call, return error and ignore the packet */
+		IConsolePrint(CC_ERROR, fmt::format("[AP-NET-SRV] REJECTED — status {} != NEWGRFS_CHECK!", (int)this->status));
+		{
+			FILE *f = fopen("ap_net_trace_server.log", "a");
+			if (f) { fmt::print(f, "[SERVER] REJECTED — status {} != NEWGRFS_CHECK! Sending error.\n", (int)this->status); fclose(f); }
+		}
 		return this->SendError(NETWORK_ERROR_NOT_EXPECTED);
 	}
 
 	Debug(net, 9, "client[{}] Receive_CLIENT_NEWGRFS_CHECKED()", this->client_id);
 
+	IConsolePrint(CC_WHITE, fmt::format("[AP-NET-SRV] NewGRFs OK — sending Welcome to client {}", this->client_id));
+	{
+		FILE *f = fopen("ap_net_trace_server.log", "a");
+		if (f) { fmt::print(f, "[SERVER] NewGRFs OK — calling SendWelcome() for client {}\n", this->client_id); fclose(f); }
+	}
 	return this->SendWelcome();
 }
 

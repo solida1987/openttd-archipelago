@@ -49,6 +49,7 @@
 #include "core/string_consumer.hpp"
 
 #include "widgets/company_widget.h"
+#include "archipelago.h"  /* AP_IsActive() — hide hostile takeover when AP active */
 
 #include "table/strings.h"
 
@@ -1966,8 +1967,10 @@ struct CompanyWindow : Window
 			reinit |= this->GetWidget<NWidgetStacked>(WID_C_SELECT_RELOCATE)->SetDisplayedPlane((!local || c->location_of_HQ == INVALID_TILE) ? CWP_RELOCATE_HIDE : CWP_RELOCATE_SHOW);
 			/* Enable/disable 'Give money' button. */
 			reinit |= this->GetWidget<NWidgetStacked>(WID_C_SELECT_GIVE_MONEY)->SetDisplayedPlane((local || _local_company == COMPANY_SPECTATOR || !_settings_game.economy.give_money) ? SZSP_NONE : 0);
-			/* Enable/disable 'Hostile Takeover' button. */
-			reinit |= this->GetWidget<NWidgetStacked>(WID_C_SELECT_HOSTILE_TAKEOVER)->SetDisplayedPlane((local || _local_company == COMPANY_SPECTATOR || !c->is_ai || _networking) ? SZSP_NONE : 0);
+			/* Enable/disable 'Hostile Takeover' button.
+			 * Always hidden when AP is active — use Pay Tribute in Demigod window instead. */
+			reinit |= this->GetWidget<NWidgetStacked>(WID_C_SELECT_HOSTILE_TAKEOVER)->SetDisplayedPlane(
+				(local || _local_company == COMPANY_SPECTATOR || !c->is_ai || _networking || AP_IsActive()) ? SZSP_NONE : 0);
 
 			/* Multiplayer buttons. */
 			reinit |= this->GetWidget<NWidgetStacked>(WID_C_SELECT_MULTIPLAYER)->SetDisplayedPlane((!_networking || !NetworkCanJoinCompany(c->index) || _local_company == c->index) ? (int)SZSP_NONE : 0);
