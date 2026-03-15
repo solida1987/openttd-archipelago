@@ -44,7 +44,7 @@ jobs:
         # Read version from the bat script
         AP_VERSION=$(grep -oP 'set AP_VERSION=\K[0-9.]+' "stable release/stable_build_and_package.bat" | head -1)
         if [ -z "$AP_VERSION" ]; then
-          AP_VERSION="1.2.0"
+          AP_VERSION="1.2.1"
         fi
         echo "ap_version=$AP_VERSION" >> "$GITHUB_OUTPUT"
         echo "AP Version: v$AP_VERSION"

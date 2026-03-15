@@ -581,21 +581,34 @@ def _build_location_table(mission_count: int = 100, shop_item_count: int = 100,
     """
     table: Dict[str, OpenTTDLocationData] = {}
 
+    # Mission priority: Easy + Medium + Extreme = PRIORITY so the fill
+    # algorithm places other players' progression items in reachable
+    # locations.  Hard = DEFAULT (mid-tier, neutral).
+    _MISSION_PRIORITY = {
+        "easy":    LocationProgressType.PRIORITY,
+        "medium":  LocationProgressType.PRIORITY,
+        "hard":    LocationProgressType.DEFAULT,
+        "extreme": LocationProgressType.PRIORITY,
+    }
     for difficulty, fraction in DIFFICULTY_DISTRIBUTION.items():
         count = min(max(1, int(mission_count * fraction)), MAX_MISSIONS_PER_DIFFICULTY)
         base = DIFFICULTY_ID_OFFSET[difficulty]
         assert count <= 2000, f"Too many {difficulty} missions ({count}); block only holds 2000"
-        pt = (LocationProgressType.PRIORITY
-              if difficulty == "extreme"
-              else LocationProgressType.DEFAULT)
+        pt = _MISSION_PRIORITY[difficulty]
         for i in range(1, count + 1):
             name = f"Mission_{difficulty.capitalize()}_{i:03d}"
             table[name] = OpenTTDLocationData(base + (i - 1), f"mission_{difficulty}", pt)
 
+    # Shop priority: first 50 slots = PRIORITY (cheap, early access) so
+    # important foreign items land where players actually reach them.
+    # Slots 51+ = EXCLUDED — only filler / own useful items go here.
+    SHOP_PRIORITY_CUTOFF = 50
     for i in range(1, shop_item_count + 1):
         name = f"Shop_Purchase_{i:04d}"
         assert i <= 2000, f"Too many shop slots ({i}); block only holds 2000"
-        table[name] = OpenTTDLocationData(SHOP_ID_BASE + (i - 1), "shop", LocationProgressType.DEFAULT)
+        pt = (LocationProgressType.PRIORITY if i <= SHOP_PRIORITY_CUTOFF
+              else LocationProgressType.EXCLUDED)
+        table[name] = OpenTTDLocationData(SHOP_ID_BASE + (i - 1), "shop", pt)
 
     for i in range(1, ruin_count + 1):
         name = f"Ruin_{i:03d}"
