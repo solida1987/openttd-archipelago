@@ -1,0 +1,229 @@
+name: Build Linux Stable Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Linux Release
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential \
+          cmake \
+          libsdl2-dev \
+          libcurl4-openssl-dev \
+          libfontconfig-dev \
+          libfreetype-dev \
+          libharfbuzz-dev \
+          libicu-dev \
+          liblzma-dev \
+          liblzo2-dev \
+          libogg-dev \
+          libopus-dev \
+          libopusfile-dev \
+          libpng-dev \
+          libfluidsynth-dev \
+          zlib1g-dev \
+          zip
+      env:
+        DEBIAN_FRONTEND: noninteractive
+
+    - name: Read AP version
+      id: version
+      run: |
+        # Read version from the bat script
+        AP_VERSION=$(grep -oP 'set AP_VERSION=\K[0-9.]+' "stable release/stable_build_and_package.bat" | head -1)
+        if [ -z "$AP_VERSION" ]; then
+          AP_VERSION="1.2.0"
+        fi
+        echo "ap_version=$AP_VERSION" >> "$GITHUB_OUTPUT"
+        echo "AP Version: v$AP_VERSION"
+
+    - name: Patch for stable release
+      run: |
+        echo "=== Patching OpenTTD-Exp → OpenTTD ==="
+        # Source files
+        sed -i 's/OpenTTD-Exp/OpenTTD/g' src/archipelago.h
+        sed -i 's/OpenTTD-Exp/OpenTTD/g' src/archipelago_gui.cpp
+        sed -i 's/OpenTTD-Exp/OpenTTD/g' src/archipelago_manager.cpp
+
+        # Create git tag for CMake version detection
+        git tag -d "v${{ steps.version.outputs.ap_version }}" 2>/dev/null || true
+        git tag "v${{ steps.version.outputs.ap_version }}"
+        echo "OK: Patched source + created tag v${{ steps.version.outputs.ap_version }}"
+
+    - name: Build
+      run: |
+        mkdir build && cd build
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX="$PWD/install" \
+          -DOPTION_USE_ASSERTS=OFF
+        cmake --build . -j$(nproc)
+        cmake --install .
+
+    - name: Package APWorld
+      run: |
+        echo "=== Building openttd.apworld ==="
+        mkdir -p staging/apworld
+        cp -r apworld/openttd_exp staging/apworld/openttd
+
+        # Patch game name
+        sed -i 's/OpenTTD-Exp/OpenTTD/g' staging/apworld/openttd/__init__.py
+        sed -i 's/OpenTTD-Exp/OpenTTD/g' staging/apworld/openttd/archipelago.json
+
+        # Create .apworld (ZIP)
+        cd staging/apworld
+        zip -r openttd.apworld openttd/
+        echo "OK: openttd.apworld created ($(du -h openttd.apworld | cut -f1))"
+
+    - name: Assemble release package
+      run: |
+        AP_VERSION="${{ steps.version.outputs.ap_version }}"
+        RELEASE_NAME="openttd-archipelago-v${AP_VERSION}-linux-x64"
+        OUT="staging/${RELEASE_NAME}"
+        mkdir -p "$OUT"
+
+        # Binary
+        INSTALL_DIR="build/install"
+        if [ -f "$INSTALL_DIR/bin/openttd" ]; then
+          cp "$INSTALL_DIR/bin/openttd" "$OUT/openttd"
+        elif [ -f "$INSTALL_DIR/openttd" ]; then
+          cp "$INSTALL_DIR/openttd" "$OUT/openttd"
+        elif [ -f "build/openttd" ]; then
+          cp "build/openttd" "$OUT/openttd"
+        fi
+        chmod +x "$OUT/openttd"
+
+        # Baseset from installed location
+        for dir in "$INSTALL_DIR/share/games/openttd/baseset" "$INSTALL_DIR/baseset"; do
+          if [ -d "$dir" ]; then
+            cp -r "$dir" "$OUT/baseset"
+            break
+          fi
+        done
+        # Fallback: copy from source
+        if [ ! -d "$OUT/baseset" ]; then
+          mkdir -p "$OUT/baseset"
+        fi
+
+        # Copy bundled baseset assets
+        for f in baseset/opengfx-8.0.tar baseset/opensfx-1.0.3.tar baseset/openmsx-0.4.2.tar baseset/archipelago_icons.grf; do
+          if [ -f "$f" ]; then
+            cp "$f" "$OUT/baseset/"
+          fi
+        done
+
+        # Extract tar basesets into baseset/
+        for tarfile in "$OUT/baseset/"*.tar; do
+          if [ -f "$tarfile" ]; then
+            tar -xf "$tarfile" -C "$OUT/baseset/" 2>/dev/null || true
+          fi
+        done
+
+        # Lang
+        for dir in "$INSTALL_DIR/share/games/openttd/lang" "$INSTALL_DIR/lang" "build/lang"; do
+          if [ -d "$dir" ]; then
+            cp -r "$dir" "$OUT/lang"
+            break
+          fi
+        done
+
+        # AI, Game, Scripts, Docs
+        for subdir in ai game scripts; do
+          for dir in "$INSTALL_DIR/share/games/openttd/$subdir" "$INSTALL_DIR/$subdir"; do
+            if [ -d "$dir" ]; then
+              cp -r "$dir" "$OUT/$subdir"
+              break
+            fi
+          done
+          # Fallback from source
+          if [ ! -d "$OUT/$subdir" ] && [ -d "$subdir" ]; then
+            cp -r "$subdir" "$OUT/$subdir"
+          fi
+        done
+
+        # Bridge (Python AP server)
+        if [ -d "bridge" ]; then
+          cp -r bridge "$OUT/bridge"
+        fi
+
+        # APWorld
+        mkdir -p "$OUT/apworld"
+        cp staging/apworld/openttd.apworld "$OUT/apworld/"
+        cp -r staging/apworld/openttd "$OUT/apworld/openttd"
+
+        # MoneyQuests GameScript
+        if [ -d "gamescript/MoneyQuests" ]; then
+          mkdir -p "$OUT/game"
+          cp -r gamescript/MoneyQuests "$OUT/game/MoneyQuests"
+        fi
+
+        # NewGRF
+        mkdir -p "$OUT/newgrf"
+        if [ -d "newgrf" ]; then
+          cp -r newgrf/* "$OUT/newgrf/" 2>/dev/null || true
+        fi
+        if [ -f "media/baseset/archipelago_ruins.grf" ]; then
+          cp media/baseset/archipelago_ruins.grf "$OUT/newgrf/"
+        fi
+
+        # Data template (portable config, AI libraries, etc.)
+        if [ -d "dist/data_template" ]; then
+          cp -r dist/data_template "$OUT/data"
+        fi
+
+        # SimpleAI
+        SIMPLEAI_TAR="dist/data_template/content_download/ai/534d504c-SimpleAI-14.tar"
+        if [ -f "$SIMPLEAI_TAR" ]; then
+          mkdir -p "$OUT/data/ai"
+          tar -xf "$SIMPLEAI_TAR" -C "$OUT/data/ai" 2>/dev/null || true
+        fi
+
+        # Docs
+        for f in README.md CONTRIBUTING.md COPYING.md CREDITS.md CHANGELOG.md KNOWN_BUGS.md INSTALL.md; do
+          if [ -f "$f" ]; then
+            cp "$f" "$OUT/"
+          fi
+        done
+
+        # Launch script for Linux
+        cat > "$OUT/start.sh" << 'LAUNCHER'
+        #!/bin/bash
+        # OpenTTD Archipelago - Linux Launcher
+        SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+        cd "$SCRIPT_DIR"
+        export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+        ./openttd -d "$SCRIPT_DIR/data" "$@"
+        LAUNCHER
+        chmod +x "$OUT/start.sh"
+
+        # Create tar.gz
+        cd staging
+        tar czf "${RELEASE_NAME}.tar.gz" "${RELEASE_NAME}/"
+        echo "OK: ${RELEASE_NAME}.tar.gz created ($(du -h ${RELEASE_NAME}.tar.gz | cut -f1))"
+
+        # Verify
+        echo ""
+        echo "=== Verification ==="
+        [ -f "$OUT/openttd" ] && echo "[OK] openttd binary" || echo "[MISSING] openttd binary"
+        [ -d "$OUT/baseset" ] && echo "[OK] baseset/" || echo "[MISSING] baseset/"
+        [ -d "$OUT/lang" ] && echo "[OK] lang/" || echo "[MISSING] lang/"
+        [ -f "$OUT/apworld/openttd.apworld" ] && echo "[OK] apworld/openttd.apworld" || echo "[MISSING] apworld/openttd.apworld"
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-release
+        path: staging/openttd-archipelago-v${{ steps.version.outputs.ap_version }}-linux-x64.tar.gz
+        retention-days: 30
