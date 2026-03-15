@@ -560,7 +560,8 @@ class OpenTTDLocationData(NamedTuple):
 
 def _build_location_table(mission_count: int = 100, shop_item_count: int = 100,
                           ruin_count: int = 0,
-                          demigod_count: int = 0) -> Dict[str, OpenTTDLocationData]:
+                          demigod_count: int = 0,
+                          shop_progression_limit: int = 50) -> Dict[str, OpenTTDLocationData]:
     """Build location table with FIXED per-difficulty ID blocks.
 
     Each difficulty has a dedicated 2000-slot ID block so that location IDs
@@ -599,15 +600,20 @@ def _build_location_table(mission_count: int = 100, shop_item_count: int = 100,
             name = f"Mission_{difficulty.capitalize()}_{i:03d}"
             table[name] = OpenTTDLocationData(base + (i - 1), f"mission_{difficulty}", pt)
 
-    # Shop priority: first 50 slots = PRIORITY (cheap, early access) so
-    # important foreign items land where players actually reach them.
-    # Slots 51+ = EXCLUDED — only filler / own useful items go here.
-    SHOP_PRIORITY_CUTOFF = 50
+    # Shop priority: slots up to shop_progression_limit = PRIORITY so the
+    # fill algorithm places other players' progression items in cheap,
+    # reachable shop slots.  Slots beyond the limit = EXCLUDED (only
+    # filler / own useful items).  A limit of 0 disables the split
+    # entirely — all shop slots become DEFAULT.
     for i in range(1, shop_item_count + 1):
         name = f"Shop_Purchase_{i:04d}"
         assert i <= 2000, f"Too many shop slots ({i}); block only holds 2000"
-        pt = (LocationProgressType.PRIORITY if i <= SHOP_PRIORITY_CUTOFF
-              else LocationProgressType.EXCLUDED)
+        if shop_progression_limit <= 0:
+            pt = LocationProgressType.DEFAULT
+        elif i <= shop_progression_limit:
+            pt = LocationProgressType.PRIORITY
+        else:
+            pt = LocationProgressType.EXCLUDED
         table[name] = OpenTTDLocationData(SHOP_ID_BASE + (i - 1), "shop", pt)
 
     for i in range(1, ruin_count + 1):
@@ -630,5 +636,7 @@ LOCATION_TABLE: Dict[str, OpenTTDLocationData] = _build_location_table(demigod_c
 
 def get_location_table(mission_count: int, shop_item_count: int,
                        ruin_count: int = 0,
-                       demigod_count: int = 0) -> Dict[str, OpenTTDLocationData]:
-    return _build_location_table(mission_count, shop_item_count, ruin_count, demigod_count)
+                       demigod_count: int = 0,
+                       shop_progression_limit: int = 50) -> Dict[str, OpenTTDLocationData]:
+    return _build_location_table(mission_count, shop_item_count, ruin_count, demigod_count,
+                                 shop_progression_limit)

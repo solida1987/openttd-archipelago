@@ -185,6 +185,24 @@ class ShopPriceTier(Choice):
 
 
 
+class ShopProgressionLimit(Range):
+    """Controls how far down the shop list progression items (yours and other
+    players') are allowed to be placed.  Shop slots ABOVE this number will
+    only contain filler or useful items — never progression.
+
+    Example: setting 50 means slots 1-50 can hold progression items, but
+    slots 51+ are guaranteed to only have non-progression items.
+
+    Lower values concentrate important items in the cheapest shop slots.
+    Higher values spread them out further (useful if you want a longer
+    shopping experience).  Set to 0 to disable the limit entirely
+    (all shop slots can hold progression items)."""
+    display_name = "Shop Progression Limit"
+    range_start = 0
+    range_end   = 500
+    default     = 50
+
+
 class StartingCashBonus(Choice):
     """Extra cash given to your company at the start of a session,
     on top of whatever loan you take. Helps new players build their
@@ -1211,6 +1229,7 @@ class OpenTTDOptions(PerGameCommonOptions):
     # Shop & Items
     utility_count:                   UtilityCount
     shop_price_tier:                 ShopPriceTier
+    shop_progression_limit:          ShopProgressionLimit
     starting_cash_bonus:             StartingCashBonus
     # Item Pool
     enable_wagon_unlocks:            EnableWagonUnlocks

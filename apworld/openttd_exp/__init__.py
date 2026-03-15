@@ -130,7 +130,8 @@ class OpenTTDWorld(World):
 
     def _get_location_table(self):
         mc, shop, ruin, dg = self._compute_pool_size()
-        return get_location_table(mc, shop, ruin, dg)
+        spl = self.options.shop_progression_limit.value
+        return get_location_table(mc, shop, ruin, dg, shop_progression_limit=spl)
 
     def _compute_pool_size(self) -> tuple:
         """Dynamically compute (mission_count, shop_item_count, ruin_count, demigod_count).
