@@ -49,6 +49,41 @@ jobs:
         echo "ap_version=$AP_VERSION" >> "$GITHUB_OUTPUT"
         echo "AP Version: v$AP_VERSION"
 
+    - name: Download baseset assets
+      run: |
+        echo "=== Downloading OpenGFX, OpenSFX, OpenMSX ==="
+        cd media/baseset
+
+        # OpenGFX 8.0
+        curl -sL https://cdn.openttd.org/opengfx-releases/8.0/opengfx-8.0-all.zip -o opengfx.zip
+        unzip -o opengfx.zip "opengfx-8.0.tar" 2>/dev/null || unzip -oj opengfx.zip -d . 2>/dev/null
+        if [ ! -f opengfx-8.0.tar ]; then
+          # Some zips have it nested
+          find . -name "opengfx-8.0.tar" -exec mv {} . \; 2>/dev/null
+        fi
+        rm -f opengfx.zip
+        echo "[OK] opengfx-8.0.tar ($(du -h opengfx-8.0.tar | cut -f1))"
+
+        # OpenSFX 1.0.3
+        curl -sL https://cdn.openttd.org/opensfx-releases/1.0.3/opensfx-1.0.3-all.zip -o opensfx.zip
+        unzip -o opensfx.zip "opensfx-1.0.3.tar" 2>/dev/null || unzip -oj opensfx.zip -d . 2>/dev/null
+        if [ ! -f opensfx-1.0.3.tar ]; then
+          find . -name "opensfx-1.0.3.tar" -exec mv {} . \; 2>/dev/null
+        fi
+        rm -f opensfx.zip
+        echo "[OK] opensfx-1.0.3.tar ($(du -h opensfx-1.0.3.tar | cut -f1))"
+
+        # OpenMSX 0.4.2
+        curl -sL https://cdn.openttd.org/openmsx-releases/0.4.2/openmsx-0.4.2-all.zip -o openmsx.zip
+        unzip -o openmsx.zip "openmsx-0.4.2.tar" 2>/dev/null || unzip -oj openmsx.zip -d . 2>/dev/null
+        if [ ! -f openmsx-0.4.2.tar ]; then
+          find . -name "openmsx-0.4.2.tar" -exec mv {} . \; 2>/dev/null
+        fi
+        rm -f openmsx.zip
+        echo "[OK] openmsx-0.4.2.tar ($(du -h openmsx-0.4.2.tar | cut -f1))"
+
+        ls -lh *.tar
+
     - name: Patch for stable release
       run: |
         echo "=== Patching OpenTTD-Exp → OpenTTD ==="
