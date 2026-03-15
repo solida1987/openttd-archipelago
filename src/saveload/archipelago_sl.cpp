@@ -176,8 +176,8 @@ void         AP_SetLockedTrackDirs(uint8_t railtype, uint8_t mask);
 // back-compat shims (deprecated)
 uint8_t      AP_GetLockedRailDirs();
 void         AP_SetLockedRailDirs(uint8_t mask);
-void         AP_GetColbyState(int *step, int64_t *delivered, int *target_town, bool *escaped, int *escape_ticks, bool *done, bool *popup_shown);
-void         AP_SetColbyState(int step, int64_t delivered, int target_town, bool escaped, int escape_ticks, bool done, bool popup_shown);
+void         AP_GetColbyState(int *step, int64_t *delivered, int *target_town, bool *escaped, int *escape_ticks, bool *done, bool *popup_shown, uint32_t *stash_tile);
+void         AP_SetColbyState(int step, int64_t delivered, int target_town, bool escaped, int escape_ticks, bool done, bool popup_shown, uint32_t stash_tile);
 bool         AP_GetTownsRenamed();
 void         AP_SetTownsRenamed(bool v);
 uint8_t      AP_GetLockedRoadDirs();
@@ -276,7 +276,8 @@ struct APSTChunkHandler : ChunkHandler {
         /* Colby Event */
         int   co_step = 0; int64_t co_del = 0; int co_town = (int)UINT16_MAX;
         bool  co_esc = false; int co_eticks = 0; bool co_done = false; bool co_pop = false;
-        AP_GetColbyState(&co_step, &co_del, &co_town, &co_esc, &co_eticks, &co_done, &co_pop);
+        uint32_t co_stash = UINT32_MAX;
+        AP_GetColbyState(&co_step, &co_del, &co_town, &co_esc, &co_eticks, &co_done, &co_pop, &co_stash);
         KVSet(_ap_sl_blob, "co_step",   IStr(co_step));
         KVSet(_ap_sl_blob, "co_del",    IStr(co_del));
         KVSet(_ap_sl_blob, "co_town",   IStr(co_town));
@@ -284,6 +285,7 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "co_eticks", IStr(co_eticks));
         KVSet(_ap_sl_blob, "co_done",   IStr(co_done));
         KVSet(_ap_sl_blob, "co_pop",    IStr(co_pop));
+        KVSet(_ap_sl_blob, "co_stash",  IStr((int64_t)co_stash));
 
         KVSet(_ap_sl_blob, "towns_renamed", IStr(AP_GetTownsRenamed()));
 
@@ -427,7 +429,8 @@ struct APSTChunkHandler : ChunkHandler {
                 KVGet(_ap_sl_blob, "co_esc",  "0") == "1",
                 getint("co_eticks"),
                 KVGet(_ap_sl_blob, "co_done", "0") == "1",
-                KVGet(_ap_sl_blob, "co_pop",  "0") == "1"
+                KVGet(_ap_sl_blob, "co_pop",  "0") == "1",
+                (uint32_t)ParseI64(KVGet(_ap_sl_blob, "co_stash", "4294967295"))
             );
 
             AP_SetTownsRenamed(KVGet(_ap_sl_blob, "towns_renamed", "0") == "1");

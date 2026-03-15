@@ -50,10 +50,13 @@
 #include "genworld.h"
 #include "settings_type.h"
 #include "newgrf_airport.h"
+#include "object_base.h"
+#include "object_map.h"
 #include "debug.h"
 #include "strings_func.h"
 #include "news_type.h"
 #include "news_func.h"
+#include "statusbar_gui.h"
 #include "string_func.h"
 #include "table/strings.h"
 #include "timer/timer_game_tick.h"
@@ -897,9 +900,17 @@ static void AP_RuinMonthlyTick();
  */
 bool AP_GetRuinCargoAcceptance(uint32_t tile_index, CargoArray &acceptance, CargoTypes &always_accepted)
 {
+	/* Resolve to north tile for multi-tile objects */
+	TileIndex ti{tile_index};
+	uint32_t north_tile = tile_index;
+	if (IsValidTile(ti) && IsTileType(ti, MP_OBJECT)) {
+		Object *obj = Object::GetByTile(ti);
+		if (obj != nullptr) north_tile = obj->location.tile.base();
+	}
+
 	for (const APRuin &ruin : _ap_active_ruins) {
 		if (ruin.completed) continue;
-		if (ruin.tile != tile_index) continue;
+		if (ruin.tile != north_tile) continue;
 
 		/* Found an active ruin on this tile — add its cargo reqs as acceptance */
 		for (const APRuinCargoReq &req : ruin.cargo_reqs) {
@@ -913,20 +924,40 @@ bool AP_GetRuinCargoAcceptance(uint32_t tile_index, CargoArray &acceptance, Carg
 	return false;
 }
 
-/** Check if a tile has an active (non-completed) ruin. */
+/** Check if a tile has an active (non-completed) ruin.
+ *  For 3x3 ruins, any of the 9 tiles returns true. We resolve
+ *  the north (top-left) tile via Object::GetByTile and match
+ *  against ruin.tile which stores the north tile. */
 bool AP_IsRuinTile(uint32_t tile_index)
 {
+	TileIndex ti{tile_index};
+	/* Resolve to north tile if this is part of a multi-tile object */
+	uint32_t north_tile = tile_index;
+	if (IsValidTile(ti) && IsTileType(ti, MP_OBJECT)) {
+		Object *obj = Object::GetByTile(ti);
+		if (obj != nullptr) north_tile = obj->location.tile.base();
+	}
+
 	for (const APRuin &ruin : _ap_active_ruins) {
-		if (ruin.tile == tile_index && !ruin.completed) return true;
+		if (ruin.tile == north_tile && !ruin.completed) return true;
 	}
 	return false;
 }
 
-/** Fill an APRuinView snapshot for the ruin at the given tile. */
+/** Fill an APRuinView snapshot for the ruin at the given tile.
+ *  Resolves multi-tile objects to their north tile before matching. */
 bool AP_GetRuinViewByTile(uint32_t tile_index, APRuinView &out)
 {
+	/* Resolve to north tile for multi-tile objects */
+	TileIndex ti{tile_index};
+	uint32_t north_tile = tile_index;
+	if (IsValidTile(ti) && IsTileType(ti, MP_OBJECT)) {
+		Object *obj = Object::GetByTile(ti);
+		if (obj != nullptr) north_tile = obj->location.tile.base();
+	}
+
 	for (const APRuin &ruin : _ap_active_ruins) {
-		if (ruin.tile != tile_index) continue;
+		if (ruin.tile != north_tile) continue;
 		out.id            = ruin.id;
 		out.location_name = ruin.location_name;
 		out.tile          = ruin.tile;
@@ -1553,6 +1584,7 @@ static constexpr int64_t COLBY_STEP_AMOUNT  = 200;
 static constexpr int     COLBY_ESCAPE_TICKS = 6000;
 static SignID      _ap_colby_source_sign    = SignID::Invalid();
 static TileIndex   _ap_colby_source_tile    = INVALID_TILE;
+static TileIndex   _ap_colby_stash_tile     = INVALID_TILE;  ///< Tile of physical stash object on map
 
 /* =========================================================================
  * Colby Event — forward declarations for callbacks
@@ -1667,95 +1699,167 @@ static CargoType AP_GetColbyPackageCargo()
 	return _ap_colby_cargo_type;
 }
 
-/** Remove the source sign from the previous step. */
-static void AP_ColbyCleanupSource()
+/** Remove the source sign and stash object from the previous step. */
+static void AP_ColbyRemoveStash()
 {
+	/* Remove sign */
 	if (Sign *si = Sign::GetIfValid(_ap_colby_source_sign); si != nullptr) {
 		delete si;
 	}
 	_ap_colby_source_sign = SignID::Invalid();
 	_ap_colby_source_tile = INVALID_TILE;
+
+	/* Remove physical stash object from the map */
+	if (_ap_colby_stash_tile != INVALID_TILE) {
+		if (IsValidTile(_ap_colby_stash_tile) && IsTileType(_ap_colby_stash_tile, MP_OBJECT)) {
+			CompanyID old_company = _current_company;
+			_current_company = _local_company;
+			Command<CMD_LANDSCAPE_CLEAR>::Do(
+				DoCommandFlags{DoCommandFlag::Execute}, _ap_colby_stash_tile);
+			_current_company = old_company;
+		}
+		_ap_colby_stash_tile = INVALID_TILE;
+	}
+}
+
+/** Find the closest player-owned station within radius tiles of a given tile. */
+static Station *AP_ColbyFindNearbyStation(TileIndex centre, int radius)
+{
+	if (centre == INVALID_TILE) return nullptr;
+	Station *best = nullptr;
+	uint best_dist = UINT_MAX;
+	for (Station *st : Station::Iterate()) {
+		if (st->owner != _local_company) continue;
+		uint d = DistanceManhattan(centre, st->xy);
+		if (d <= (uint)radius && d < best_dist) {
+			best = st;
+			best_dist = d;
+		}
+	}
+	return best;
+}
+
+/** Force destination stations near Colby's target town to accept the cargo. */
+static void AP_ColbyForceTargetAcceptance()
+{
+	if (_ap_colby_target_town == (TownID)UINT16_MAX) return;
+	CargoType ct = AP_GetColbyPackageCargo();
+	if (ct == INVALID_CARGO) return;
+	const Town *target_t = Town::GetIfValid(_ap_colby_target_town);
+	if (target_t == nullptr) return;
+	for (Station *dest_st : Station::Iterate()) {
+		if (dest_st->town == nullptr) continue;
+		if (dest_st->town->index != _ap_colby_target_town) continue;
+		dest_st->always_accepted |= (1ULL << ct);
+		dest_st->goods[ct].status.Set(GoodsEntry::State::Rating);
+	}
 }
 
 /**
- * Spawn the cargo source for the current step:
- *  - Find a station 200-400 manhattan tiles from Colby's town.
- *  - Inject COLBY_STEP_AMOUNT * 2 packages directly into that station.
- *  - Place a sign "★ Colby's Stash ★" on the station tile.
+ * Spawn a physical stash object on the map for the current step.
+ * The object is placed at a random location 100-400 tiles from the target town.
+ * A sign is placed at the object so the player can find it.
+ * The player must build a station nearby — cargo is injected in AP_ColbyTick().
  */
-static void AP_ColbySpawnSource()
+static void AP_ColbySpawnStash()
 {
 	if (_ap_colby_target_town == (TownID)UINT16_MAX) return;
 	const Town *town = Town::GetIfValid(_ap_colby_target_town);
 	if (town == nullptr) return;
 
-	CargoType ct = AP_GetColbyPackageCargo();
-	if (ct == INVALID_CARGO) return;
+	AP_ResolveRuinTypes();
+
+	/* Pick a ruin object type for visual appearance */
+	int variant = InteractiveRandom() % AP_NUM_RUIN_TYPES;
+	ObjectType ot = _ap_ruin_types[variant];
+	if (ot == INVALID_OBJECT_TYPE) {
+		for (int i = 0; i < AP_NUM_RUIN_TYPES; i++) {
+			if (_ap_ruin_types[i] != INVALID_OBJECT_TYPE) { ot = _ap_ruin_types[i]; variant = i; break; }
+		}
+		if (ot == INVALID_OBJECT_TYPE) {
+			AP_WARN("[Colby] Cannot spawn stash — no ruin ObjectTypes resolved (GRF missing?)");
+			return;
+		}
+	}
 
 	TileIndex center = town->xy;
 
-	/* Search for a station at an appropriate distance from the target town */
-	Station *best_st = nullptr;
-	uint best_dist = UINT_MAX;
+	/* Try to place the stash object at a suitable distance from the target town */
+	TileIndex placed_tile = INVALID_TILE;
+	for (int attempt = 0; attempt < 5000; attempt++) {
+		TileIndex tile = RandomTile();
+		if (!IsValidTile(tile)) continue;
+		uint x = TileX(tile), y = TileY(tile);
+		if (x < 4 || y < 4 || x >= Map::SizeX() - 4 || y >= Map::SizeY() - 4) continue;
 
-	auto try_range = [&](uint lo, uint hi) {
-		for (Station *st : Station::Iterate()) {
-			if (st->owner != _local_company) continue; /* Fix #16: only use player-owned stations */
-			uint d = DistanceManhattan(center, st->xy);
-			if (d >= lo && d <= hi && d < best_dist) {
-				best_st = st;
-				best_dist = d;
-			}
+		uint d = DistanceManhattan(center, tile);
+		if (d < 100 || d > 400) continue;
+
+		CompanyID old_company = _current_company;
+		_current_company = _local_company;
+		CommandCost res = Command<CMD_BUILD_OBJECT>::Do(
+			DoCommandFlags{DoCommandFlag::Execute}, tile, ot, 0);
+		_current_company = old_company;
+
+		if (res.Succeeded()) {
+			placed_tile = tile;
+			break;
 		}
-	};
+	}
 
-	try_range(200, 400);
-	if (best_st == nullptr) try_range(100, 600);
-	if (best_st == nullptr) try_range(50,  1000);
-
-	if (best_st == nullptr) {
-		AP_ShowNews(fmt::format("[AP] Colby Event: No station found to place packages for step {}/5. Build more stations!", _ap_colby_step));
+	if (placed_tile == INVALID_TILE) {
+		AP_WARN(fmt::format("[Colby] Failed to place stash object after 5000 attempts (step {})", _ap_colby_step));
+		AP_ShowNews(fmt::format("[AP] Colby Event: Could not find a location for the stash. Retrying next tick..."));
 		return;
 	}
 
-	_ap_colby_source_tile = best_st->xy;
+	_ap_colby_stash_tile  = placed_tile;
+	_ap_colby_source_tile = placed_tile;
 
-	/* Inject packages into the station cargo list */
-	uint16_t amount = (uint16_t)std::min((int64_t)COLBY_STEP_AMOUNT * 2, (int64_t)UINT16_MAX);
-	Source src{best_st->town->index, SourceType::Town}; /* Fix #17: source is a town, not an industry */
-	CargoPacket *cp = new CargoPacket(best_st->index, amount, src);
-	best_st->goods[ct].GetOrCreateData().cargo.Append(cp, StationID::Invalid());
-	best_st->goods[ct].status.Set(GoodsEntry::State::Rating);
-
-	/* Place sign at the source station tile */
+	/* Place sign at the stash location */
 	if (Sign::CanAllocateItem()) {
-		int px = (int)(TileX(_ap_colby_source_tile) * TILE_SIZE + TILE_SIZE / 2);
-		int py = (int)(TileY(_ap_colby_source_tile) * TILE_SIZE + TILE_SIZE / 2);
-		int pz = (int)(TileHeight(_ap_colby_source_tile) * TILE_HEIGHT);
-		Sign *si = new Sign(OWNER_DEITY, px, py, pz, "\xe2\x98\x85 Colby's Stash \xe2\x98\x85");
+		int px = (int)(TileX(placed_tile) * TILE_SIZE + TILE_SIZE / 2);
+		int py = (int)(TileY(placed_tile) * TILE_SIZE + TILE_SIZE / 2);
+		int pz = (int)(TileHeight(placed_tile) * TILE_HEIGHT);
+		std::string label = fmt::format("\xe2\x98\x85 Colby's Stash \xe2\x80\x94 Step {} \xe2\x98\x85", _ap_colby_step);
+		Sign *si = new Sign(OWNER_DEITY, px, py, pz, label);
 		si->UpdateVirtCoord();
 		_ap_colby_source_sign = si->index;
 	}
 
-	AP_ShowNews(fmt::format("[AP] Step {}/5: Load {} packages from station near {} and deliver to {}!",
-		_ap_colby_step, COLBY_STEP_AMOUNT, best_st->GetCachedName(), _ap_colby_target_name));
+	/* Force target town stations to accept the cargo */
+	AP_ColbyForceTargetAcceptance();
 
-	/* Force destination stations near the target town to accept packages.
-	 * Without this, station placement dialog won't show "Accepts: Packages"
-	 * and auto-unload won't work unless player uses "Unload all" order.
-	 * We set always_accepted on every station within 64 tiles of the town. */
-	if (_ap_colby_target_town != (TownID)UINT16_MAX) {
-		const Town *target_t = Town::GetIfValid(_ap_colby_target_town);
-		if (target_t != nullptr) {
-			for (Station *dest_st : Station::Iterate()) {
-				if (dest_st->town == nullptr) continue;
-				if (dest_st->town->index != _ap_colby_target_town) continue;
-				/* Mark this station as always accepting packages */
-				dest_st->always_accepted |= (1ULL << ct);
-				dest_st->goods[ct].status.Set(GoodsEntry::State::Rating);
-			}
-		}
-	}
+	AP_ShowNews(fmt::format("[AP] Step {}/5: Colby's stash has appeared on the map! "
+		"Build a station nearby and deliver {} packages to {}!",
+		_ap_colby_step, COLBY_STEP_AMOUNT, _ap_colby_target_name));
+
+	AP_TRACE(fmt::format("ColbyStash: step={} tile={} target='{}'",
+		_ap_colby_step, placed_tile, _ap_colby_target_name));
+}
+
+/**
+ * Inject cargo into the nearest player station if one exists near the stash.
+ * Called every tick (~5s) from AP_ColbyTick() while a step is active.
+ */
+static void AP_ColbyInjectCargo()
+{
+	if (_ap_colby_stash_tile == INVALID_TILE) return;
+	CargoType ct = AP_GetColbyPackageCargo();
+	if (ct == INVALID_CARGO) return;
+
+	Station *st = AP_ColbyFindNearbyStation(_ap_colby_stash_tile, 10);
+	if (st == nullptr) return; /* No station nearby yet — player needs to build one */
+
+	/* Only top up if the station has fewer than COLBY_STEP_AMOUNT packages waiting */
+	auto &cargo_data = st->goods[ct].GetOrCreateData();
+	if (cargo_data.cargo.AvailableCount() >= (uint)COLBY_STEP_AMOUNT) return;
+
+	uint16_t amount = (uint16_t)std::min((int64_t)COLBY_STEP_AMOUNT, (int64_t)UINT16_MAX);
+	Source src{st->town->index, SourceType::Town};
+	CargoPacket *cp = new CargoPacket(st->index, amount, src);
+	cargo_data.cargo.Append(cp, StationID::Invalid());
+	st->goods[ct].status.Set(GoodsEntry::State::Rating);
 }
 
 /** Announce the current active step via news. */
@@ -1805,10 +1909,31 @@ static void AP_ColbyInit()
 			}
 			const Town *t = Town::GetIfValid(_ap_colby_target_town);
 			if (t != nullptr) _ap_colby_target_name = AP_TownName(t);
-			/* Re-spawn the source sign so the player can find the pick-up point after loading */
-			AP_ColbySpawnSource();
-			AP_OK(fmt::format("[Colby] Resumed from save: step={} delivered={} target={}",
-				_ap_colby_step, _ap_colby_step_delivered, _ap_colby_target_name));
+
+			/* Re-place sign if stash tile was saved; spawn new stash if it wasn't */
+			if (_ap_colby_stash_tile != INVALID_TILE &&
+			    IsValidTile(_ap_colby_stash_tile) &&
+			    IsTileType(_ap_colby_stash_tile, MP_OBJECT)) {
+				/* Stash object survived save/load — just re-create the sign */
+				_ap_colby_source_tile = _ap_colby_stash_tile;
+				if (Sign::CanAllocateItem()) {
+					int px = (int)(TileX(_ap_colby_stash_tile) * TILE_SIZE + TILE_SIZE / 2);
+					int py = (int)(TileY(_ap_colby_stash_tile) * TILE_SIZE + TILE_SIZE / 2);
+					int pz = (int)(TileHeight(_ap_colby_stash_tile) * TILE_HEIGHT);
+					std::string label = fmt::format("\xe2\x98\x85 Colby's Stash \xe2\x80\x94 Step {} \xe2\x98\x85", _ap_colby_step);
+					Sign *si = new Sign(OWNER_DEITY, px, py, pz, label);
+					si->UpdateVirtCoord();
+					_ap_colby_source_sign = si->index;
+				}
+				AP_ColbyForceTargetAcceptance();
+			} else {
+				/* Stash tile not saved or object gone — spawn fresh */
+				AP_ColbySpawnStash();
+			}
+
+			AP_OK(fmt::format("[Colby] Resumed from save: step={} delivered={} target={} stash={}",
+				_ap_colby_step, _ap_colby_step_delivered, _ap_colby_target_name,
+				(_ap_colby_stash_tile != INVALID_TILE) ? (int)_ap_colby_stash_tile.base() : -1));
 		}
 		return;
 	}
@@ -1859,7 +1984,7 @@ static void AP_ColbyTick()
 		/* Time to start! */
 		_ap_colby_step = 1;
 		AP_ColbyBeginStepMonitor();
-		AP_ColbySpawnSource();
+		AP_ColbySpawnStash();
 		AP_ShowNews(fmt::format("[AP] A mysterious stranger named Colby has arrived in {}. "
 			"He claims to need urgent deliveries...", _ap_colby_target_name));
 		AP_ColbyAnnounceStep();
@@ -1873,6 +1998,17 @@ static void AP_ColbyTick()
 		if (cid >= MAX_COMPANIES || ct == INVALID_CARGO) return;
 		if (!Town::IsValidID(_ap_colby_target_town)) return;
 
+		/* If stash wasn't placed yet (failed on prior tick), retry */
+		if (_ap_colby_stash_tile == INVALID_TILE) {
+			AP_ColbySpawnStash();
+		}
+
+		/* Inject cargo into nearby station so player can pick it up */
+		AP_ColbyInjectCargo();
+
+		/* Also refresh target town acceptance (handles newly-built stations) */
+		AP_ColbyForceTargetAcceptance();
+
 		CargoMonitorID monitor = EncodeCargoTownMonitor(cid, ct, _ap_colby_target_town);
 		int32_t delta = GetDeliveryAmount(monitor, true); /* consume increment, keep monitoring */
 		if (delta > 0) _ap_colby_step_delivered += (int64_t)delta;
@@ -1883,7 +2019,7 @@ static void AP_ColbyTick()
 			_ap_colby_step++;
 			AP_TRACE(fmt::format("ColbyStepComplete: step {}/5 -> {} town='{}'", prev_step, _ap_colby_step, _ap_colby_target_name));
 
-			AP_ColbyCleanupSource(); /* remove sign from previous step */
+			AP_ColbyRemoveStash(); /* remove stash object + sign from previous step */
 
 			if (_ap_colby_step > 5) {
 				/* All 5 steps complete — show final popup */
@@ -1893,7 +2029,7 @@ static void AP_ColbyTick()
 			} else {
 				AP_ShowNews(fmt::format("[AP] Step {}/5 complete! Colby nods approvingly.", prev_step));
 				AP_ColbyBeginStepMonitor(); /* reset monitor baseline for new step */
-				AP_ColbySpawnSource();      /* place new source sign and inject packages */
+				AP_ColbySpawnStash();       /* place new stash object for next step */
 				AP_ColbyAnnounceStep();
 			}
 		}
@@ -1903,7 +2039,8 @@ static void AP_ColbyTick()
 
 /** Accessor: write Colby state to output variables (for saveload). */
 void AP_GetColbyState(int *step, int64_t *delivered, int *target_town,
-                      bool *escaped, int *escape_ticks, bool *done, bool *popup_shown)
+                      bool *escaped, int *escape_ticks, bool *done, bool *popup_shown,
+                      uint32_t *stash_tile)
 {
 	*step         = _ap_colby_step;
 	*delivered    = _ap_colby_step_delivered;
@@ -1912,11 +2049,13 @@ void AP_GetColbyState(int *step, int64_t *delivered, int *target_town,
 	*escape_ticks = _ap_colby_escape_ticks;
 	*done         = _ap_colby_done;
 	*popup_shown  = _ap_colby_popup_shown;
+	*stash_tile   = (_ap_colby_stash_tile != INVALID_TILE) ? (uint32_t)_ap_colby_stash_tile.base() : UINT32_MAX;
 }
 
 /** Accessor: restore Colby state from saveload. */
 void AP_SetColbyState(int step, int64_t delivered, int target_town,
-                      bool escaped, int escape_ticks, bool done, bool popup_shown)
+                      bool escaped, int escape_ticks, bool done, bool popup_shown,
+                      uint32_t stash_tile)
 {
 	_ap_colby_step           = step;
 	_ap_colby_step_delivered = delivered;
@@ -1925,6 +2064,7 @@ void AP_SetColbyState(int step, int64_t delivered, int target_town,
 	_ap_colby_escape_ticks   = escape_ticks;
 	_ap_colby_done           = done;
 	_ap_colby_popup_shown    = popup_shown;
+	_ap_colby_stash_tile     = (stash_tile != UINT32_MAX) ? (TileIndex)stash_tile : INVALID_TILE;
 }
 
 
@@ -1938,12 +2078,8 @@ static void AP_ShowNews(const std::string &text, bool is_self)
 	bool show = (_game_mode == GM_NORMAL) &&
 	            ((_ap_news_filter >= 2) || (_ap_news_filter == 1 && is_self));
 	if (show) {
-		AddNewsItem(
-			GetEncodedString(STR_ARCHIPELAGO_NEWS, text),
-			NewsType::General,
-			NewsStyle::Small,
-			{}
-		);
+		/* Push to the integrated AP status bar message log instead of popup news */
+		AP_PushStatusMessage(text);
 	}
 }
 
@@ -2475,136 +2611,8 @@ void    AP_SetDemigodMoneyGiven(int64_t v) { _ap_demigod_money_given = v; }
 int     AP_GetDemigodLastTransferYear() { return _ap_demigod_last_transfer_year; }
 void    AP_SetDemigodLastTransferYear(int v) { _ap_demigod_last_transfer_year = v; }
 
-/* =========================================================================
- * DAY / NIGHT CYCLE
- *
- * Swaps between OpenGFX (day) and NightGFX (night) every 6 game months.
- * Jan–Jun = day, Jul–Dec = night.  Requires NightGFX to be installed.
- * ========================================================================= */
-
-static bool _ap_daynight_is_night  = false; ///< true when NightGFX is active
-static bool _ap_daynight_disabled  = false; ///< user toggle: true = forced daytime
-static const char *kDayBaseSet   = "OpenGFX";
-static const char *kNightBaseSet = "NightGFX";
-
-/** Saved engine state — preserved across GfxLoadSprites() + StartupEngines()
- *  so that mid-game baseset swaps don't destroy reliability curves. */
-struct SavedEngineState {
-	int32_t  age;
-	uint16_t reliability;
-	uint16_t reliability_spd_dec;
-	uint16_t reliability_start;
-	uint16_t reliability_max;
-	uint16_t reliability_final;
-	uint16_t duration_phase_1;
-	uint16_t duration_phase_2;
-	uint16_t duration_phase_3;
-	TimerGameCalendar::Date intro_date;
-	EngineFlags flags;
-	CompanyMask company_avail;
-	CompanyMask company_hidden;
-};
-static std::map<EngineID, SavedEngineState> _saved_engine_states;
-
-/** Save all engine reliability/availability data before a sprite reload. */
-static void AP_SaveEngineStates()
-{
-	_saved_engine_states.clear();
-	for (const Engine *e : Engine::Iterate()) {
-		SavedEngineState s;
-		s.age                = e->age;
-		s.reliability        = e->reliability;
-		s.reliability_spd_dec = e->reliability_spd_dec;
-		s.reliability_start  = e->reliability_start;
-		s.reliability_max    = e->reliability_max;
-		s.reliability_final  = e->reliability_final;
-		s.duration_phase_1   = e->duration_phase_1;
-		s.duration_phase_2   = e->duration_phase_2;
-		s.duration_phase_3   = e->duration_phase_3;
-		s.intro_date         = e->intro_date;
-		s.flags              = e->flags;
-		s.company_avail      = e->company_avail;
-		s.company_hidden     = e->company_hidden;
-		_saved_engine_states[e->index] = s;
-	}
-}
-
-/** Restore engine states after GfxLoadSprites() + StartupEngines(). */
-static void AP_RestoreEngineStates()
-{
-	for (Engine *e : Engine::Iterate()) {
-		auto it = _saved_engine_states.find(e->index);
-		if (it == _saved_engine_states.end()) continue;
-		const SavedEngineState &s = it->second;
-		e->age                = s.age;
-		e->reliability        = s.reliability;
-		e->reliability_spd_dec = s.reliability_spd_dec;
-		e->reliability_start  = s.reliability_start;
-		e->reliability_max    = s.reliability_max;
-		e->reliability_final  = s.reliability_final;
-		e->duration_phase_1   = s.duration_phase_1;
-		e->duration_phase_2   = s.duration_phase_2;
-		e->duration_phase_3   = s.duration_phase_3;
-		e->intro_date         = s.intro_date;
-		e->flags              = s.flags;
-		e->company_avail      = s.company_avail;
-		e->company_hidden     = s.company_hidden;
-	}
-	_saved_engine_states.clear();
-}
-
-/** Re-enable all AP-unlocked engines after a sprite reload.
- *  GfxLoadSprites() reloads NewGRFs which resets engine availability.
- *  The periodic lock sweep only *locks* non-unlocked engines but never
- *  re-enables unlocked ones, so we must do it explicitly here. */
-static void AP_ReapplyEngineUnlocks()
-{
-	CompanyID cid = _local_company;
-	if (cid >= MAX_COMPANIES) return;
-	for (EngineID eid : _ap_unlocked_engine_ids) {
-		Engine *e = Engine::GetIfValid(eid);
-		if (e == nullptr) continue;
-		if (!e->company_avail.Test(cid)) {
-			e->company_avail.Set(cid);
-		}
-		e->company_hidden.Reset(cid);
-	}
-	InvalidateWindowClassesData(WC_BUILD_VEHICLE, 0);
-}
-
-/** Switch the base graphics set and reload all sprites mid-game. */
-static void AP_DayNightSwitch(bool to_night)
-{
-	if (_ap_daynight_is_night == to_night) return; /* already correct */
-
-	const char *target = to_night ? kNightBaseSet : kDayBaseSet;
-	bool ok = BaseGraphics::SetSetByName(target);
-	if (!ok) {
-		Debug(misc, 0, "[AP] Day/Night: baseset '{}' not found — skipping switch", target);
-		return;
-	}
-
-	_ap_daynight_is_night = to_night;
-	AP_SaveEngineStates();     /* preserve reliability/age/availability before reload */
-	GfxLoadSprites();
-	StartupEngines();          /* re-initialise engine pool after GRF reload */
-	AP_RestoreEngineStates();  /* restore reliability curves & availability */
-	AP_ReapplyEngineUnlocks(); /* re-enable any AP-unlocked engines */
-	MarkWholeScreenDirty();
-	Debug(misc, 0, "[AP] Day/Night: switched to {} ({})", to_night ? "night" : "day", target);
-}
-
-/** Toggle the day/night cycle on or off.  When disabled, forces daytime. */
-void AP_ToggleDayNight()
-{
-	_ap_daynight_disabled = !_ap_daynight_disabled;
-	if (_ap_daynight_disabled && _ap_daynight_is_night) {
-		/* Currently night — switch back to day immediately */
-		AP_DayNightSwitch(false);
-	}
-	AP_ShowConsole(fmt::format("[AP] Day/Night cycle {}",
-	    _ap_daynight_disabled ? "disabled (forced daytime)" : "enabled"));
-}
+/* Day/Night cycle REMOVED — GfxLoadSprites()+StartupEngines() mid-game
+ * broke economy (cargo payments zeroed, engine states corrupted). */
 
 /** Open the current singleplayer game to multiplayer.
  *  Saves the game, then reloads it as a network server. */
@@ -2651,43 +2659,6 @@ void AP_OpenToMultiplayer()
 	Debug(misc, 0, "[AP] OpenToMultiplayer: saving as '{}' and reloading as server", kMPSave);
 }
 
-bool AP_IsDayNightDisabled() { return _ap_daynight_disabled; }
-
-/** Called every game month from the calendar timer.
- *  Months 0-5 (Jan-Jun) = day, months 6-11 (Jul-Dec) = night. */
-static void AP_DayNightTick()
-{
-	if (_game_mode != GM_NORMAL) return;
-	if (!AP_IsConnected()) return;
-	if (_ap_daynight_disabled) return; /* user toggled off */
-
-	/* Check if NightGFX is available at all */
-	static bool _night_available = true; /* optimistic — set false on first failure */
-	if (!_night_available) return;
-
-	bool want_night = (TimerGameCalendar::month >= 6);
-	if (want_night == _ap_daynight_is_night) return;
-
-	const char *target = want_night ? kNightBaseSet : kDayBaseSet;
-	bool ok = BaseGraphics::SetSetByName(target);
-	if (!ok) {
-		if (want_night) {
-			_night_available = false;
-			Debug(misc, 0, "[AP] Day/Night: NightGFX not found — feature disabled");
-		}
-		return;
-	}
-
-	_ap_daynight_is_night = want_night;
-	AP_SaveEngineStates();     /* preserve reliability/age/availability before reload */
-	GfxLoadSprites();
-	StartupEngines();          /* re-initialise engine pool after GRF reload */
-	AP_RestoreEngineStates();  /* restore reliability curves & availability */
-	AP_ReapplyEngineUnlocks(); /* re-enable any AP-unlocked engines */
-	MarkWholeScreenDirty();
-	Debug(misc, 0, "[AP] Day/Night: switched to {} (month={})",
-	      want_night ? "night" : "day", (int)TimerGameCalendar::month);
-}
 
 /* =========================================================================
  * WRATH OF THE GOD OF WACKENS
@@ -2922,20 +2893,25 @@ static void AP_WrathYearlyEval()
 		AP_WrathPunish(_ap_wrath_anger);
 	}
 
-	/* Reset yearly counters */
-	_ap_wrath_houses_year  = 0;
-	_ap_wrath_roads_year   = 0;
-	_ap_wrath_terrain_year = 0;
-	_ap_wrath_trees_year   = 0;
-
-	Debug(misc, 0, "[AP] Wrath yearly eval: anger {} -> {} (exceeded={})",
-	      old_anger, _ap_wrath_anger, exceeded);
+	/* Log BEFORE resetting counters so we see actual values */
+	Debug(misc, 0, "[AP] Wrath yearly eval: anger {} -> {} (exceeded={} H={}/{} R={}/{} T={}/{} Tr={}/{})",
+	      old_anger, _ap_wrath_anger, exceeded,
+	      _ap_wrath_houses_year, _ap_wrath_limit_houses,
+	      _ap_wrath_roads_year, _ap_wrath_limit_roads,
+	      _ap_wrath_terrain_year, _ap_wrath_limit_terrain,
+	      _ap_wrath_trees_year, _ap_wrath_limit_trees);
 	AP_TRACE(fmt::format("WrathYearlyEval: anger {} -> {} exceeded={} houses={}/{} roads={}/{} terrain={}/{} trees={}/{}",
 		old_anger, _ap_wrath_anger, exceeded,
 		_ap_wrath_houses_year, _ap_wrath_limit_houses,
 		_ap_wrath_roads_year, _ap_wrath_limit_roads,
 		_ap_wrath_terrain_year, _ap_wrath_limit_terrain,
 		_ap_wrath_trees_year, _ap_wrath_limit_trees));
+
+	/* Reset yearly counters AFTER logging */
+	_ap_wrath_houses_year  = 0;
+	_ap_wrath_roads_year   = 0;
+	_ap_wrath_terrain_year = 0;
+	_ap_wrath_trees_year   = 0;
 }
 
 /* ── Init / Saveload ────────────────────────────────────────────── */
@@ -2948,7 +2924,8 @@ static void AP_WrathInit(const APSlotData &sd)
 	_ap_wrath_limit_terrain = sd.wrath_limit_terrain;
 	_ap_wrath_limit_trees   = sd.wrath_limit_trees;
 	if (_ap_wrath_last_eval_year == 0) {
-		_ap_wrath_last_eval_year = (int)TimerGameCalendar::year.base();
+		/* Set to year-1 so the first evaluation runs at the end of the starting year */
+		_ap_wrath_last_eval_year = (int)TimerGameCalendar::year.base() - 1;
 	}
 	if (_ap_wrath_enabled) {
 		Debug(misc, 0, "[AP] Wrath system enabled (limits: H={} R={} T={} Tr={})",
@@ -3053,8 +3030,14 @@ ColbyStatus AP_GetColbyStatus() {
 	s.town_id       = _ap_colby_target_town;
 	s.source_tile   = _ap_colby_source_tile;
 	s.cargo_name    = _ap_colby_cargo_name.empty() ? "packages" : _ap_colby_cargo_name;
-	/* Stash station name from tile (guard against demolished station) */
-	if (_ap_colby_source_tile != INVALID_TILE && IsTileType(_ap_colby_source_tile, MP_STATION)) {
+	/* Source name: if stash is placed, show "Colby's Stash"; else show nearby station */
+	if (_ap_colby_stash_tile != INVALID_TILE) {
+		s.source_name = "Colby's Stash";
+		Station *nearby = AP_ColbyFindNearbyStation(_ap_colby_stash_tile, 10);
+		if (nearby != nullptr) {
+			s.source_name = fmt::format("Colby's Stash (near {})", nearby->GetCachedName());
+		}
+	} else if (_ap_colby_source_tile != INVALID_TILE && IsTileType(_ap_colby_source_tile, MP_STATION)) {
 		StationID sid = GetStationIndex(_ap_colby_source_tile);
 		const Station *st = Station::GetIfValid(sid);
 		if (st != nullptr) s.source_name = std::string(st->GetCachedName());
@@ -5348,7 +5331,31 @@ void AP_SetShopDayCounter(int v) { _ap_shop_day_counter = v; }
 bool AP_GetGoalSent()        { return _ap_goal_sent; }
 void AP_SetGoalSent(bool v)  { _ap_goal_sent = v; }
 int64_t AP_GetItemsReceivedCount()         { return _ap_items_received_count; }
+
+int AP_GetCheckedLocationCount()
+{
+	return (int)_ap_server_checked_locations.size();
+}
+
+int AP_GetTotalLocationCount()
+{
+	if (_ap_client == nullptr) return 0;
+	return _ap_client->GetLocationCount();
+}
 void    AP_SetItemsReceivedCount(int64_t v){ _ap_staging_items_received = v; _ap_staging_stats = true; }
+
+/* ── Day/Night toggle ─────────────────────────────────────── */
+static bool _ap_daynight_disabled = false;
+
+void AP_ToggleDayNight()
+{
+	_ap_daynight_disabled = !_ap_daynight_disabled;
+}
+
+bool AP_IsDayNightDisabled()
+{
+	return _ap_daynight_disabled;
+}
 
 void AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station, int *license_ticks, int *license_type)
 {
@@ -6186,9 +6193,6 @@ static void AP_UpdateNamedMissions()
 static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 	{ TimerGameCalendar::MONTH, TimerGameCalendar::Priority::NONE },
 	[](auto) {
-		/* Day/Night cycle — check every month */
-		AP_DayNightTick();
-
 		if (!_ap_session_started) return;
 
 		CompanyID cid = _local_company;

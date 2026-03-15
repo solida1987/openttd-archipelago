@@ -2,14 +2,15 @@
  * Archipelago Ruins NewGRF
  * Defines 6 ruin object types for the Archipelago multiworld randomiser.
  * These objects are placed on the map when ruin items are received.
+ * Each ruin is 3x3 tiles — all tiles are clickable.
  */
 
 grf {
     grfid: "APRU";
     name: string(STR_GRF_NAME);
     desc: string(STR_GRF_DESC);
-    version: 1;
-    min_compatible_version: 1;
+    version: 2;
+    min_compatible_version: 2;
 }
 
 /* ---- Sprite templates ---- */
@@ -28,7 +29,9 @@ spriteset(ss_foundation)   { tmpl_ground(192) }
 spriteset(ss_scorched)     { tmpl_ground(256) }
 spriteset(ss_overgrown)    { tmpl_ground(320) }
 
-/* ---- Sprite layouts (ground-only, no child sprites) ---- */
+/* ---- Sprite layouts ---- */
+/* For 3x3 objects: the ruin sprite is drawn on the center tile (relative_pos 1,1).
+ * All other tiles use the normal ground sprite only. */
 
 spritelayout layout_rubble      { ground { sprite: ss_rubble;      } }
 spritelayout layout_broken_wall { ground { sprite: ss_broken_wall; } }
@@ -37,14 +40,28 @@ spritelayout layout_foundation  { ground { sprite: ss_foundation;  } }
 spritelayout layout_scorched    { ground { sprite: ss_scorched;    } }
 spritelayout layout_overgrown   { ground { sprite: ss_overgrown;   } }
 
-/* ---- Object definitions ---- */
+/* Empty ground layout for non-center tiles */
+spritelayout layout_empty       { ground { sprite: GROUNDSPRITE_NORMAL; } }
+
+/* ---- Switches: pick layout based on tile position within the 3x3 ---- */
+/* relative_pos returns (x << 4 | y) for multi-tile objects.
+ * Center tile of a 3x3 is x=1, y=1 → 0x11 = 17 decimal. */
+
+switch(FEAT_OBJECTS, SELF, sw_rubble,      relative_pos) { 0x11: layout_rubble;      layout_empty; }
+switch(FEAT_OBJECTS, SELF, sw_broken_wall,  relative_pos) { 0x11: layout_broken_wall; layout_empty; }
+switch(FEAT_OBJECTS, SELF, sw_crater,       relative_pos) { 0x11: layout_crater;      layout_empty; }
+switch(FEAT_OBJECTS, SELF, sw_foundation,   relative_pos) { 0x11: layout_foundation;  layout_empty; }
+switch(FEAT_OBJECTS, SELF, sw_scorched,     relative_pos) { 0x11: layout_scorched;    layout_empty; }
+switch(FEAT_OBJECTS, SELF, sw_overgrown,    relative_pos) { 0x11: layout_overgrown;   layout_empty; }
+
+/* ---- Object definitions (3x3) ---- */
 
 item(FEAT_OBJECTS, ruin_rubble, 0) {
     property {
         class:                  "APRU";
         classname:              string(STR_CLASS_NAME);
         name:                   string(STR_RUIN_RUBBLE);
-        size:                   [1, 1];
+        size:                   [3, 3];
         build_cost_multiplier:  0;
         remove_cost_multiplier: 0;
         introduction_date:      date(0, 1, 1);
@@ -54,7 +71,7 @@ item(FEAT_OBJECTS, ruin_rubble, 0) {
         num_views:              1;
         height:                 0;
     }
-    graphics { default: layout_rubble; }
+    graphics { default: sw_rubble; }
 }
 
 item(FEAT_OBJECTS, ruin_broken_wall, 1) {
@@ -62,7 +79,7 @@ item(FEAT_OBJECTS, ruin_broken_wall, 1) {
         class:                  "APRU";
         classname:              string(STR_CLASS_NAME);
         name:                   string(STR_RUIN_BROKEN_WALL);
-        size:                   [1, 1];
+        size:                   [3, 3];
         build_cost_multiplier:  0;
         remove_cost_multiplier: 0;
         introduction_date:      date(0, 1, 1);
@@ -72,7 +89,7 @@ item(FEAT_OBJECTS, ruin_broken_wall, 1) {
         num_views:              1;
         height:                 0;
     }
-    graphics { default: layout_broken_wall; }
+    graphics { default: sw_broken_wall; }
 }
 
 item(FEAT_OBJECTS, ruin_crater, 2) {
@@ -80,7 +97,7 @@ item(FEAT_OBJECTS, ruin_crater, 2) {
         class:                  "APRU";
         classname:              string(STR_CLASS_NAME);
         name:                   string(STR_RUIN_CRATER);
-        size:                   [1, 1];
+        size:                   [3, 3];
         build_cost_multiplier:  0;
         remove_cost_multiplier: 0;
         introduction_date:      date(0, 1, 1);
@@ -90,7 +107,7 @@ item(FEAT_OBJECTS, ruin_crater, 2) {
         num_views:              1;
         height:                 0;
     }
-    graphics { default: layout_crater; }
+    graphics { default: sw_crater; }
 }
 
 item(FEAT_OBJECTS, ruin_foundation, 3) {
@@ -98,7 +115,7 @@ item(FEAT_OBJECTS, ruin_foundation, 3) {
         class:                  "APRU";
         classname:              string(STR_CLASS_NAME);
         name:                   string(STR_RUIN_FOUNDATION);
-        size:                   [1, 1];
+        size:                   [3, 3];
         build_cost_multiplier:  0;
         remove_cost_multiplier: 0;
         introduction_date:      date(0, 1, 1);
@@ -108,7 +125,7 @@ item(FEAT_OBJECTS, ruin_foundation, 3) {
         num_views:              1;
         height:                 0;
     }
-    graphics { default: layout_foundation; }
+    graphics { default: sw_foundation; }
 }
 
 item(FEAT_OBJECTS, ruin_scorched, 4) {
@@ -116,7 +133,7 @@ item(FEAT_OBJECTS, ruin_scorched, 4) {
         class:                  "APRU";
         classname:              string(STR_CLASS_NAME);
         name:                   string(STR_RUIN_SCORCHED);
-        size:                   [1, 1];
+        size:                   [3, 3];
         build_cost_multiplier:  0;
         remove_cost_multiplier: 0;
         introduction_date:      date(0, 1, 1);
@@ -126,7 +143,7 @@ item(FEAT_OBJECTS, ruin_scorched, 4) {
         num_views:              1;
         height:                 0;
     }
-    graphics { default: layout_scorched; }
+    graphics { default: sw_scorched; }
 }
 
 item(FEAT_OBJECTS, ruin_overgrown, 5) {
@@ -134,7 +151,7 @@ item(FEAT_OBJECTS, ruin_overgrown, 5) {
         class:                  "APRU";
         classname:              string(STR_CLASS_NAME);
         name:                   string(STR_RUIN_OVERGROWN);
-        size:                   [1, 1];
+        size:                   [3, 3];
         build_cost_multiplier:  0;
         remove_cost_multiplier: 0;
         introduction_date:      date(0, 1, 1);
@@ -144,5 +161,5 @@ item(FEAT_OBJECTS, ruin_overgrown, 5) {
         num_views:              1;
         height:                 0;
     }
-    graphics { default: layout_overgrown; }
+    graphics { default: sw_overgrown; }
 }

@@ -1678,6 +1678,10 @@ static void FormatString(StringBuilder &builder, std::string_view str_arg, Strin
 						}
 					}
 
+					/* Guard against engines with INVALID_STRING_ID — can happen with
+					 * certain NewGRF configurations or during early game init. */
+					if (e->info.string_id == INVALID_STRING_ID) break;
+
 					GetStringWithArgs(builder, e->info.string_id, {});
 					break;
 				}

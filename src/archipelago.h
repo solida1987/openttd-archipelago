@@ -308,7 +308,7 @@ public:
 
 	void Connect(const std::string &host, uint16_t port,
 	             const std::string &slot, const std::string &password,
-	             const std::string &game = "OpenTTD-Exp",
+	             const std::string &game = "OpenTTD",
 	             bool use_ssl = false);
 	void Disconnect();
 
@@ -343,6 +343,7 @@ public:
 
 	APState     GetState()     const { return state.load(); }
 	std::string GetLastError() const { std::lock_guard<std::mutex> lg(slot_mutex); return last_error; }
+	int         GetLocationCount() const { std::lock_guard<std::mutex> lg(slot_mutex); return (int)location_ids.size(); }
 
 	APSlotData GetSlotData() const {
 		std::lock_guard<std::mutex> lg(slot_mutex);
@@ -462,6 +463,8 @@ bool AP_IsColbyConfigured();
 int AP_GetTierCompleted(const std::string &difficulty);
 int AP_GetTotalMissionsCompleted();
 int64_t AP_GetItemsReceivedCount();
+int     AP_GetCheckedLocationCount();
+int     AP_GetTotalLocationCount();
 APWinProgress AP_GetWinProgress();
 
 /** Shop slot locking: returns true if the given 0-based sorted slot is unlocked. */

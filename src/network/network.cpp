@@ -22,6 +22,8 @@
 #include "network_gamelist.h"
 #include "network_base.h"
 #include "network_coordinator.h"
+#include "network_bridge.h"
+#include "network_bridge_client.h"
 #include "core/udp.h"
 #include "core/host.h"
 #include "network_gui.h"
@@ -604,6 +606,13 @@ void NetworkClose(bool close_admins)
 		ServerNetworkGameSocketHandler::CloseListeners();
 		ServerNetworkAdminSocketHandler::CloseListeners();
 
+		/* Preserve the bridge connection during server restarts (gen_world).
+		 * The bridge must stay connected so it can receive world_ready
+		 * and continue managing the game.  Only close on full shutdown. */
+		if (!_ap_bridge_mode) {
+			ServerNetworkBridgeHandler::CloseAll();
+		}
+
 		_network_coordinator_client.CloseConnection();
 	} else {
 		if (MyClient::my_client != nullptr) {
@@ -612,6 +621,11 @@ void NetworkClose(bool close_admins)
 		}
 
 		_network_coordinator_client.CloseAllConnections();
+		/* NOTE: BridgeClientHandler is NOT closed here.
+		 * The bridge connection must survive game server reconnects,
+		 * because the client connects to the bridge first, receives
+		 * the game server address, then joins the game server.
+		 * Bridge cleanup happens in the GUI disconnect or app exit. */
 	}
 	NetworkGameSocketHandler::ProcessDeferredDeletions();
 
@@ -910,6 +924,12 @@ bool NetworkServerStart()
 		if (!ServerNetworkAdminSocketHandler::Listen(_settings_client.network.server_admin_port)) return false;
 	}
 
+	/* Start listening for AP Bridge connections on the dedicated bridge port */
+	if (_network_dedicated) {
+		Debug(net, 5, "Starting listener for AP Bridge");
+		ServerNetworkBridgeHandler::Listen(NETWORK_BRIDGE_PORT);
+	}
+
 	/* Try to start UDP-server */
 	Debug(net, 5, "Starting listeners for incoming server queries");
 	NetworkUDPServerListen();
@@ -1052,9 +1072,11 @@ static bool NetworkReceive()
 	bool result;
 	if (_network_server) {
 		ServerNetworkAdminSocketHandler::Receive();
+		ServerNetworkBridgeHandler::Receive();
 		result = ServerNetworkGameSocketHandler::Receive();
 	} else {
 		result = ClientNetworkGameSocketHandler::Receive();
+		BridgeClientHandler::Receive(); /* AP Bridge client (if connected) */
 	}
 	NetworkGameSocketHandler::ProcessDeferredDeletions();
 	return result;
@@ -1065,9 +1087,11 @@ static void NetworkSend()
 {
 	if (_network_server) {
 		ServerNetworkAdminSocketHandler::Send();
+		ServerNetworkBridgeHandler::Send();
 		ServerNetworkGameSocketHandler::Send();
 	} else {
 		ClientNetworkGameSocketHandler::Send();
+		BridgeClientHandler::Send(); /* AP Bridge client (if connected) */
 	}
 	NetworkGameSocketHandler::ProcessDeferredDeletions();
 }
@@ -1085,6 +1109,13 @@ void NetworkBackgroundLoop()
 	NetworkHTTPSocketHandler::HTTPReceive();
 	QueryNetworkGameSocketHandler::SendReceive();
 	NetworkGameSocketHandler::ProcessDeferredDeletions();
+
+	/* Bridge client needs to send/receive even from the menu,
+	 * because the player connects to the Bridge before joining
+	 * the game server.  The Bridge welcome tells us which game
+	 * server to auto-join. */
+	BridgeClientHandler::Send();
+	BridgeClientHandler::Receive();
 
 	NetworkBackgroundUDPLoop();
 }
@@ -1260,6 +1291,12 @@ void NetworkGameLoop()
 #endif
 
 		NetworkServer_Tick(send_frame);
+
+		/* Send periodic stats to AP Bridge (~every 74 ticks ≈ monthly) */
+		if (ServerNetworkBridgeHandler::IsConnected() && _frame_counter % 74 == 0) {
+			ServerNetworkBridgeHandler::current->SendCompanyStats();
+			ServerNetworkBridgeHandler::current->SendPopulation();
+		}
 	} else {
 		/* Client */
 

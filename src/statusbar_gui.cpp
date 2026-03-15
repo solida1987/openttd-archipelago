@@ -34,7 +34,24 @@
 #include "table/strings.h"
 #include "table/sprites.h"
 
+#include "archipelago.h"
+#include "archipelago_gui.h"
+
+#include <deque>
+
 #include "safeguards.h"
+
+static const int AP_MAX_STATUS_MESSAGES = 3; ///< Maximum lines in the AP message log
+static std::deque<std::string> _ap_status_messages;
+
+void AP_PushStatusMessage(const std::string &msg)
+{
+	_ap_status_messages.push_back(msg);
+	while ((int)_ap_status_messages.size() > AP_MAX_STATUS_MESSAGES) {
+		_ap_status_messages.pop_front();
+	}
+	InvalidateWindowData(WC_STATUS_BAR, 0, SBI_AP_MESSAGE);
+}
 
 static bool DrawScrollingStatusText(const NewsItem &ni, int scroll_pos, int left, int right, int top, int bottom)
 {
@@ -65,7 +82,7 @@ struct StatusBarWindow : Window {
 	{
 		this->InitNested();
 		this->flags.Reset(WindowFlag::WhiteBorder);
-		PositionStatusbar(this);
+		/* Full-width bar — no centering, always left-aligned */
 	}
 
 	Point OnInitialPosition([[maybe_unused]] int16_t sm_width, [[maybe_unused]] int16_t sm_height, [[maybe_unused]] int window_number) override
@@ -76,7 +93,7 @@ struct StatusBarWindow : Window {
 
 	void FindWindowPlacementAndResize(int, int def_height, bool allow_resize) override
 	{
-		Window::FindWindowPlacementAndResize(_toolbar_width, def_height, allow_resize);
+		Window::FindWindowPlacementAndResize(_screen.width, def_height, allow_resize);
 	}
 
 	void UpdateWidgetSize(WidgetID widget, Dimension &size, [[maybe_unused]] const Dimension &padding, [[maybe_unused]] Dimension &fill, [[maybe_unused]] Dimension &resize) override
@@ -101,6 +118,15 @@ struct StatusBarWindow : Window {
 		d.width += padding.width;
 		d.height += padding.height;
 		size = maxdim(d, size);
+	}
+
+	void OnPaint() override
+	{
+		/* Highlight active news filter button */
+		this->SetWidgetLoweredState(WID_S_AP_NEWS_OFF,  _ap_news_filter == 0);
+		this->SetWidgetLoweredState(WID_S_AP_NEWS_SELF, _ap_news_filter == 1);
+		this->SetWidgetLoweredState(WID_S_AP_NEWS_ALL,  _ap_news_filter == 2);
+		this->DrawWidgets();
 	}
 
 	void DrawWidget(const Rect &r, WidgetID widget) const override
@@ -158,6 +184,24 @@ struct StatusBarWindow : Window {
 					DrawSprite(SPR_UNREAD_NEWS, PAL_NONE, tr.right - icon_size.width, CentreBounds(r.top, r.bottom, icon_size.height));
 				}
 				break;
+
+			case WID_S_AP_MESSAGES: {
+				/* Draw AP message log — newest at bottom */
+				int line_height = GetCharacterHeight(FS_NORMAL);
+				int y = r.bottom - line_height - 1;
+				for (int i = (int)_ap_status_messages.size() - 1; i >= 0 && y >= r.top; i--, y -= line_height) {
+					DrawString(r.left + 4, r.right - 2, y, _ap_status_messages[i], TC_LIGHT_BLUE, SA_LEFT);
+				}
+				break;
+			}
+
+			case WID_S_AP_STATS: {
+				/* Draw AP stats — checks completed / total */
+				int checked = AP_GetCheckedLocationCount();
+				int total   = AP_GetTotalLocationCount();
+				DrawString(r.left + 4, r.right - 4, r.top + 2, GetString(STR_AP_STATUSBAR_CHECKS, checked, total), TC_YELLOW, SA_LEFT);
+				break;
+			}
 		}
 	}
 
@@ -179,6 +223,10 @@ struct StatusBarWindow : Window {
 				this->ticker_scroll    =   TICKER_STOP; // reset ticker ...
 				this->reminder_timeout.Abort(); // ... and reminder
 				break;
+			case SBI_AP_MESSAGE:
+				this->SetWidgetDirty(WID_S_AP_MESSAGES);
+				this->SetWidgetDirty(WID_S_AP_STATS);
+				break;
 		}
 	}
 
@@ -187,6 +235,18 @@ struct StatusBarWindow : Window {
 		switch (widget) {
 			case WID_S_MIDDLE: ShowLastNewsMessage(); break;
 			case WID_S_RIGHT:  if (_local_company != COMPANY_SPECTATOR) ShowCompanyFinances(_local_company); break;
+			/* AP news filter */
+			case WID_S_AP_NEWS_OFF:  _ap_news_filter = 0; this->SetDirty(); break;
+			case WID_S_AP_NEWS_SELF: _ap_news_filter = 1; this->SetDirty(); break;
+			case WID_S_AP_NEWS_ALL:  _ap_news_filter = 2; this->SetDirty(); break;
+			/* AP window buttons */
+			case WID_S_AP_BTN_MISSIONS: ShowArchipelagoMissionsWindow(); break;
+			case WID_S_AP_BTN_DEMIGODS: ShowArchipelagoDemigodWindow();  break;
+			case WID_S_AP_BTN_RUINS:    ShowArchipelagoRuinsTrackerWindow(); break;
+			case WID_S_AP_BTN_EVENTS:   ShowArchipelagoColbyWindow();    break;
+			case WID_S_AP_BTN_SHOP:     ShowArchipelagoShopWindow();     break;
+			case WID_S_AP_BTN_GUIDE:    ShowArchipelagoGuideWindow();    break;
+			case WID_S_AP_BTN_INDEX:    ShowArchipelagoIndexWindow();    break;
 			default: ResetObjectToPlace();
 		}
 	}
@@ -211,10 +271,32 @@ struct StatusBarWindow : Window {
 };
 
 static constexpr std::initializer_list<NWidgetPart> _nested_main_status_widgets = {
-	NWidget(NWID_HORIZONTAL),
-		NWidget(WWT_PANEL, COLOUR_GREY, WID_S_LEFT), SetMinimalSize(140, 12), EndContainer(),
-		NWidget(WWT_PUSHBTN, COLOUR_GREY, WID_S_MIDDLE), SetMinimalSize(40, 12), SetToolTip(STR_STATUSBAR_TOOLTIP_SHOW_LAST_NEWS), SetResize(1, 0),
-		NWidget(WWT_PUSHBTN, COLOUR_GREY, WID_S_RIGHT), SetMinimalSize(140, 12),
+	NWidget(NWID_VERTICAL),
+		/* Row 1: AP buttons — news filter left, window buttons right */
+		NWidget(NWID_HORIZONTAL),
+			NWidget(WWT_TEXTBTN, COLOUR_GREY,   WID_S_AP_NEWS_OFF),      SetStringTip(STR_ARCHIPELAGO_NEWS_OFF),  SetMinimalSize(40, 14),
+			NWidget(WWT_TEXTBTN, COLOUR_GREY,   WID_S_AP_NEWS_SELF),     SetStringTip(STR_ARCHIPELAGO_NEWS_SELF), SetMinimalSize(40, 14),
+			NWidget(WWT_TEXTBTN, COLOUR_GREY,   WID_S_AP_NEWS_ALL),      SetStringTip(STR_ARCHIPELAGO_NEWS_ALL),  SetMinimalSize(40, 14),
+			NWidget(WWT_PANEL, COLOUR_GREY, INVALID_WIDGET), SetResize(1, 0), SetFill(1, 0), EndContainer(),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WID_S_AP_BTN_MISSIONS), SetStringTip(STR_ARCHIPELAGO_BTN_MISSIONS), SetMinimalSize(70, 14),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WID_S_AP_BTN_SHOP),     SetStringTip(STR_ARCHIPELAGO_BTN_SHOP),     SetMinimalSize(45, 14),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_BROWN,  WID_S_AP_BTN_RUINS),    SetStringTip(STR_ARCHIPELAGO_BTN_RUINS),    SetMinimalSize(50, 14),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WID_S_AP_BTN_EVENTS),   SetStringTip(STR_ARCHIPELAGO_BTN_COLBY),    SetMinimalSize(55, 14),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_RED,    WID_S_AP_BTN_DEMIGODS), SetStringTip(STR_ARCHIPELAGO_BTN_DEMIGOD),  SetMinimalSize(70, 14),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WID_S_AP_BTN_GUIDE),    SetStringTip(STR_ARCHIPELAGO_BTN_GUIDE),    SetMinimalSize(50, 14),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WID_S_AP_BTN_INDEX),    SetStringTip(STR_ARCHIPELAGO_BTN_INDEX),    SetMinimalSize(50, 14),
+		EndContainer(),
+		/* Row 2: AP message log + stats */
+		NWidget(NWID_HORIZONTAL),
+			NWidget(WWT_PANEL, COLOUR_GREY, WID_S_AP_MESSAGES), SetMinimalTextLines(3, 2, FS_NORMAL), SetResize(1, 0), SetFill(1, 0), EndContainer(),
+			NWidget(WWT_PANEL, COLOUR_GREY, WID_S_AP_STATS), SetMinimalSize(160, 0), SetFill(0, 1), EndContainer(),
+		EndContainer(),
+		/* Row 3: original status bar */
+		NWidget(NWID_HORIZONTAL),
+			NWidget(WWT_PANEL, COLOUR_GREY, WID_S_LEFT), SetMinimalSize(90, 12), EndContainer(),
+			NWidget(WWT_PUSHBTN, COLOUR_GREY, WID_S_MIDDLE), SetMinimalSize(40, 12), SetToolTip(STR_STATUSBAR_TOOLTIP_SHOW_LAST_NEWS), SetResize(1, 0),
+			NWidget(WWT_PUSHBTN, COLOUR_GREY, WID_S_RIGHT), SetMinimalSize(160, 12),
+		EndContainer(),
 	EndContainer(),
 };
 

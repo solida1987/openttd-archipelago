@@ -2294,6 +2294,7 @@ STR_ARCHIPELAGO_FILTER_HARD                                     :{BLACK}Hard
 STR_ARCHIPELAGO_FILTER_EXTREME                                  :{BLACK}Extreme
 STR_ARCHIPELAGO_TAB_TASKS                                       :{BLACK}Tasks
 STR_ARCHIPELAGO_NEWS                                            :{RAW_STRING}
+STR_AP_STATUSBAR_CHECKS                                         :{YELLOW}Checks: {NUM}/{NUM}
 STR_ARCHIPELAGO_START_CHOICE_CAPTION                            :{BLACK}Archipelago
 STR_ARCHIPELAGO_START_CHOICE_MESSAGE                            :{BLACK}Connected! Generate a new world?{}{}Yes = New Game     No = Load Save
 STR_ARCHIPELAGO_START_CHOICE_CAPTION_V2                         :{BLACK}Archipelago - Start
@@ -2350,8 +2351,8 @@ STR_ARCHIPELAGO_INDEX_TAB_AIRCRAFT                              :{BLACK}Aircraft
 STR_ARCHIPELAGO_INDEX_TAB_SHIPS                                 :{BLACK}Ships
 STR_ARCHIPELAGO_INDEX_TAB_WAGONS                                :{BLACK}Wagons
 STR_ARCHIPELAGO_BTN_RUINS                                       :{BLACK}Ruins
-STR_ARCHIPELAGO_BTN_DAYNIGHT_ON                                 :{BLACK}Night: On
-STR_ARCHIPELAGO_BTN_DAYNIGHT_OFF                                :{BLACK}Night: Off
+STR_ARCHIPELAGO_BTN_DAYNIGHT_ON                                 :{BLACK}Day/Night: ON
+STR_ARCHIPELAGO_BTN_DAYNIGHT_OFF                                :{BLACK}Day/Night: OFF
 STR_ARCHIPELAGO_RUINS_CAPTION                                   :Archipelago - Ruins Tracker
 STR_ERROR_ARCHIPELAGO_RAIL_DIR_LOCKED                           :This track direction is locked. Unlock it via Archipelago.
 STR_ERROR_ARCHIPELAGO_ROAD_DIR_LOCKED                           :This road direction is locked. Unlock it via Archipelago.

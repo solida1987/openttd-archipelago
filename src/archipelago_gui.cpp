@@ -324,7 +324,7 @@ struct ArchipelagoConnectWindow : public Window {
 				_ap_last_slot = slot_str; _ap_last_pass = pass_str;
 				AP_SaveConnectionConfig(); /* persist for next session */
 				_ap_last_ssl = false; /* unused — auto-detect in WorkerThread */
-				_ap_client->Connect(host, port, slot_str, pass_str, "OpenTTD-Exp", false);
+				_ap_client->Connect(host, port, slot_str, pass_str, "OpenTTD", false);
 				this->SetDirty();
 				break;
 			}
@@ -598,7 +598,7 @@ struct ArchipelagoStatusWindow : public Window {
 		switch (widget) {
 			case WAPST_BTN_RECONNECT:
 				if (_ap_client && !_ap_last_host.empty())
-					_ap_client->Connect(_ap_last_host, _ap_last_port, _ap_last_slot, _ap_last_pass, "OpenTTD-Exp", _ap_last_ssl);
+					_ap_client->Connect(_ap_last_host, _ap_last_port, _ap_last_slot, _ap_last_pass, "OpenTTD", _ap_last_ssl);
 				break;
 			case WAPST_BTN_MISSIONS:
 				ShowArchipelagoMissionsWindow();
@@ -3199,7 +3199,7 @@ struct APJoinMultiplayerWindow : public Window {
 		 * world generation), then auto-connect to the game server. */
 		AP_RequestMPJoin(this->gameserver_str, this->slot_str);
 
-		_ap_client->Connect(host, port, this->slot_str, this->pass_str, "OpenTTD-Exp", false);
+		_ap_client->Connect(host, port, this->slot_str, this->pass_str, "OpenTTD", false);
 
 		this->Close();
 	}

@@ -22,6 +22,7 @@
 #include "../../settings_type.h"
 #include "../../network/network.h"
 #include "../../misc_cmd.h"
+#include "../../debug.h"
 
 #include "../../safeguards.h"
 
@@ -102,8 +103,10 @@ ScriptController::ScriptController(::CompanyID company) :
 
 	ScriptInfo *lib = ScriptObject::GetActiveInstance().FindLibrary(library, version);
 	if (lib == nullptr) {
+		Debug(misc, 0, "[AI Import] Library '{}' v{} NOT FOUND", library, version);
 		throw sq_throwerror(vm, fmt::format("couldn't find library '{}' with version {}", library, version));
 	}
+	Debug(misc, 0, "[AI Import] Found '{}' v{}: instance='{}', script='{}'", library, version, lib->GetInstanceName(), lib->GetMainScript());
 
 	/* Internally we store libraries as 'library.version' */
 	std::string library_name = fmt::format("{}.{}", library, version);
