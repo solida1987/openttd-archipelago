@@ -78,7 +78,10 @@ enum APWidgets : WidgetID {
 };
 
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_widgets = {
-	NWidget(WWT_CAPTION, COLOUR_GREY), SetStringTip(STR_ARCHIPELAGO_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_GREY),
+		NWidget(WWT_CAPTION, COLOUR_GREY), SetStringTip(STR_ARCHIPELAGO_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_GREY),
 		NWidget(NWID_VERTICAL), SetPIP(4, 4, 4), SetPadding(6),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
@@ -2325,6 +2328,7 @@ enum APColbyWidgets : WidgetID {
 	WAPCB_CAPTION,
 	WAPCB_PANEL,
 	WAPCB_SCROLLBAR,
+	WAPCB_BTN_REOPEN,
 };
 
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_colby_widgets = {
@@ -2336,6 +2340,7 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_colby_widgets = {
 		NWidget(WWT_PANEL, COLOUR_BROWN, WAPCB_PANEL), SetMinimalSize(320, 100), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPCB_SCROLLBAR), EndContainer(),
 		NWidget(NWID_VSCROLLBAR, COLOUR_BROWN, WAPCB_SCROLLBAR),
 	EndContainer(),
+	NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPCB_BTN_REOPEN), SetStringTip(STR_AP_COLBY_BTN_REOPEN), SetMinimalSize(320, 14), SetFill(1, 0),
 	NWidget(WWT_RESIZEBOX, COLOUR_BROWN),
 };
 
@@ -2429,15 +2434,24 @@ struct ArchipelagoColbyWindow : public Window {
 					/* Clickable stash station */
 					if (cs.source_tile != INVALID_TILE && !cs.source_name.empty()) {
 						_lines.push_back({
-							fmt::format("\u25ba Pick up {} at: {} (click to locate)",
-							            cs.cargo_name, cs.source_name),
+							fmt::format("\u25ba Pick up cargo at: {} (click to locate)",
+							            cs.source_name),
 							TC_YELLOW, false, 0, LINK_STASH});
 						_lines.push_back({
-							"  Load any vehicle. Use 'Unload all' in orders.",
+							fmt::format("  Refit vehicle to '{}'. Use 'Unload all' at {}.",
+							            cs.cargo_name.empty() ? "Packages" :
+							            (std::string(1, (char)std::toupper((unsigned char)cs.cargo_name[0])) + cs.cargo_name.substr(1)),
+							            cs.town_name),
+							TC_GREY, false, 0, LINK_NONE});
+						_lines.push_back({
+							"  Buses, mail trucks, and passenger vehicles can carry this cargo.",
 							TC_GREY, false, 0, LINK_NONE});
 					} else {
-						add("Pick up packages from Colby's Stash", TC_GREY);
-						add("and deliver them to the destination town.", TC_GREY);
+						add("Build a station near Colby's Stash to pick up cargo.", TC_GREY);
+						add(fmt::format("Refit your vehicle to '{}' and deliver to {}.",
+						    cs.cargo_name.empty() ? "Packages" :
+						    (std::string(1, (char)std::toupper((unsigned char)cs.cargo_name[0])) + cs.cargo_name.substr(1)),
+						    cs.town_name), TC_GREY);
 						add("Use 'Unload all' in vehicle orders.", TC_GREY);
 					}
 
@@ -2466,6 +2480,15 @@ struct ArchipelagoColbyWindow : public Window {
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override
 	{
 		this->_RebuildLines();
+		/* Show/hide Reopen button based on popup_pending state */
+		ColbyStatus cs = AP_GetColbyStatus();
+		NWidgetCore *btn = this->GetWidget<NWidgetCore>(WAPCB_BTN_REOPEN);
+		if (btn != nullptr) {
+			bool should_show = cs.popup_pending;
+			if (btn->IsDisabled() != !should_show) {
+				btn->SetDisabled(!should_show);
+			}
+		}
 		this->SetDirty();
 	}
 
@@ -2493,6 +2516,10 @@ struct ArchipelagoColbyWindow : public Window {
 
 	void OnClick(Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
 	{
+		if (widget == WAPCB_BTN_REOPEN) {
+			AP_ColbyReopenPopup();
+			return;
+		}
 		if (widget != WAPCB_PANEL) return;
 		const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPCB_PANEL);
 		if (panel == nullptr) return;
@@ -2553,6 +2580,94 @@ static WindowDesc _ap_colby_desc(
 void ShowArchipelagoColbyWindow()
 {
 	AllocateWindowDescFront<ArchipelagoColbyWindow>(_ap_colby_desc, 0);
+}
+
+/* =========================================================================
+ * COLBY DECISION WINDOW — Custom popup replacing ShowQuery.
+ * X button just dismisses (popup stays pending). Explicit buttons execute
+ * the actual choice. This lets the player reopen the decision if they
+ * accidentally close it.
+ * ========================================================================= */
+
+enum ColbyDecisionWidgets : WidgetID {
+	WCBD_MESSAGE,
+	WCBD_BTN_A,   /* Arrest / Imprison */
+	WCBD_BTN_B,   /* Let Escape / Sacrifice */
+};
+
+static constexpr std::initializer_list<NWidgetPart> _nested_colby_decision_widgets = {
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
+		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_AP_COLBY_DECISION_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	EndContainer(),
+	NWidget(WWT_PANEL, COLOUR_BROWN),
+		NWidget(NWID_VERTICAL), SetPIP(10, 8, 10), SetPadding(0, 10, 0, 10),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WCBD_MESSAGE), SetMinimalSize(380, 40), SetFill(1, 0),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WCBD_BTN_A), SetMinimalSize(380, 14), SetFill(1, 0),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_RED,   WCBD_BTN_B), SetMinimalSize(380, 14), SetFill(1, 0),
+		EndContainer(),
+	EndContainer(),
+};
+
+static WindowDesc _colby_decision_desc(
+	WDP_CENTER, {}, 420, 140,
+	WC_AP_COLBY_DECISION, WC_NONE, {},
+	_nested_colby_decision_widgets
+);
+
+struct ColbyDecisionWindow : public Window {
+	int popup_type; /* 1 = arrest/escape, 2 = imprison/sacrifice */
+
+	ColbyDecisionWindow(WindowDesc &desc, int type) : Window(desc), popup_type(type)
+	{
+		this->InitNested(0);
+		/* Set button strings based on popup type */
+		if (popup_type == 1) {
+			this->GetWidget<NWidgetCore>(WCBD_MESSAGE)->SetStringTip(STR_AP_COLBY_ARREST_QUERY, STR_NULL);
+			this->GetWidget<NWidgetCore>(WCBD_BTN_A)->SetStringTip(STR_AP_COLBY_BTN_ARREST, STR_NULL);
+			this->GetWidget<NWidgetCore>(WCBD_BTN_B)->SetStringTip(STR_AP_COLBY_BTN_ESCAPE, STR_NULL);
+		} else {
+			this->GetWidget<NWidgetCore>(WCBD_MESSAGE)->SetStringTip(STR_AP_COLBY_ESCAPE_QUERY, STR_NULL);
+			this->GetWidget<NWidgetCore>(WCBD_BTN_A)->SetStringTip(STR_AP_COLBY_BTN_IMPRISON, STR_NULL);
+			this->GetWidget<NWidgetCore>(WCBD_BTN_B)->SetStringTip(STR_AP_COLBY_BTN_SACRIFICE, STR_NULL);
+		}
+	}
+
+	/* Close() does NOT execute any choice — the popup stays pending so
+	 * the player can reopen it from the Colby status window. */
+	void Close(int data = 0) override
+	{
+		/* Don't clear popup_pending — the decision can be reopened */
+		this->Window::Close(data);
+	}
+
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
+	{
+		switch (widget) {
+			case WCBD_BTN_A:
+				if (popup_type == 1) {
+					AP_ColbyDecisionArrest();
+				} else {
+					AP_ColbyDecisionImprison();
+				}
+				this->Close();
+				break;
+			case WCBD_BTN_B:
+				if (popup_type == 1) {
+					AP_ColbyDecisionEscape();
+				} else {
+					AP_ColbyDecisionSacrifice();
+				}
+				this->Close();
+				break;
+		}
+	}
+};
+
+void ShowColbyDecisionWindow(int popup_type)
+{
+	CloseWindowByClass(WC_AP_COLBY_DECISION);
+	new ColbyDecisionWindow(_colby_decision_desc, popup_type);
 }
 
 /* =========================================================================
@@ -2966,16 +3081,21 @@ enum APStartChoiceWidgets : WidgetID {
 	WAPSC_BTN_SINGLE,
 	WAPSC_BTN_HOST,
 	WAPSC_BTN_LOAD,
+	WAPSC_BTN_CANCEL,
 };
 
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_start_choice_widgets = {
-	NWidget(WWT_CAPTION, COLOUR_GREY), SetStringTip(STR_ARCHIPELAGO_START_CHOICE_CAPTION_V2, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_GREY),
+		NWidget(WWT_CAPTION, COLOUR_GREY), SetStringTip(STR_ARCHIPELAGO_START_CHOICE_CAPTION_V2, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_GREY),
 		NWidget(NWID_VERTICAL), SetPIP(8, 6, 8), SetPadding(8),
 			NWidget(WWT_TEXT, INVALID_COLOUR, WAPSC_MESSAGE), SetStringTip(STR_ARCHIPELAGO_START_MESSAGE), SetMinimalSize(260, 14), SetFill(1, 0),
 			NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPSC_BTN_SINGLE), SetStringTip(STR_ARCHIPELAGO_START_SINGLE), SetMinimalSize(260, 14), SetFill(1, 0),
 			/* Host Multiplayer button removed — use AP Bridge .exe instead */
 			NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPSC_BTN_LOAD),   SetStringTip(STR_ARCHIPELAGO_START_LOAD),   SetMinimalSize(260, 14), SetFill(1, 0),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_RED,    WAPSC_BTN_CANCEL), SetStringTip(STR_ARCHIPELAGO_BTN_CLOSE),    SetMinimalSize(260, 14), SetFill(1, 0),
 		EndContainer(),
 	EndContainer(),
 };
@@ -3017,6 +3137,10 @@ struct APStartChoiceWindow : public Window {
 				ShowSaveLoadDialog(FT_SAVEGAME, SLO_LOAD);
 				this->Close();
 				break;
+
+			case WAPSC_BTN_CANCEL:
+				this->Close();
+				break;
 		}
 	}
 };
@@ -3049,11 +3173,15 @@ enum APJoinWidgets : WidgetID {
 	WAPJOIN_LABEL_GAMESERVER,
 	WAPJOIN_EDIT_GAMESERVER,
 	WAPJOIN_BTN_JOIN,
+	WAPJOIN_BTN_CANCEL,
 	WAPJOIN_STATUS,
 };
 
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_join_widgets = {
-	NWidget(WWT_CAPTION, COLOUR_ORANGE), SetStringTip(STR_AP_JOIN_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_ORANGE),
+		NWidget(WWT_CAPTION, COLOUR_ORANGE), SetStringTip(STR_AP_JOIN_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_ORANGE),
 		NWidget(NWID_VERTICAL), SetPIP(8, 4, 8), SetPadding(8),
 			/* AP Server address */
@@ -3083,9 +3211,10 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_join_widgets = {
 			EndContainer(),
 			/* Status line */
 			NWidget(WWT_TEXT, INVALID_COLOUR, WAPJOIN_STATUS), SetMinimalSize(340, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
-			/* Join button */
+			/* Join + Cancel buttons */
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPJOIN_BTN_JOIN), SetStringTip(STR_AP_JOIN_BTN_CONNECT), SetMinimalSize(120, 16), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPJOIN_BTN_JOIN),   SetStringTip(STR_AP_JOIN_BTN_CONNECT),    SetMinimalSize(120, 16), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_RED,   WAPJOIN_BTN_CANCEL), SetStringTip(STR_ARCHIPELAGO_BTN_CLOSE),  SetMinimalSize(120, 16), SetFill(1, 0),
 			EndContainer(),
 		EndContainer(),
 	EndContainer(),
@@ -3155,6 +3284,10 @@ struct APJoinMultiplayerWindow : public Window {
 
 	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
 	{
+		if (widget == WAPJOIN_BTN_CANCEL) {
+			this->Close();
+			return;
+		}
 		if (widget != WAPJOIN_BTN_JOIN) return;
 
 		/* Validate fields */

@@ -980,6 +980,85 @@ AIRCRAFTPACK_AIRCRAFT: List[str] = [
 ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  ESSENTIAL VEHICLES — the minimum set the player NEEDS for progression.
+#  Only these are ItemClassification.progression; everything else is 'useful'.
+#  This gives the Archipelago fill algorithm breathing room (~60 progression
+#  items vs ~140 useful) and prevents FillError on high mission counts.
+#
+#  Design: the player needs one of each cargo-capable vehicle type to do
+#  missions. Extras are nice-to-have but not required for logic.
+# ─────────────────────────────────────────────────────────────────────────────
+ESSENTIAL_VEHICLES: frozenset = frozenset({
+    # ── Trains — Steam (all, early game workhorses) ──────────────────────
+    "Wills 2-8-0 (Steam)", "Kirby Paul Tank (Steam)", "Ginzu 'A4' (Steam)",
+    "SH '8P' (Steam)", "Chaney 'Jubilee' (Steam)",
+    # ── Trains — Diesel (all, mid game backbone) ─────────────────────────
+    "MJS 250 (Diesel)", "Ploddyphut Diesel", "Powernaut Diesel",
+    "Turner Turbo (Diesel)", "MJS 1000 (Diesel)", "SH/Hendry '25' (Diesel)",
+    "Manley-Morel DMU (Diesel)", "'Dash' (Diesel)", "Kelling 3100 (Diesel)",
+    "SH '125' (Diesel)", "Floss '47' (Diesel)", "UU '37' (Diesel)",
+    "Centennial (Diesel)", "CS 2400 (Diesel)", "CS 4000 (Diesel)",
+    # ── Trains — Toyland (only trains available on Toyland) ──────────────
+    "Ploddyphut Choo-Choo", "Powernaut Choo-Choo", "MightyMover Choo-Choo",
+    # ── Wagons — ALL (essential for cargo transport) ─────────────────────
+    "Passenger Carriage", "Mail Van", "Coal Truck", "Oil Tanker",
+    "Goods Van", "Armoured Van", "Grain Hopper", "Wood Truck",
+    "Iron Ore Hopper", "Steel Truck", "Livestock Van",
+    "Paper Truck", "Copper Ore Hopper", "Rubber Truck", "Fruit Truck",
+    "Water Tanker", "Food Van",
+    "Candyfloss Hopper", "Toffee Hopper", "Cola Tanker", "Plastic Truck",
+    "Fizzy Drink Truck", "Sugar Truck", "Sweet Van", "Bubble Van",
+    "Toy Van", "Battery Truck",
+    # ── Road — 1 bus + first-gen cargo trucks (one per cargo type) ───────
+    "MPS Regal Bus",          # first bus
+    "MPS Mail Truck",         # first mail
+    "Balogh Coal Truck",      # first coal
+    "Hereford Grain Truck",   # first grain
+    "Balogh Goods Truck",     # first goods
+    "Witcombe Oil Tanker",    # first oil
+    "Witcombe Wood Truck",    # first wood
+    "MPS Iron Ore Truck",     # first iron ore
+    "Balogh Steel Truck",     # first steel
+    "Balogh Armoured Truck",  # first armoured
+    "Talbott Livestock Van",  # first livestock
+    # ── Road — Arctic/Tropical first-gen ─────────────────────────────────
+    "Balogh Paper Truck", "Balogh Rubber Truck", "Balogh Fruit Truck",
+    "Balogh Water Tanker", "MPS Copper Ore Truck", "Perry Food Van",
+    # ── Road — Toyland first-gen (MightyMover series) ────────────────────
+    "Ploddyphut MkI Bus", "MightyMover Mail Truck",
+    "MightyMover Candyfloss Truck", "MightyMover Toffee Truck",
+    "MightyMover Cola Truck", "MightyMover Plastic Truck",
+    "MightyMover Fizzy Drink Truck", "MightyMover Sugar Truck",
+    "MightyMover Sweet Truck", "MightyMover Battery Truck",
+    "MightyMover Bubble Truck", "MightyMover Toy Van",
+    # ── Ships — oil tanker + passenger ferry + cargo ship ────────────────
+    "MPS Passenger Ferry", "MPS Oil Tanker", "Yate Cargo Ship",
+    # ── Ships — Toyland ──────────────────────────────────────────────────
+    "Chugger-Chug Passenger Ferry", "MightyMover Cargo Ship",
+    # ── Aircraft — small airport planes (prop era, can land everywhere) ──
+    "Sampson U52", "Coleman Count", "FFP Dart", "Yate Haugan",
+    "Bakewell Cotswald LB-3", "Dinger 100", "Airtaxi A21",
+    # ── Aircraft — helicopter (can use heliports) ────────────────────────
+    "Tricario Helicopter",
+    # ── Aircraft — Toyland small ─────────────────────────────────────────
+    "Ploddyphut 100", "Flashbang X1",
+    # ── Aircraft — Toyland helicopter ────────────────────────────────────
+    "Powernaut Helicopter",
+    # ── Iron Horse — 10 early steam engines (replace vanilla when IH on) ─
+    "IH: 0-6-0 Fireball", "IH: 0-6-0 Hercules", "IH: 0-6-0 Lamia",
+    "IH: 0-8-0 Eastern", "IH: 0-8-0 Haar", "IH: 0-8-0 Saxon",
+    "IH: 2-6-0 Braf", "IH: 2-6-0 Diablo", "IH: 2-6-2 Arrow",
+    "IH: 2-4-0 Reliance",
+    # ── SHARK — 5 essential ships (replace vanilla progression ships when SHARK on)
+    "SHARK: Whitgift",       # passenger ferry replacement
+    "SHARK: Lantau",         # oil tanker replacement
+    "SHARK: Provincetown",   # cargo ship replacement
+    "SHARK: Malin",          # early versatile ship
+    "SHARK: Eddystone",      # early versatile ship
+})
+
+
 def _build_item_table() -> Dict[str, OpenTTDItemData]:
     table: Dict[str, OpenTTDItemData] = {}
     code = OPENTTD_BASE_ID
@@ -991,16 +1070,20 @@ def _build_item_table() -> Dict[str, OpenTTDItemData]:
         table[name] = OpenTTDItemData(code, cls, itype, cat)
         code += 1
 
+    def vehicle_cls(name: str) -> ItemClassification:
+        """Essential vehicles → progression; everything else → useful."""
+        return ItemClassification.progression if name in ESSENTIAL_VEHICLES else ItemClassification.useful
+
     for name in ALL_TRAINS:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "train")
+        add(name, vehicle_cls(name), ItemType.VEHICLE, "train")
     for name in ALL_WAGONS:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "wagon")
+        add(name, vehicle_cls(name), ItemType.VEHICLE, "wagon")
     for name in ALL_ROAD_VEHICLES:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "road_vehicle")
+        add(name, vehicle_cls(name), ItemType.VEHICLE, "road_vehicle")
     for name in ALL_AIRCRAFT:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "aircraft")
+        add(name, vehicle_cls(name), ItemType.VEHICLE, "aircraft")
     for name in ALL_SHIPS:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "ship")
+        add(name, vehicle_cls(name), ItemType.VEHICLE, "ship")
     for name in TRAP_ITEMS:
         add(name, ItemClassification.trap, ItemType.TRAP, "trap")
     for name in UTILITY_ITEMS:
@@ -1033,27 +1116,28 @@ def _build_item_table() -> Dict[str, OpenTTDItemData]:
     # Iron Horse engines — registered here so create_item() works even when
     # the option is disabled. Items only enter the *pool* when enabled (see __init__.py).
     for name in IRON_HORSE_ENGINES:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "train")
+        add(name, vehicle_cls(name), ItemType.VEHICLE, "train")
     # Military Items aircraft — always registered, only pooled when enabled
     for name in MILITARY_ITEMS_AIRCRAFT:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "aircraft")
+        add(name, ItemClassification.useful, ItemType.VEHICLE, "aircraft")
     # SHARK ships — always registered, only pooled when enabled
+    # 5 SHARK ships are in ESSENTIAL_VEHICLES (progression), rest are useful
     for name in SHARK_SHIPS:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "ship")
+        add(name, vehicle_cls(name), ItemType.VEHICLE, "ship")
     # Hover Vehicles — always registered, only pooled when enabled
     for name in HOVER_VEHICLES:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "road_vehicle")
+        add(name, ItemClassification.useful, ItemType.VEHICLE, "road_vehicle")
     # HEQS Heavy Equipment — always registered, only pooled when enabled
     for name in HEQS_ROAD_VEHICLES:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "road_vehicle")
+        add(name, ItemClassification.useful, ItemType.VEHICLE, "road_vehicle")
     for name in HEQS_TRAINS:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "train")
+        add(name, ItemClassification.useful, ItemType.VEHICLE, "train")
     # Vactrain — always registered, only pooled when enabled
     for name in VACTRAIN_ENGINES:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "train")
+        add(name, ItemClassification.useful, ItemType.VEHICLE, "train")
     # Aircraftpack 2025 — always registered, only pooled when enabled
     for name in AIRCRAFTPACK_AIRCRAFT:
-        add(name, ItemClassification.progression, ItemType.VEHICLE, "aircraft")
+        add(name, ItemClassification.useful, ItemType.VEHICLE, "aircraft")
 
     add("Victory", ItemClassification.progression, ItemType.VICTORY, "victory")
     return table
@@ -1115,6 +1199,37 @@ TEMPERATE_ONLY_TRAINS: frozenset = frozenset({
     "Floss '47' (Diesel)",
     "SH '30' (Electric)",
     "SH '40' (Electric)",
+})
+
+# Wagons NOT available on Temperate maps (Arctic/Tropic cargo wagons).
+NON_TEMPERATE_WAGONS: frozenset = frozenset({
+    "Paper Truck",     # Arctic only
+    "Food Van",        # Arctic + Tropic only
+    "Copper Ore Hopper",  # Tropic only
+    "Rubber Truck",    # Tropic only
+    "Fruit Truck",     # Tropic only (Arctic uses Food Van)
+    "Water Tanker",    # Tropic only
+})
+
+# Wagons NOT available on Arctic maps.
+NON_ARCTIC_WAGONS: frozenset = frozenset({
+    "Iron Ore Hopper",   # Temperate only
+    "Steel Truck",       # Temperate only
+    "Livestock Van",     # Temperate only
+    "Copper Ore Hopper", # Tropic only
+    "Rubber Truck",      # Tropic only
+    "Fruit Truck",       # Tropic only
+    "Water Tanker",      # Tropic only
+})
+
+# Wagons NOT available on Tropic maps.
+NON_TROPIC_WAGONS: frozenset = frozenset({
+    "Iron Ore Hopper",   # Temperate only
+    "Steel Truck",       # Temperate only
+    "Livestock Van",     # Temperate only
+    "Coal Truck",        # Temperate + Arctic only
+    "Grain Hopper",      # Temperate + Arctic only (Grain/Wheat)
+    "Paper Truck",       # Arctic only
 })
 
 # Road vehicles NOT available on Temperate maps (Arctic/Tropic or Tropic-only).

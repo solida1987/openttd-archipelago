@@ -3536,9 +3536,9 @@ void RelocateAllWindows(int neww, int newh)
 	}
 
 	if (Window *ws = FindWindowById(WC_STATUS_BAR, 0); ws != nullptr) {
-		ResizeWindow(ws, std::min<uint>(neww, _toolbar_width) - ws->width, 0, false);
+		ResizeWindow(ws, neww - ws->width, 0, false);
 		ws->top = newh - ws->height;
-		ws->left = PositionStatusbar(ws);
+		ws->left = 0; /* Full-width AP status bar — always left-aligned */
 	}
 
 	for (Window *w : Window::Iterate()) {

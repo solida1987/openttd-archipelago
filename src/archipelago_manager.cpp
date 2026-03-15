@@ -1577,6 +1577,9 @@ static CargoType   _ap_colby_cargo_type     = INVALID_CARGO;
 static int         _ap_colby_step           = 0;
 static int64_t     _ap_colby_step_delivered = 0;
 static bool        _ap_colby_popup_shown    = false;
+static bool        _ap_colby_popup_pending  = false;  ///< true = popup dismissed without choosing, awaiting reopen
+static int         _ap_colby_popup_type     = 0;      ///< 1 = arrest/escape, 2 = imprison/sacrifice
+static int         _ap_colby_reopen_ticks   = 0;      ///< countdown to auto-reopen dismissed popup
 static bool        _ap_colby_escaped        = false;
 static int         _ap_colby_escape_ticks   = 0;
 static bool        _ap_colby_done           = false;
@@ -1587,87 +1590,100 @@ static TileIndex   _ap_colby_source_tile    = INVALID_TILE;
 static TileIndex   _ap_colby_stash_tile     = INVALID_TILE;  ///< Tile of physical stash object on map
 
 /* =========================================================================
- * Colby Event — forward declarations for callbacks
+ * Colby Event — forward declarations
  * ====================================================================== */
 static void AP_ColbyShowFinalQuery();
 static void AP_ColbyShowEscapeQuery();
 static std::string AP_TownName(const Town *t); ///< forward decl — defined near AP_GetSlotData
 static void AP_ShowNews(const std::string &text, bool is_self = true); ///< forward decl — defined after saveload globals
 
+/* Forward declaration — custom decision window shown from archipelago_gui.cpp */
+void ShowColbyDecisionWindow(int popup_type);
+
 /* =========================================================================
- * Colby Event — popup callbacks (called by query window on main thread)
+ * Colby Event — decision API (called from custom window buttons)
  * ====================================================================== */
 
-/** Popup A callback: Arrest (true) or Let Escape (false). */
-static void AP_ColbyArrestCallback(Window *, bool arrest)
+/** Player chose ARREST in popup A. */
+void AP_ColbyDecisionArrest()
 {
-	if (arrest) {
-		/* Arrest Colby — £10M reward */
-		AP_TRACE("ColbyEvent: Player chose ARREST — £10M reward");
-		CompanyID cid = _local_company;
-		Company *c = Company::GetIfValid(cid);
-		if (c != nullptr) AP_ChangeMoney(cid, (Money)10000000LL);
-		AP_ShowNews(fmt::format("[AP] Colby arrested! {} reward deposited into your account!", AP_Money((Money)10000000LL)));
-		AP_ShowNews(fmt::format("[AP] The town of {} is now free of Colby's influence.", _ap_colby_target_name));
-	} else {
-		/* Let Colby escape — start countdown to second popup */
-		AP_TRACE("ColbyEvent: Player chose ESCAPE — sacrifice popup pending");
-		_ap_colby_escaped     = true;
-		_ap_colby_escape_ticks = COLBY_ESCAPE_TICKS;
-		AP_ShowNews(fmt::format("[AP] Colby slips away into the night from {}... but he won't get far.", _ap_colby_target_name));
-	}
+	AP_TRACE("ColbyEvent: Player chose ARREST — £10M reward");
+	CompanyID cid = _local_company;
+	Company *c = Company::GetIfValid(cid);
+	if (c != nullptr) AP_ChangeMoney(cid, (Money)10000000LL);
+	AP_ShowNews(fmt::format("[AP] Colby arrested! {} reward deposited into your account!", AP_Money((Money)10000000LL)));
+	AP_ShowNews(fmt::format("[AP] The town of {} is now free of Colby's influence.", _ap_colby_target_name));
 	_ap_colby_done = true;
+	_ap_colby_popup_pending = false;
+	_ap_colby_popup_type = 0;
 }
 
-/** Popup B callback (second popup — only shown if player let Colby escape).
- *  true = Imprison, false = Sacrifice to Elder Gods. */
-static void AP_ColbyEscapeCallback(Window *, bool imprison)
+/** Player chose LET ESCAPE in popup A. */
+void AP_ColbyDecisionEscape()
 {
-	if (imprison) {
-		AP_TRACE("ColbyEvent: Player chose IMPRISON");
-		AP_ShowNews("[AP] Colby has been handed over to the authorities. Justice is served.");
-	} else {
-		AP_TRACE("ColbyEvent: Player chose SACRIFICE — £2M + town growth burst");
-		/* Sacrifice — £2M + all-town growth burst */
-		CompanyID cid = _local_company;
-		Company *c = Company::GetIfValid(cid);
-		if (c != nullptr) AP_ChangeMoney(cid, (Money)2000000LL);
-		for (Town *t : Town::Iterate()) {
-			t->grow_counter = 0; /* immediate growth pulse in every town */
-		}
-		AP_ShowNews(fmt::format("[AP] Colby sacrificed to the Elder Gods! +{} and all towns are growing rapidly!", AP_Money((Money)2000000LL)));
+	AP_TRACE("ColbyEvent: Player chose ESCAPE — sacrifice popup pending");
+	_ap_colby_escaped      = true;
+	_ap_colby_escape_ticks = COLBY_ESCAPE_TICKS;
+	AP_ShowNews(fmt::format("[AP] Colby slips away into the night from {}... but he won't get far.", _ap_colby_target_name));
+	_ap_colby_done = true;
+	_ap_colby_popup_pending = false;
+	_ap_colby_popup_type = 0;
+}
+
+/** Player chose IMPRISON in popup B. */
+void AP_ColbyDecisionImprison()
+{
+	AP_TRACE("ColbyEvent: Player chose IMPRISON");
+	AP_ShowNews("[AP] Colby has been handed over to the authorities. Justice is served.");
+	_ap_colby_popup_pending = false;
+	_ap_colby_popup_type = 0;
+}
+
+/** Player chose SACRIFICE in popup B. */
+void AP_ColbyDecisionSacrifice()
+{
+	AP_TRACE("ColbyEvent: Player chose SACRIFICE — £2M + town growth burst");
+	CompanyID cid = _local_company;
+	Company *c = Company::GetIfValid(cid);
+	if (c != nullptr) AP_ChangeMoney(cid, (Money)2000000LL);
+	for (Town *t : Town::Iterate()) {
+		t->grow_counter = 0; /* immediate growth pulse in every town */
 	}
-	/* _ap_colby_done was already true from popup A callback */
+	AP_ShowNews(fmt::format("[AP] Colby sacrificed to the Elder Gods! +{} and all towns are growing rapidly!", AP_Money((Money)2000000LL)));
+	_ap_colby_popup_pending = false;
+	_ap_colby_popup_type = 0;
+}
+
+/** Called from the Colby status window "Reopen Decision" button. */
+void AP_ColbyReopenPopup()
+{
+	if (!_ap_colby_popup_pending || _ap_colby_popup_type == 0) return;
+	ShowColbyDecisionWindow(_ap_colby_popup_type);
 }
 
 /* =========================================================================
  * Colby Event — core logic
  * ====================================================================== */
 
-/** Show the final arrest/escape query (popup A). */
+/** Show the final arrest/escape decision window (popup A).
+ *  Uses a custom window so the X button just dismisses without choosing. */
 static void AP_ColbyShowFinalQuery()
 {
-	if (_ap_colby_popup_shown) return;
-	_ap_colby_popup_shown = true;
-	ShowQuery(
-		GetEncodedString(STR_AP_COLBY_ARREST_CAPTION),
-		GetEncodedString(STR_AP_COLBY_ARREST_QUERY),
-		nullptr,
-		AP_ColbyArrestCallback,
-		true
-	);
+	if (_ap_colby_popup_shown && !_ap_colby_popup_pending) return;
+	_ap_colby_popup_shown   = true;
+	_ap_colby_popup_pending = true;
+	_ap_colby_popup_type    = 1; /* arrest/escape */
+	_ap_colby_reopen_ticks  = 0;
+	ShowColbyDecisionWindow(1);
 }
 
-/** Show the second popup (popup B — Colby re-captured). */
+/** Show the second decision window (popup B — Colby re-captured). */
 static void AP_ColbyShowEscapeQuery()
 {
-	ShowQuery(
-		GetEncodedString(STR_AP_COLBY_ESCAPE_CAPTION),
-		GetEncodedString(STR_AP_COLBY_ESCAPE_QUERY),
-		nullptr,
-		AP_ColbyEscapeCallback,
-		true
-	);
+	_ap_colby_popup_pending = true;
+	_ap_colby_popup_type    = 2; /* imprison/sacrifice */
+	_ap_colby_reopen_ticks  = 0;
+	ShowColbyDecisionWindow(2);
 }
 
 /** Resolve the Colby cargo type. Called once from AP_ColbyInit().
@@ -1831,8 +1847,10 @@ static void AP_ColbySpawnStash()
 	AP_ColbyForceTargetAcceptance();
 
 	AP_ShowNews(fmt::format("[AP] Step {}/5: Colby's stash has appeared on the map! "
-		"Build a station nearby and deliver {} packages to {}!",
-		_ap_colby_step, COLBY_STEP_AMOUNT, _ap_colby_target_name));
+		"Build a station nearby, load the cargo, and deliver it to {}. "
+		"Refit your vehicle to 'Packages' if needed (buses, mail trucks, and goods vans work). "
+		"Use 'Unload all' at the destination.",
+		_ap_colby_step, _ap_colby_target_name));
 
 	AP_TRACE(fmt::format("ColbyStash: step={} tile={} target='{}'",
 		_ap_colby_step, placed_tile, _ap_colby_target_name));
@@ -1865,8 +1883,9 @@ static void AP_ColbyInjectCargo()
 /** Announce the current active step via news. */
 static void AP_ColbyAnnounceStep()
 {
-	AP_ShowNews(fmt::format("[AP] Colby Event [Step {}/5]: Deliver {} packages to {}!",
-		_ap_colby_step, COLBY_STEP_AMOUNT, _ap_colby_target_name));
+	AP_ShowNews(fmt::format("[AP] Colby Event [Step {}/5]: Deliver cargo to {}! "
+		"Refit to 'Packages' and use 'Unload all' at destination.",
+		_ap_colby_step, _ap_colby_target_name));
 }
 
 /** Start cargomonitor for the current step (consume any stale deliveries). */
@@ -1973,8 +1992,31 @@ static void AP_ColbyInit()
  *  Drives event progression: waiting → active steps → final popup. */
 static void AP_ColbyTick()
 {
-	if (!_ap_colby_enabled || _ap_colby_done) return;
+	if (!_ap_colby_enabled) return;
 	if (_ap_colby_target_town == (TownID)UINT16_MAX) return;
+
+	/* Handle dismissed popup auto-reopen (applies to both popup A and popup B) */
+	if (_ap_colby_popup_pending && _ap_colby_popup_type > 0) {
+		_ap_colby_reopen_ticks++;
+		/* Auto-reopen after ~30 seconds (120 ticks at ~4 ticks/sec) */
+		if (_ap_colby_reopen_ticks >= 120) {
+			_ap_colby_reopen_ticks = 0;
+			AP_ShowNews("[AP] You haven't decided Colby's fate yet! Check the Colby Event window to reopen the decision.");
+			ShowColbyDecisionWindow(_ap_colby_popup_type);
+		}
+	}
+
+	/* If escape countdown is running (popup B pending), tick it down */
+	if (_ap_colby_escaped && !_ap_colby_popup_pending) {
+		/* _ap_colby_done is true, escape was chosen, waiting for popup B */
+		_ap_colby_escape_ticks--;
+		if (_ap_colby_escape_ticks <= 0) {
+			AP_ColbyShowEscapeQuery();
+		}
+		return;
+	}
+
+	if (_ap_colby_done) return;
 
 	const int cur_year = (int)TimerGameCalendar::year.base();
 
@@ -2386,6 +2428,7 @@ static void AP_DemigodTick()
 			_ap_demigod_active_company = newest;
 			_ap_demigod_pending_name = false;
 			InvalidateWindowClassesData(WC_COMPANY);
+			MarkWholeScreenDirty(); /* Force full redraw — CCA_NEW_AI doesn't do this, leaving dirty rects on toolbar/viewport */
 			Debug(misc, 0, "[AP] Demigod company named: {} (CompanyID={}, bonus={})", def.name, (int)newest.base(), bonus);
 		}
 	}
@@ -3025,6 +3068,7 @@ ColbyStatus AP_GetColbyStatus() {
 	s.step_amount   = COLBY_STEP_AMOUNT;
 	s.escaped       = _ap_colby_escaped;
 	s.popup_shown   = _ap_colby_popup_shown;
+	s.popup_pending = _ap_colby_popup_pending;
 	s.escape_ticks  = _ap_colby_escape_ticks;
 	s.town_name     = _ap_colby_target_name;
 	s.town_id       = _ap_colby_target_town;

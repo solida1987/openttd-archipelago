@@ -1,5 +1,24 @@
 # Changelog — OpenTTD Archipelago
 
+## [exp-1.2.1] — 2026-03-16
+
+### Fixed
+- **Graphical glitch when demigod company spawns** — The God of Wackens spawning a rival AI company left grey rendering corruption on the toolbar and viewport. Fix: added `MarkWholeScreenDirty()` after demigod company naming completes.
+- **Paper Truck and other wagons appearing on wrong climate** — Wagon climate filtering was completely missing. Fix: added `NON_TEMPERATE_WAGONS`, `NON_ARCTIC_WAGONS`, `NON_TROPIC_WAGONS` frozensets and applied them at all 3 climate filter points.
+- **FillError crash during generation** — AP's fill algorithm only puts filler items in EXCLUDED locations, but we had far more EXCLUDED slots than filler items. Fix: replaced the entire PRIORITY/EXCLUDED system with manual placement (see Changed).
+- **Speed Boost items trimmed from pool** — 20 Speed Boost items were not counted in `reserved`, making `vehicle_slots` 20 too large and trimming all speed boosts. Fix: added `speed_boost_count` to `reserved`.
+
+### Changed
+- **Item distribution now uses fixed percentages instead of AP's priority system** — Removed the 7 "Advanced Balancing" YAML options (`easy_mission_priority`, `medium_mission_priority`, `hard_mission_priority`, `extreme_mission_priority`, `ruin_priority`, `demigod_priority`, `shop_progression_limit`). Progression items are now placed manually in `pre_fill` with a fixed split: 40% missions / 40% shop / 10% ruins / 10% demigods (adjusted when pools are disabled). Missions fill easy→medium→hard→extreme so early progression lands in easy missions. This guarantees balanced distribution regardless of pool sizes.
+
+### Added
+- **Colby Event: reopen dismissed popups** — If the Colby arrest/escape decision popup is accidentally closed (X button), a "Reopen Colby Decision" button appears in the Colby status window. The popup also auto-reopens after ~30 seconds. Custom window replaces ShowQuery so X=dismiss is distinct from choosing an option.
+- **Victory vehicle requirement option** — `victory_vehicle_requirement` (5-50, default 15) controls how many vehicles the logic requires before Victory is reachable.
+- **Tier vehicle multipliers** — `hard_tier_vehicle_multiplier` (1-5x) and `extreme_tier_vehicle_multiplier` (1-10x) for sphere progression.
+- **Minimum 150 missions** — Mission count now targets at least 150, distributed across all 4 difficulty tiers. Per-tier cap raised from 25 to 50.
+
+---
+
 ## [exp-1.1] — patch_exp_1_1_30 — 2026-03-10
 
 ### Fixed

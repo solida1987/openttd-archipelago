@@ -746,6 +746,7 @@ enum WindowClass : uint16_t {
 	WC_ARCHIPELAGO_INDEX,   ///< Archipelago vehicle index / encyclopedia.
 	WC_AP_START_CHOICE,     ///< Archipelago 3-choice start dialog (Single/Host/Load).
 	WC_AP_JOIN_MULTIPLAYER, ///< Archipelago Join Multiplayer dialog.
+	WC_AP_COLBY_DECISION,  ///< Archipelago Colby Event decision popup (arrest/escape/sacrifice).
 
 	WC_INVALID = 0xFFFF, ///< Invalid window.
 };

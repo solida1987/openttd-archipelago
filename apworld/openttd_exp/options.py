@@ -145,6 +145,83 @@ class MissionDifficulty(Choice):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  PROGRESSION BALANCING — ITEM PLACEMENT CONTROL
+# ═══════════════════════════════════════════════════════════════
+#
+#  These options control WHERE the Archipelago fill algorithm places
+#  progression items (vehicles, infrastructure, other players' key items).
+#
+#  Each location type can be set to:
+#    Priority  = fill algorithm PREFERS placing progression items here
+#    Default   = neutral — fill algorithm treats normally
+#    Excluded  = fill algorithm will NEVER place progression items here
+#
+#  The fill algorithm ("balanced") works by first placing all progression
+#  items into PRIORITY locations.  If there are more progression items than
+#  PRIORITY slots, it overflows into DEFAULT locations automatically.
+#  EXCLUDED locations only ever receive filler or useful items.
+#
+#  TL;DR: PRIORITY = "important items land here first",
+#         DEFAULT  = "overflow / neutral",
+#         EXCLUDED = "never progression items".
+# ═══════════════════════════════════════════════════════════════
+
+
+class VictoryVehicleRequirement(Range):
+    """Minimum number of vehicles the logic requires before Victory is reachable.
+
+    The Archipelago logic uses this to determine which sphere Victory falls in.
+    Higher values push Victory into later spheres (more items needed first).
+    Lower values allow Victory to appear earlier in the spoiler log.
+
+    The actual in-game win condition is set by Win Difficulty — this only
+    affects the logical SPHERE placement. If you set this too low, Victory
+    may appear reachable in sphere 2-3 which means other players' items
+    could be locked behind your early completion.
+
+    Default 15 ensures Victory sits comfortably in sphere 4+.
+    If you have many NewGRFs enabled, consider raising this."""
+    display_name = "Victory Vehicle Requirement (Logic)"
+    range_start = 5
+    range_end   = 50
+    default     = 15
+
+
+class HardTierVehicleMultiplier(Range):
+    """Vehicle count multiplier for Hard mission access rules.
+
+    The number of vehicles needed to access Hard missions is calculated as:
+    Mission Tier Unlock Count × this multiplier.
+
+    Default 2 means if Tier Unlock Count is 5, you need 10 vehicles for Hard.
+    Set higher to make Hard missions require a larger fleet.
+    Set to 1 to make Hard missions accessible with fewer vehicles.
+
+    Note: If this results in fewer than 1, the minimum is always 1."""
+    display_name = "Hard Tier Vehicle Multiplier"
+    range_start = 1
+    range_end   = 5
+    default     = 2
+
+
+class ExtremeTierVehicleMultiplier(Range):
+    """Vehicle count multiplier for Extreme mission access rules.
+
+    The number of vehicles needed to access Extreme missions is calculated as:
+    Mission Tier Unlock Count × this multiplier.
+
+    Default 3 means if Tier Unlock Count is 5, you need 15 vehicles for Extreme.
+    Set higher for a longer grind before endgame content.
+    Set to 1 to make Extreme missions accessible much earlier.
+
+    Note: If this results in fewer than 1, the minimum is always 1."""
+    display_name = "Extreme Tier Vehicle Multiplier"
+    range_start = 1
+    range_end   = 10
+    default     = 3
+
+
+# ═══════════════════════════════════════════════════════════════
 #  SHOP & ITEMS OPTIONS
 # ═══════════════════════════════════════════════════════════════
 
@@ -183,24 +260,6 @@ class ShopPriceTier(Choice):
     default = 0
 
 
-
-
-class ShopProgressionLimit(Range):
-    """Controls how far down the shop list progression items (yours and other
-    players') are allowed to be placed.  Shop slots ABOVE this number will
-    only contain filler or useful items — never progression.
-
-    Example: setting 50 means slots 1-50 can hold progression items, but
-    slots 51+ are guaranteed to only have non-progression items.
-
-    Lower values concentrate important items in the cheapest shop slots.
-    Higher values spread them out further (useful if you want a longer
-    shopping experience).  Set to 0 to disable the limit entirely
-    (all shop slots can hold progression items)."""
-    display_name = "Shop Progression Limit"
-    range_start = 0
-    range_end   = 500
-    default     = 50
 
 
 class StartingCashBonus(Choice):
@@ -1078,6 +1137,9 @@ OPTION_GROUPS = [
         EnableSphereProgression,
         MissionTierUnlockCount,
         MissionDifficulty,
+        VictoryVehicleRequirement,
+        HardTierVehicleMultiplier,
+        ExtremeTierVehicleMultiplier,
     ]),
     OptionGroup("Items & Shop", [
         UtilityCount,
@@ -1226,10 +1288,12 @@ class OpenTTDOptions(PerGameCommonOptions):
     enable_sphere_progression:       EnableSphereProgression
     mission_tier_unlock_count:       MissionTierUnlockCount
     mission_difficulty:              MissionDifficulty
+    victory_vehicle_requirement:     VictoryVehicleRequirement
+    hard_tier_vehicle_multiplier:    HardTierVehicleMultiplier
+    extreme_tier_vehicle_multiplier: ExtremeTierVehicleMultiplier
     # Shop & Items
     utility_count:                   UtilityCount
     shop_price_tier:                 ShopPriceTier
-    shop_progression_limit:          ShopProgressionLimit
     starting_cash_bonus:             StartingCashBonus
     # Item Pool
     enable_wagon_unlocks:            EnableWagonUnlocks

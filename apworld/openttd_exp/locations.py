@@ -549,7 +549,7 @@ DIFFICULTY_DISTRIBUTION = {
 
 # Hard cap: at most this many missions per difficulty tier.
 # Excess items are routed to the shop instead.
-MAX_MISSIONS_PER_DIFFICULTY = 25
+MAX_MISSIONS_PER_DIFFICULTY = 50
 
 
 class OpenTTDLocationData(NamedTuple):
@@ -560,15 +560,12 @@ class OpenTTDLocationData(NamedTuple):
 
 def _build_location_table(mission_count: int = 100, shop_item_count: int = 100,
                           ruin_count: int = 0,
-                          demigod_count: int = 0,
-                          shop_progression_limit: int = 50) -> Dict[str, OpenTTDLocationData]:
+                          demigod_count: int = 0) -> Dict[str, OpenTTDLocationData]:
     """Build location table with FIXED per-difficulty ID blocks.
 
-    Each difficulty has a dedicated 2000-slot ID block so that location IDs
-    are stable regardless of total mission count.  The AP server data package
-    (built at class level with max counts) and the actual multiworld (built at
-    runtime with the real counts) will always agree: Mission_Medium_001 is
-    always 6102000, Mission_Hard_001 is always 6104000, etc.
+    All locations are DEFAULT.  Progression distribution is handled
+    manually by pre_fill (40-40-10-10 split between missions, shop,
+    ruins, and demigods).
 
     Block layout:
       Easy:     6100000 – 6101999
@@ -582,49 +579,44 @@ def _build_location_table(mission_count: int = 100, shop_item_count: int = 100,
     """
     table: Dict[str, OpenTTDLocationData] = {}
 
-    # Mission priority: Easy + Medium + Extreme = PRIORITY so the fill
-    # algorithm places other players' progression items in reachable
-    # locations.  Hard = DEFAULT (mid-tier, neutral).
-    _MISSION_PRIORITY = {
-        "easy":    LocationProgressType.PRIORITY,
-        "medium":  LocationProgressType.PRIORITY,
-        "hard":    LocationProgressType.DEFAULT,
-        "extreme": LocationProgressType.PRIORITY,
-    }
+    # Compute per-tier counts from fractions, then distribute remainder
+    # so the total exactly equals mission_count (avoids item/location mismatch).
+    tier_counts: dict = {}
     for difficulty, fraction in DIFFICULTY_DISTRIBUTION.items():
-        count = min(max(1, int(mission_count * fraction)), MAX_MISSIONS_PER_DIFFICULTY)
+        tier_counts[difficulty] = min(max(1, int(mission_count * fraction)), MAX_MISSIONS_PER_DIFFICULTY)
+
+    actual_total = sum(tier_counts.values())
+    remainder = mission_count - actual_total
+    for difficulty in DIFFICULTY_DISTRIBUTION:
+        if remainder <= 0:
+            break
+        room = MAX_MISSIONS_PER_DIFFICULTY - tier_counts[difficulty]
+        add = min(remainder, room)
+        tier_counts[difficulty] += add
+        remainder -= add
+
+    for difficulty in DIFFICULTY_DISTRIBUTION:
+        count = tier_counts[difficulty]
         base = DIFFICULTY_ID_OFFSET[difficulty]
         assert count <= 2000, f"Too many {difficulty} missions ({count}); block only holds 2000"
-        pt = _MISSION_PRIORITY[difficulty]
         for i in range(1, count + 1):
             name = f"Mission_{difficulty.capitalize()}_{i:03d}"
-            table[name] = OpenTTDLocationData(base + (i - 1), f"mission_{difficulty}", pt)
+            table[name] = OpenTTDLocationData(base + (i - 1), f"mission_{difficulty}")
 
-    # Shop priority: slots up to shop_progression_limit = PRIORITY so the
-    # fill algorithm places other players' progression items in cheap,
-    # reachable shop slots.  Slots beyond the limit = EXCLUDED (only
-    # filler / own useful items).  A limit of 0 disables the split
-    # entirely — all shop slots become DEFAULT.
     for i in range(1, shop_item_count + 1):
         name = f"Shop_Purchase_{i:04d}"
         assert i <= 2000, f"Too many shop slots ({i}); block only holds 2000"
-        if shop_progression_limit <= 0:
-            pt = LocationProgressType.DEFAULT
-        elif i <= shop_progression_limit:
-            pt = LocationProgressType.PRIORITY
-        else:
-            pt = LocationProgressType.EXCLUDED
-        table[name] = OpenTTDLocationData(SHOP_ID_BASE + (i - 1), "shop", pt)
+        table[name] = OpenTTDLocationData(SHOP_ID_BASE + (i - 1), "shop")
 
     for i in range(1, ruin_count + 1):
         name = f"Ruin_{i:03d}"
         assert i <= 2000, f"Too many ruin slots ({i}); block only holds 2000"
-        table[name] = OpenTTDLocationData(RUIN_ID_BASE + (i - 1), "ruin", LocationProgressType.DEFAULT)
+        table[name] = OpenTTDLocationData(RUIN_ID_BASE + (i - 1), "ruin")
 
     for i in range(1, demigod_count + 1):
         name = f"Demigod_{i:03d}"
         assert i <= 1000, f"Too many demigod slots ({i}); block only holds 1000"
-        table[name] = OpenTTDLocationData(DEMIGOD_ID_BASE + (i - 1), "demigod", LocationProgressType.DEFAULT)
+        table[name] = OpenTTDLocationData(DEMIGOD_ID_BASE + (i - 1), "demigod")
 
     table["Goal_Victory"] = OpenTTDLocationData(VICTORY_ID, "goal", LocationProgressType.PRIORITY)
 
@@ -636,7 +628,5 @@ LOCATION_TABLE: Dict[str, OpenTTDLocationData] = _build_location_table(demigod_c
 
 def get_location_table(mission_count: int, shop_item_count: int,
                        ruin_count: int = 0,
-                       demigod_count: int = 0,
-                       shop_progression_limit: int = 50) -> Dict[str, OpenTTDLocationData]:
-    return _build_location_table(mission_count, shop_item_count, ruin_count, demigod_count,
-                                 shop_progression_limit)
+                       demigod_count: int = 0) -> Dict[str, OpenTTDLocationData]:
+    return _build_location_table(mission_count, shop_item_count, ruin_count, demigod_count)

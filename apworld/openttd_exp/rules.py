@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, Callable
 from BaseClasses import MultiWorld, CollectionState
 from .items import (
     ALL_VEHICLES, IRON_HORSE_ENGINES,
@@ -114,52 +114,79 @@ def has_any_terraform(state: CollectionState, player: int) -> bool:
 # ---------------------------------------------------------------------------
 # Mission type -> access rule mapping
 # ---------------------------------------------------------------------------
-_TYPE_RULES = {
-    "have trains":       lambda state, player: has_trains(state, player),
-    "have aircraft":     lambda state, player: has_aircraft(state, player),
-    "have ships":        lambda state, player: has_ships(state, player),
-    "have road vehicles":lambda state, player: has_road_vehicles(state, player),
-    "connect cities":    lambda state, player: has_trains(state, player) or has_road_vehicles(state, player),
-}
-
 _TRAIN_CARGO_KEYWORDS = {
     "coal", "iron ore", "steel", "goods", "grain", "wood",
     "livestock", "valuables",
 }
 
 
-def _rule_for_mission(mission: dict):
-    """Return the correct access rule lambda for a generated mission dict.
+def _build_effective_rules(world: "OpenTTDWorld"):
+    """Build world-aware rule functions that account for which unlocks are enabled.
 
-    Cargo-transport missions require has_cargo_train (train + wagon) instead of
-    just has_trains, so the player is never stuck with engines that cannot carry
-    anything.  Non-train cargo vehicles (road, ship, aircraft) are self-
-    contained and don't need a separate wagon check.
+    When an unlock option is DISABLED (e.g. enable_wagon_unlocks=false), those
+    items are NOT in the AP pool — the player has them for free in-game.  The
+    access rules must reflect this: checking ``state.has(wagon)`` when no wagon
+    item exists would always return False, causing the fill algorithm to fail.
+
+    Returns a dict of effective rule functions keyed by purpose.
     """
-    mtype = mission.get("type", "")
-    unit  = mission.get("unit", "")
+    opts = world.options
+    wagon_free = not bool(opts.enable_wagon_unlocks.value)
 
-    if mtype in _TYPE_RULES:
-        return _TYPE_RULES[mtype]
+    # ── Effective cargo-train check ─────────────────────────────────────
+    # If wagons are free, a train engine alone is sufficient for cargo.
+    if wagon_free:
+        def eff_has_cargo_train(state: CollectionState, player: int) -> bool:
+            return has_trains(state, player)
+    else:
+        eff_has_cargo_train = has_cargo_train
 
-    if mtype in ("transport cargo", "deliver tons to station", "deliver goods in year",
-                 "cargo_from_industry", "cargo_to_industry"):
-        cargo = mission.get("cargo", "").lower()
-        if any(k in cargo for k in _TRAIN_CARGO_KEYWORDS):
-            # Train-hauled cargo: need engine + wagon
-            return lambda state, player: has_cargo_train(state, player)
-        # Generic cargo: any vehicle that can carry stuff
-        return lambda state, player: has_cargo_capability(state, player)
+    # ── Effective cargo capability ──────────────────────────────────────
+    def eff_has_cargo_capability(state: CollectionState, player: int) -> bool:
+        return (eff_has_cargo_train(state, player)
+                or has_road_vehicles(state, player)
+                or has_ships(state, player)
+                or has_aircraft(state, player))
 
-    if mtype in ("passengers_to_town", "mail_to_town"):
-        return lambda state, player: has_cargo_capability(state, player)
+    # ── Type rules ──────────────────────────────────────────────────────
+    eff_TYPE_RULES = {
+        "have trains":       lambda state, player: has_trains(state, player),
+        "have aircraft":     lambda state, player: has_aircraft(state, player),
+        "have ships":        lambda state, player: has_ships(state, player),
+        "have road vehicles":lambda state, player: has_road_vehicles(state, player),
+        "connect cities":    lambda state, player: has_trains(state, player) or has_road_vehicles(state, player),
+    }
 
-    if unit == "trains":        return lambda state, player: has_cargo_train(state, player)
-    if unit == "aircraft":      return lambda state, player: has_aircraft(state, player)
-    if unit == "ships":         return lambda state, player: has_ships(state, player)
-    if unit == "road vehicles": return lambda state, player: has_road_vehicles(state, player)
+    # ── Mission rule builder ────────────────────────────────────────────
+    def eff_rule_for_mission(mission: dict):
+        mtype = mission.get("type", "")
+        unit  = mission.get("unit", "")
 
-    return lambda state, player: has_cargo_capability(state, player)
+        if mtype in eff_TYPE_RULES:
+            return eff_TYPE_RULES[mtype]
+
+        if mtype in ("transport cargo", "deliver tons to station", "deliver goods in year",
+                     "cargo_from_industry", "cargo_to_industry"):
+            cargo = mission.get("cargo", "").lower()
+            if any(k in cargo for k in _TRAIN_CARGO_KEYWORDS):
+                return lambda state, player: eff_has_cargo_train(state, player)
+            return lambda state, player: eff_has_cargo_capability(state, player)
+
+        if mtype in ("passengers_to_town", "mail_to_town"):
+            return lambda state, player: eff_has_cargo_capability(state, player)
+
+        if unit == "trains":        return lambda state, player: eff_has_cargo_train(state, player)
+        if unit == "aircraft":      return lambda state, player: has_aircraft(state, player)
+        if unit == "ships":         return lambda state, player: has_ships(state, player)
+        if unit == "road vehicles": return lambda state, player: has_road_vehicles(state, player)
+
+        return lambda state, player: eff_has_cargo_capability(state, player)
+
+    return {
+        "has_cargo_train": eff_has_cargo_train,
+        "has_cargo_capability": eff_has_cargo_capability,
+        "rule_for_mission": eff_rule_for_mission,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +287,12 @@ def set_rules(world: "OpenTTDWorld") -> None:
     player     = world.player
     multiworld = world.multiworld
 
+    # Build world-aware rule functions that account for disabled unlock options.
+    # When e.g. wagon unlocks are off, wagons are free → don't check state.has(wagon).
+    eff = _build_effective_rules(world)
+    eff_rule_for_mission = eff["rule_for_mission"]
+    eff_has_cargo_capability = eff["has_cargo_capability"]
+
     # Tier unlock threshold from options
     tier_count = world.options.mission_tier_unlock_count.value  # 0 = no gate
 
@@ -277,12 +310,22 @@ def set_rules(world: "OpenTTDWorld") -> None:
     extreme_locs= list(multiworld.get_region("mission_extreme", player).locations)
 
     # ------------------------------------------------------------------
-    # Easy: just need 1 vehicle + type-appropriate
+    # Easy: always reachable (sphere 0) for the fill algorithm.
+    # The in-game C++ client enforces the actual mission requirements
+    # (e.g. "need a train" or "need road vehicles").  Making Easy
+    # missions unconditionally accessible prevents FillError: when the
+    # fill algorithm places the last few progression items, the sweep
+    # state only contains pre-collected starting vehicles — if those
+    # don't match the type-specific rules of remaining locations, the
+    # fill would fail.  With 44 Easy missions always reachable, the
+    # algorithm always has somewhere to place items.
     # ------------------------------------------------------------------
     for loc in easy_locs:
-        mission = missions_by_loc.get(loc.name, {})
-        rule    = _rule_for_mission(mission)
-        loc.access_rule = (lambda r: lambda state: r(state, player))(rule)
+        pass  # default access_rule is already lambda state: True
+
+    # Tier vehicle multipliers from options
+    hard_multiplier    = world.options.hard_tier_vehicle_multiplier.value
+    extreme_multiplier = world.options.extreme_tier_vehicle_multiplier.value
 
     # ------------------------------------------------------------------
     # Medium: type-appropriate vehicle + tier_count vehicles + infra
@@ -291,7 +334,7 @@ def set_rules(world: "OpenTTDWorld") -> None:
     medium_vehicle_req = max(1, tier_count) if tier_count > 0 else 1
     for loc in medium_locs:
         mission = missions_by_loc.get(loc.name, {})
-        rule    = _rule_for_mission(mission)
+        rule    = eff_rule_for_mission(mission)
         infra   = _build_infra_rule("medium", mission, world)
         if infra is not None:
             loc.access_rule = (
@@ -307,10 +350,10 @@ def set_rules(world: "OpenTTDWorld") -> None:
     # ------------------------------------------------------------------
     # Hard: type vehicle + more vehicles + bridge/tunnel infra
     # ------------------------------------------------------------------
-    hard_vehicle_req = max(1, tier_count * 2) if tier_count > 0 else 3
+    hard_vehicle_req = max(1, tier_count * hard_multiplier) if tier_count > 0 else 3
     for loc in hard_locs:
         mission = missions_by_loc.get(loc.name, {})
-        rule    = _rule_for_mission(mission)
+        rule    = eff_rule_for_mission(mission)
         infra   = _build_infra_rule("hard", mission, world)
         if infra is not None:
             loc.access_rule = (
@@ -326,10 +369,10 @@ def set_rules(world: "OpenTTDWorld") -> None:
     # ------------------------------------------------------------------
     # Extreme: most vehicles + full infrastructure (+ terraform)
     # ------------------------------------------------------------------
-    extreme_vehicle_req = max(1, tier_count * 3) if tier_count > 0 else 6
+    extreme_vehicle_req = max(1, tier_count * extreme_multiplier) if tier_count > 0 else 6
     for loc in extreme_locs:
         mission = missions_by_loc.get(loc.name, {})
-        rule    = _rule_for_mission(mission)
+        rule    = eff_rule_for_mission(mission)
         infra   = _build_infra_rule("extreme", mission, world)
         if infra is not None:
             loc.access_rule = (
@@ -346,14 +389,14 @@ def set_rules(world: "OpenTTDWorld") -> None:
     # Shop: require cargo capability — player needs to earn money
     # ------------------------------------------------------------------
     for loc in multiworld.get_region("shop", player).locations:
-        loc.access_rule = lambda state: has_cargo_capability(state, player)
+        loc.access_rule = lambda state: eff_has_cargo_capability(state, player)
 
     # ------------------------------------------------------------------
     # Ruins: require cargo capability — ruins need cargo deliveries
     # ------------------------------------------------------------------
     ruin_region = multiworld.get_region("ruin", player)
     for loc in ruin_region.locations:
-        loc.access_rule = lambda state: has_cargo_capability(state, player)
+        loc.access_rule = lambda state: eff_has_cargo_capability(state, player)
 
     # ------------------------------------------------------------------
     # Demigods: require multiple vehicles + transport capability
@@ -381,8 +424,9 @@ def set_rules(world: "OpenTTDWorld") -> None:
     # ------------------------------------------------------------------
     victory = multiworld.get_location("Goal_Victory", player)
 
-    # Vehicle requirement: at least Extreme tier, never less than 15
-    victory_vehicle_req = max(15, extreme_vehicle_req)
+    # Vehicle requirement: at least Extreme tier, never less than the option value
+    victory_min = world.options.victory_vehicle_requirement.value
+    victory_vehicle_req = max(victory_min, extreme_vehicle_req)
 
     # Build infrastructure requirement for victory (same as extreme tier)
     victory_infra_checks = []
@@ -419,12 +463,12 @@ def set_rules(world: "OpenTTDWorld") -> None:
     if victory_infra_checks:
         _vic_infra = tuple(victory_infra_checks)
         victory.access_rule = lambda state: (
-            has_cargo_capability(state, player)
+            eff_has_cargo_capability(state, player)
             and has_transport_vehicles(state, player, victory_vehicle_req)
             and all(fn(state) for fn in _vic_infra)
         )
     else:
         victory.access_rule = lambda state: (
-            has_cargo_capability(state, player)
+            eff_has_cargo_capability(state, player)
             and has_transport_vehicles(state, player, victory_vehicle_req)
         )

@@ -23,6 +23,7 @@ from .items import (
     HEQS_ROAD_VEHICLES, HEQS_TRAINS, VACTRAIN_ENGINES, AIRCRAFTPACK_AIRCRAFT,
     ARCTIC_TROPIC_ONLY_TRAINS, TEMPERATE_ONLY_TRAINS,
     NON_TEMPERATE_ROAD_VEHICLES, NON_ARCTIC_ROAD_VEHICLES, NON_TROPIC_ROAD_VEHICLES,
+    NON_TEMPERATE_WAGONS, NON_ARCTIC_WAGONS, NON_TROPIC_WAGONS,
     ALL_TRACK_DIRECTION_ITEMS, TRACK_ITEMS_BY_RAILTYPE,
     TRAIN_TO_RAILTYPE, UNIVERSAL_STARTER_WAGONS,
     ROAD_DIRECTION_ITEMS, SIGNAL_ITEMS, BRIDGE_ITEMS, TUNNEL_ITEMS,
@@ -130,8 +131,7 @@ class OpenTTDWorld(World):
 
     def _get_location_table(self):
         mc, shop, ruin, dg = self._compute_pool_size()
-        spl = self.options.shop_progression_limit.value
-        return get_location_table(mc, shop, ruin, dg, shop_progression_limit=spl)
+        return get_location_table(mc, shop, ruin, dg)
 
     def _compute_pool_size(self) -> tuple:
         """Dynamically compute (mission_count, shop_item_count, ruin_count, demigod_count).
@@ -160,9 +160,9 @@ class OpenTTDWorld(World):
         else:
             eligible_count = sum(1 for v in ALL_VEHICLES if v not in _TOYLAND_ONLY_VEHICLES)
             # Apply climate-specific train/RV exclusions so the count matches create_items
-            if landscape == 0:   _climate_exclude = ARCTIC_TROPIC_ONLY_TRAINS | NON_TEMPERATE_ROAD_VEHICLES
-            elif landscape == 1: _climate_exclude = TEMPERATE_ONLY_TRAINS | NON_ARCTIC_ROAD_VEHICLES
-            else:                _climate_exclude = TEMPERATE_ONLY_TRAINS | NON_TROPIC_ROAD_VEHICLES
+            if landscape == 0:   _climate_exclude = ARCTIC_TROPIC_ONLY_TRAINS | NON_TEMPERATE_ROAD_VEHICLES | NON_TEMPERATE_WAGONS
+            elif landscape == 1: _climate_exclude = TEMPERATE_ONLY_TRAINS | NON_ARCTIC_ROAD_VEHICLES | NON_ARCTIC_WAGONS
+            else:                _climate_exclude = TEMPERATE_ONLY_TRAINS | NON_TROPIC_ROAD_VEHICLES | NON_TROPIC_WAGONS
             eligible_count -= sum(1 for v in _climate_exclude if v not in _TOYLAND_ONLY_VEHICLES)
         if ih_enabled:
             eligible_count += len(IRON_HORSE_ENGINES)
@@ -238,22 +238,41 @@ class OpenTTDWorld(World):
             eligible_count -= wagon_count
 
         speed_boost_count = 20  # SPEED_BOOST_ITEMS = ["Speed Boost"] * 20
-        # Ruin + demigod locations need items too — add them to total so the pool grows
-        total_items = eligible_count + trap_count + utility_count + infra_count + speed_boost_count + ruin_count + demigod_count
 
-        # Cap missions: 25 per difficulty × 4 tiers = 100 max.
-        # The distribution fractions still determine per-tier counts;
-        # the cap is applied per-tier inside _generate_missions and
-        # _build_location_table.  Here we just need to know the true
-        # total so the remainder goes to the shop.
+        # ── Total item budget ────────────────────────────────────────────
+        # Ruin + demigod locations need items too, so they add to the total.
+        total_items = (eligible_count + trap_count + utility_count
+                       + infra_count + speed_boost_count
+                       + ruin_count + demigod_count)
+
+        # ── Fill order: missions → ruins → demigods → shop (last) ────────
+        # Missions are the primary gameplay locations and get filled first.
+        # Ruins and demigods are fixed-count.  Shop gets whatever is left
+        # over — it can be 0 if missions + ruins consume everything.
+        #
+        # Target: at least 150 missions distributed across tiers.
+        # Hard cap: never create more locations than items (no phantoms).
+        MIN_TOTAL_MISSIONS = 150
+        budget_for_missions = total_items - ruin_count - demigod_count
+        target_missions = min(MIN_TOTAL_MISSIONS, max(10, budget_for_missions))
+
+        # Bump raw_half until tier-fraction split reaches the target.
         raw_half = max(10, total_items // 2)
-        mission_count = 0
-        for _diff, fraction in DIFFICULTY_DISTRIBUTION.items():
-            tier = min(max(1, int(raw_half * fraction)), MAX_MISSIONS_PER_DIFFICULTY)
-            mission_count += tier
+        while True:
+            mission_count = 0
+            for _diff, fraction in DIFFICULTY_DISTRIBUTION.items():
+                tier = min(max(1, int(raw_half * fraction)), MAX_MISSIONS_PER_DIFFICULTY)
+                mission_count += tier
+            if mission_count >= target_missions:
+                break
+            raw_half += 10
 
-        # Everything that isn't a mission, ruin, or demigod location becomes a shop slot.
-        shop_item_count = max(5, total_items - mission_count - ruin_count - demigod_count)
+        # Cap: missions can never exceed the budget (would leave <0 shop).
+        if mission_count > budget_for_missions:
+            mission_count = budget_for_missions
+
+        # Shop = whatever is left.  Can be 0 — that's fine.
+        shop_item_count = max(0, total_items - mission_count - ruin_count - demigod_count)
 
         return mission_count, shop_item_count, ruin_count, demigod_count
 
@@ -305,8 +324,22 @@ class OpenTTDWorld(World):
         bits_y = self.options.map_size_y.map_bits
         max_towns = min(120, max(4, (1 << (bits_x + bits_y - 8)) * 10))
 
+        # Compute per-tier counts with remainder distribution (same as _build_location_table)
+        _tier_counts: dict = {}
+        for d, f in DIFFICULTY_DISTRIBUTION.items():
+            _tier_counts[d] = min(max(1, int(mission_count * f)), MAX_MISSIONS_PER_DIFFICULTY)
+        _actual = sum(_tier_counts.values())
+        _rem = mission_count - _actual
+        for d in DIFFICULTY_DISTRIBUTION:
+            if _rem <= 0:
+                break
+            _room = MAX_MISSIONS_PER_DIFFICULTY - _tier_counts[d]
+            _add = min(_rem, _room)
+            _tier_counts[d] += _add
+            _rem -= _add
+
         for difficulty, fraction in DIFFICULTY_DISTRIBUTION.items():
-            count = min(max(1, int(mission_count * fraction)), MAX_MISSIONS_PER_DIFFICULTY)
+            count = _tier_counts[difficulty]
             pool = list(PREDEFINED_MISSION_POOLS[difficulty])
 
             # Shuffle once to randomise order — gives every session a different
@@ -493,12 +526,15 @@ class OpenTTDWorld(World):
             if landscape == 0:   # Temperate
                 climate_exclude |= ARCTIC_TROPIC_ONLY_TRAINS
                 climate_exclude |= NON_TEMPERATE_ROAD_VEHICLES
+                climate_exclude |= NON_TEMPERATE_WAGONS
             elif landscape == 1:  # Arctic
                 climate_exclude |= TEMPERATE_ONLY_TRAINS
                 climate_exclude |= NON_ARCTIC_ROAD_VEHICLES
+                climate_exclude |= NON_ARCTIC_WAGONS
             elif landscape == 2:  # Tropic
                 climate_exclude |= TEMPERATE_ONLY_TRAINS
                 climate_exclude |= NON_TROPIC_ROAD_VEHICLES
+                climate_exclude |= NON_TROPIC_WAGONS
 
         # Type-specific pools (engines + wagons for trains, rest vehicle-only)
         # When Iron Horse is enabled, replace vanilla normal-rail engines with IH engines
@@ -686,7 +722,8 @@ class OpenTTDWorld(World):
             utility_pool.extend(batch)
         utility_pool = utility_pool[:utility_target]
 
-        reserved = len(trap_pool) + len(utility_pool)
+        speed_boost_count = len(SPEED_BOOST_ITEMS)
+        reserved = len(trap_pool) + len(utility_pool) + speed_boost_count
 
         # Infrastructure unlock items — added to pool when their toggles are enabled.
         infra_items: List[str] = []
@@ -723,14 +760,17 @@ class OpenTTDWorld(World):
             if landscape == 0:    # Temperate
                 _climate_rv_exclude = NON_TEMPERATE_ROAD_VEHICLES
                 _climate_train_exclude = ARCTIC_TROPIC_ONLY_TRAINS
+                _climate_wagon_exclude = NON_TEMPERATE_WAGONS
             elif landscape == 1:  # Arctic
                 _climate_rv_exclude = NON_ARCTIC_ROAD_VEHICLES
                 _climate_train_exclude = TEMPERATE_ONLY_TRAINS
+                _climate_wagon_exclude = NON_ARCTIC_WAGONS
             else:                 # Tropic (landscape == 2)
                 _climate_rv_exclude = NON_TROPIC_ROAD_VEHICLES
                 _climate_train_exclude = TEMPERATE_ONLY_TRAINS
+                _climate_wagon_exclude = NON_TROPIC_WAGONS
 
-            _full_exclude = _TOYLAND_ONLY_VEHICLES | _climate_rv_exclude | _climate_train_exclude
+            _full_exclude = _TOYLAND_ONLY_VEHICLES | _climate_rv_exclude | _climate_train_exclude | _climate_wagon_exclude
             eligible_vehicles = [v for v in ALL_VEHICLES if v not in _full_exclude]
 
         # ── Iron Horse: add engines to pool if enabled ────────────────────
@@ -855,9 +895,24 @@ class OpenTTDWorld(World):
 
 
     def pre_fill(self) -> None:
-        """Lock all trap and utility items into mission locations before AP's main fill.
-        This guarantees traps/utility never appear in shop slots."""
-        trap_utility_names = frozenset(TRAP_ITEMS) | frozenset(UTILITY_ITEMS) | {"Speed Boost"}
+        """Manually distribute ALL progression, trap, and utility items.
+
+        Fill order:
+          1. Traps + utility → missions / ruins / demigods (NEVER shop)
+          2. Progression items → distributed by fixed percentages:
+             - Missions 40% (filled easy→medium→hard→extreme)
+             - Shop 40%
+             - Ruins 10%  (if enabled, else redistributed)
+             - Demigods 10% (if enabled, else redistributed)
+          3. AP fill handles remaining useful/filler → all locations freely
+
+        This guarantees:
+          - Traps NEVER appear in the shop
+          - Progression is evenly split across pools
+          - Easy missions get progression first (early finds)
+        """
+        # ── Step 1: Lock traps + utility into non-shop locations ──────────
+        trap_utility_names = frozenset(TRAP_ITEMS) | frozenset(UTILITY_ITEMS)
 
         trap_utility_items = [item for item in self.multiworld.itempool
                                if item.player == self.player
@@ -865,27 +920,96 @@ class OpenTTDWorld(World):
         for item in trap_utility_items:
             self.multiworld.itempool.remove(item)
 
-        if not trap_utility_items:
-            return
+        if trap_utility_items:
+            non_shop_locs: list = []
+            for rname in ("mission_easy", "mission_medium", "mission_hard",
+                          "mission_extreme", "ruin", "demigod"):
+                region = self.multiworld.get_region(rname, self.player)
+                non_shop_locs.extend(loc for loc in region.locations if not loc.item)
 
-        # Collect all unfilled mission locations
+            self.multiworld.random.shuffle(non_shop_locs)
+            self.multiworld.random.shuffle(trap_utility_items)
+
+            for item in trap_utility_items:
+                if non_shop_locs:
+                    loc = non_shop_locs.pop()
+                    loc.place_locked_item(item)
+
+        # ── Step 2: Distribute progression items by fixed percentages ─────
+        # Determine active pools and their share
+        _, _, ruin_count, demigod_count = self._compute_pool_size()
+        ruins_on = ruin_count > 0
+        demigods_on = demigod_count > 0
+
+        if ruins_on and demigods_on:
+            pct = {"mission": 0.40, "shop": 0.40, "ruin": 0.10, "demigod": 0.10}
+        elif ruins_on:
+            pct = {"mission": 0.45, "shop": 0.45, "ruin": 0.10, "demigod": 0.0}
+        elif demigods_on:
+            pct = {"mission": 0.45, "shop": 0.45, "ruin": 0.0, "demigod": 0.10}
+        else:
+            pct = {"mission": 0.50, "shop": 0.50, "ruin": 0.0, "demigod": 0.0}
+
+        # Extract all OWN progression items from the pool
+        prog_items = [item for item in self.multiworld.itempool
+                       if item.player == self.player and item.advancement]
+        for item in prog_items:
+            self.multiworld.itempool.remove(item)
+        self.random.shuffle(prog_items)
+
+        # Calculate target counts per pool
+        total_prog = len(prog_items)
+        mission_target = round(total_prog * pct["mission"])
+        shop_target    = round(total_prog * pct["shop"])
+        ruin_target    = round(total_prog * pct["ruin"])
+        demigod_target = max(0, total_prog - mission_target - shop_target - ruin_target)
+        # Collect unfilled locations per pool
+        # Missions: ordered easy → medium → hard → extreme (progression fills easy first)
         mission_locs: list = []
         for rname in ("mission_easy", "mission_medium", "mission_hard", "mission_extreme"):
             region = self.multiworld.get_region(rname, self.player)
             mission_locs.extend(loc for loc in region.locations if not loc.item)
 
-        self.multiworld.random.shuffle(mission_locs)
-        self.multiworld.random.shuffle(trap_utility_items)
+        shop_region = self.multiworld.get_region("shop", self.player)
+        shop_locs = [loc for loc in shop_region.locations if not loc.item]
+        self.random.shuffle(shop_locs)
 
-        # Directly lock items to mission locations — no access-rule checks needed
-        # (traps/utility are unconditionally receivable)
-        for item in trap_utility_items:
-            if mission_locs:
-                loc = mission_locs.pop()
-                loc.place_locked_item(item)
-            else:
-                # Safety fallback: more traps/utility than mission slots (shouldn't happen)
-                self.multiworld.itempool.append(item)
+        ruin_region = self.multiworld.get_region("ruin", self.player)
+        ruin_locs = [loc for loc in ruin_region.locations if not loc.item]
+        self.random.shuffle(ruin_locs)
+
+        demigod_region = self.multiworld.get_region("demigod", self.player)
+        demigod_locs = [loc for loc in demigod_region.locations if not loc.item]
+        self.random.shuffle(demigod_locs)
+
+        # Place progression items into each pool; overflow to next pool
+        pools = [
+            (mission_target, mission_locs),
+            (shop_target,    shop_locs),
+            (ruin_target,    ruin_locs),
+            (demigod_target, demigod_locs),
+        ]
+
+        idx = 0  # index into prog_items
+        for target, locs in pools:
+            placed = 0
+            for loc in locs:
+                if placed >= target or idx >= total_prog:
+                    break
+                loc.place_locked_item(prog_items[idx])
+                idx += 1
+                placed += 1
+
+        # Any remaining progression items (overflow) → place in any unfilled location
+        if idx < total_prog:
+            all_remaining = []
+            for _, pool_locs in pools:
+                all_remaining.extend(loc for loc in pool_locs if not loc.item)
+            for loc in all_remaining:
+                if idx >= total_prog:
+                    break
+                loc.place_locked_item(prog_items[idx])
+                idx += 1
 
     def fill_slot_data(self) -> Dict[str, Any]:
         """Data sent to the game client via the bridge."""
