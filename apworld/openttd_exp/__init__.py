@@ -1,6 +1,6 @@
 """
 OpenTTD Archipelago World (Experimental)
-Version: exp-1.2.3
+Version: exp-5.0
 Supports: OpenTTD 15.2
 
 A full Archipelago integration for OpenTTD.

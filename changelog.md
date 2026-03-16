@@ -1,6 +1,6 @@
 # Changelog — OpenTTD Archipelago
 
-## [exp-1.2.3] — 2026-03-16
+## [exp-5.0] — 2026-03-16
 
 ### Fixed
 - **Graphical glitch when demigod company spawns** — Fix: added `MarkWholeScreenDirty()` after demigod company naming completes.
