@@ -1889,15 +1889,22 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_ruins_tracker_wid
 
 struct ArchipelagoRuinsTrackerWindow : Window {
 	std::vector<APRuinView> ruins;
+	std::vector<int> entry_y_offsets; ///< Cumulative Y pixel offset per entry
+	int total_list_height = 0;        ///< Total pixel height of all entries
 	Scrollbar *vscroll = nullptr;
 	int refresh_timer = 0;
 
-	/** Height of a single ruin entry: name + cargo lines + spacing. */
-	int _EntryH() const {
+	/** Height of a single ruin entry based on actual cargo count. */
+	int _EntryH(int cargo_count) const {
 		int line_h = GetCharacterHeight(FS_NORMAL) + 2;
-		/* Name line + up to 4 cargo lines + 1 blank separator = max 6 lines. */
-		/* We compute dynamically per-entry in DrawWidget, but for scroll we use max. */
-		return line_h * 6;
+		/* 1 header line + cargo lines + 1 blank separator */
+		return line_h * (1 + cargo_count + 1);
+	}
+
+	/** Max entry height (for scrollbar capacity). */
+	int _MaxEntryH() const {
+		int line_h = GetCharacterHeight(FS_NORMAL) + 2;
+		return line_h * 6; /* header + 4 cargo max + separator */
 	}
 
 	ArchipelagoRuinsTrackerWindow(WindowDesc &desc, WindowNumber wn) : Window(desc)
@@ -1917,11 +1924,21 @@ struct ArchipelagoRuinsTrackerWindow : Window {
 			return a.id < b.id;
 		});
 
+		/* Pre-compute cumulative Y offsets for pixel-accurate click detection. */
+		this->entry_y_offsets.clear();
+		int cum = 0;
+		for (const auto &rv : this->ruins) {
+			this->entry_y_offsets.push_back(cum);
+			cum += _EntryH((int)rv.cargo.size());
+		}
+		this->total_list_height = cum;
+
 		if (this->vscroll) {
-			this->vscroll->SetCount((int)this->ruins.size());
+			/* Use pixel-based scrolling for variable-height entries. */
+			this->vscroll->SetCount(this->total_list_height);
 			const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPRT_PANEL);
-			int visible = (panel ? panel->current_y : 300) / _EntryH();
-			this->vscroll->SetCapacity(std::max(1, visible));
+			int panel_h = panel ? panel->current_y : 300;
+			this->vscroll->SetCapacity(panel_h);
 		}
 	}
 
@@ -1932,22 +1949,27 @@ struct ArchipelagoRuinsTrackerWindow : Window {
 		if (widget != WAPRT_PANEL) return;
 
 		int line_h = GetCharacterHeight(FS_NORMAL) + 2;
-		int entry_h = _EntryH();
-		int y = r.top + 3;
 		int max_y = r.bottom - 2;
 		int xl = r.left + 6;
 		int xr = r.right - 6;
 
-		int start = this->vscroll ? this->vscroll->GetPosition() : 0;
-		int visible = (r.bottom - r.top) / entry_h + 2;
+		int scroll_pos = this->vscroll ? this->vscroll->GetPosition() : 0;
 
 		if (this->ruins.empty()) {
-			DrawString(xl, xr, y, "No ruins discovered yet.", TC_GREY);
+			DrawString(xl, xr, r.top + 3, "No ruins discovered yet.", TC_GREY);
 			return;
 		}
 
-		for (int i = start; i < (int)this->ruins.size() && i < start + visible; i++) {
+		for (int i = 0; i < (int)this->ruins.size(); i++) {
+			int entry_top = (i < (int)this->entry_y_offsets.size())
+				? this->entry_y_offsets[i] : 0;
+			int y = r.top + 3 + entry_top - scroll_pos;
+
+			/* Skip entries above visible area */
+			int eh = _EntryH((int)this->ruins[i].cargo.size());
+			if (y + eh < r.top) continue;
 			if (y > max_y) break;
+
 			const auto &rv = this->ruins[i];
 
 			/* ── Header line: [status icon] Ruin name — Town ── */
@@ -1976,13 +1998,9 @@ struct ArchipelagoRuinsTrackerWindow : Window {
 					cargo_col = TC_WHITE;
 				}
 
-				/* Draw a simple progress bar after the text */
 				DrawString(xl, xr, y, cargo_line, cargo_col);
 				y += line_h;
 			}
-
-			/* Blank separator */
-			y += line_h;
 		}
 	}
 
@@ -1991,10 +2009,16 @@ struct ArchipelagoRuinsTrackerWindow : Window {
 		if (widget != WAPRT_PANEL) return;
 
 		const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPRT_PANEL);
-		int entry_h = _EntryH();
-		int start = this->vscroll ? this->vscroll->GetPosition() : 0;
-		int rel_y = pt.y - panel->pos_y - 3;
-		int idx = start + rel_y / entry_h;
+		int scroll_pos = this->vscroll ? this->vscroll->GetPosition() : 0;
+		int pixel_y = (pt.y - panel->pos_y - 3) + scroll_pos;
+
+		/* Binary search through cumulative offsets to find clicked entry. */
+		int idx = -1;
+		for (int i = 0; i < (int)this->ruins.size(); i++) {
+			int top = (i < (int)this->entry_y_offsets.size()) ? this->entry_y_offsets[i] : 0;
+			int bot = top + _EntryH((int)this->ruins[i].cargo.size());
+			if (pixel_y >= top && pixel_y < bot) { idx = i; break; }
+		}
 
 		if (idx < 0 || idx >= (int)this->ruins.size()) return;
 
@@ -2018,8 +2042,8 @@ struct ArchipelagoRuinsTrackerWindow : Window {
 	{
 		if (this->vscroll) {
 			const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPRT_PANEL);
-			int visible = (panel ? panel->current_y : 300) / _EntryH();
-			this->vscroll->SetCapacity(std::max(1, visible));
+			int panel_h = panel ? panel->current_y : 300;
+			this->vscroll->SetCapacity(panel_h);
 		}
 	}
 

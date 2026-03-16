@@ -5691,13 +5691,28 @@ static const std::vector<std::string> _ap_ruin_cargo_toyland = {
 	"passengers", "mail", "sugar", "toys", "batteries", "sweets", "cola", "candyfloss", "bubbles", "plastic", "fizzy drinks", "toffee"
 };
 
-static const std::vector<std::string> &AP_RuinCargoList()
+/** Build a cargo list dynamically from what's actually available in-game.
+ *  This automatically supports FIRS and any other industry NewGRF — we simply
+ *  enumerate all cargo types that exist and have a label. Falls back to the
+ *  hardcoded vanilla lists only if no cargos are found (shouldn't happen). */
+static std::vector<std::string> AP_RuinCargoListDynamic()
 {
+	std::vector<std::string> result;
+	/* Use the cargo map built during AP session start — it maps English
+	 * cargo names (lowercase) to CargoType indices. Same names the AP
+	 * server uses, guaranteed to match what's actually loaded. */
+	if (!_ap_cargo_map_built) BuildCargoMap();
+	for (const auto &[cargo_name, _ct] : _ap_cargo_map) {
+		result.push_back(cargo_name);
+	}
+	if (!result.empty()) return result;
+
+	/* Fallback: static vanilla lists */
 	switch (_ap_pending_sd.landscape) {
-		case 1:  return _ap_ruin_cargo_arctic;
-		case 2:  return _ap_ruin_cargo_tropical;
-		case 3:  return _ap_ruin_cargo_toyland;
-		default: return _ap_ruin_cargo_temperate;
+		case 1:  return std::vector<std::string>(_ap_ruin_cargo_arctic.begin(), _ap_ruin_cargo_arctic.end());
+		case 2:  return std::vector<std::string>(_ap_ruin_cargo_tropical.begin(), _ap_ruin_cargo_tropical.end());
+		case 3:  return std::vector<std::string>(_ap_ruin_cargo_toyland.begin(), _ap_ruin_cargo_toyland.end());
+		default: return std::vector<std::string>(_ap_ruin_cargo_temperate.begin(), _ap_ruin_cargo_temperate.end());
 	}
 }
 
@@ -5807,7 +5822,7 @@ static bool AP_SpawnRuin()
 	ruin.town_id = town->index.base();
 	ruin.town_name = AP_TownName(town);
 
-	const auto &cargo_list = AP_RuinCargoList();
+	const auto cargo_list = AP_RuinCargoListDynamic();
 	int cargo_min = std::max(1, _ap_pending_sd.ruin_cargo_min);
 	int cargo_max = std::max(cargo_min, _ap_pending_sd.ruin_cargo_max);
 	int num_reqs = cargo_min + (int)(InteractiveRandom() % (uint32_t)(cargo_max - cargo_min + 1));
@@ -6898,47 +6913,45 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Bridge mode uses Company 0 (host company) on dedicated server */
 			CompanyID tick_cid = _ap_bridge_mode ? CompanyID(0) : _local_company;
 
-			/* Breakdown Wave: keep reliability at 1 while active, restore when expired */
+			/* Breakdown Wave: keep reliability at 1 while active, restore when expired.
+			 * NOTE: Does NOT gate on _ap_session_started — must restore even if
+			 * AP is disconnected, otherwise vehicles stay broken forever. */
 			if (_ap_breakdown_wave_ticks > 0) {
 				_ap_breakdown_wave_ticks--;
-				if (_ap_session_started) {
-					CompanyID cid = tick_cid;
-					if (_ap_breakdown_wave_ticks > 0) {
-						/* Still active: keep vehicles broken */
-						for (Vehicle *v : Vehicle::Iterate()) {
-							if (v->owner == cid && v->IsPrimaryVehicle()) {
-								v->breakdown_chance = 255;
-								v->reliability = 1;
-							}
+				CompanyID cid = tick_cid;
+				if (_ap_breakdown_wave_ticks > 0) {
+					/* Still active: keep vehicles broken */
+					for (Vehicle *v : Vehicle::Iterate()) {
+						if (v->owner == cid && v->IsPrimaryVehicle()) {
+							v->breakdown_chance = 255;
+							v->reliability = 1;
 						}
-					} else {
-						/* Expired: restore normal reliability from engine specs */
-						for (Vehicle *v : Vehicle::Iterate()) {
-							if (v->owner == cid && v->IsPrimaryVehicle()) {
-								const Engine *e = v->GetEngine();
-								if (e != nullptr) {
-									v->reliability = e->reliability;
-									v->breakdown_chance = 128;
-								}
-							}
-						}
-						AP_ShowNews("[AP] Breakdown Wave ended! Vehicles returning to normal reliability.");
 					}
+				} else {
+					/* Expired: restore normal reliability from engine specs */
+					for (Vehicle *v : Vehicle::Iterate()) {
+						if (v->owner == cid && v->IsPrimaryVehicle()) {
+							const Engine *e = v->GetEngine();
+							if (e != nullptr) {
+								v->reliability = e->reliability;
+								v->breakdown_chance = 128;
+							}
+						}
+					}
+					AP_ShowNews("[AP] Breakdown Wave ended! Vehicles returning to normal reliability.");
 				}
 			}
 
 			/* Fuel Shortage: re-apply speed cap every tick while active */
 			if (_ap_fuel_shortage_ticks > 0) {
 				_ap_fuel_shortage_ticks--;
-				if (_ap_session_started) {
-					CompanyID cid = tick_cid;
-					for (Vehicle *v : Vehicle::Iterate()) {
-						if (v->owner == cid && v->IsPrimaryVehicle()) {
-							const Engine *e = v->GetEngine();
-							if (e != nullptr) {
-								uint16_t half_speed = e->GetDisplayMaxSpeed() / 2;
-								if (v->cur_speed > half_speed) v->cur_speed = half_speed;
-							}
+				CompanyID cid = tick_cid;
+				for (Vehicle *v : Vehicle::Iterate()) {
+					if (v->owner == cid && v->IsPrimaryVehicle()) {
+						const Engine *e = v->GetEngine();
+						if (e != nullptr) {
+							uint16_t half_speed = e->GetDisplayMaxSpeed() / 2;
+							if (v->cur_speed > half_speed) v->cur_speed = half_speed;
 						}
 					}
 				}
@@ -6950,15 +6963,13 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Reliability Boost: re-apply max reliability every tick to counter decay */
 			if (_ap_reliability_boost_ticks > 0) {
 				_ap_reliability_boost_ticks--;
-				if (_ap_session_started) {
-					CompanyID cid = tick_cid;
-					for (Vehicle *v : Vehicle::Iterate()) {
-						if (v->owner == cid && v->IsPrimaryVehicle()) {
-							const Engine *e = v->GetEngine();
-							if (e != nullptr) {
-								v->reliability = e->reliability_max;
-								v->breakdown_chance = 0;
-							}
+				CompanyID cid = tick_cid;
+				for (Vehicle *v : Vehicle::Iterate()) {
+					if (v->owner == cid && v->IsPrimaryVehicle()) {
+						const Engine *e = v->GetEngine();
+						if (e != nullptr) {
+							v->reliability = e->reliability_max;
+							v->breakdown_chance = 0;
 						}
 					}
 				}
@@ -6967,20 +6978,21 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Station Boost: re-apply MAX_STATION_RATING to all player stations */
 			if (_ap_station_boost_ticks > 0) {
 				_ap_station_boost_ticks--;
-				if (_ap_session_started) {
-					CompanyID cid = tick_cid;
-					for (Station *st : Station::Iterate()) {
-						if (st->owner != cid) continue;
-						for (CargoType ct = 0; ct < NUM_CARGO; ct++) {
-							if (st->goods[ct].HasRating()) {
-								st->goods[ct].rating = MAX_STATION_RATING;
-							}
+				CompanyID cid = tick_cid;
+				for (Station *st : Station::Iterate()) {
+					if (st->owner != cid) continue;
+					for (CargoType ct = 0; ct < NUM_CARGO; ct++) {
+						if (st->goods[ct].HasRating()) {
+							st->goods[ct].rating = MAX_STATION_RATING;
 						}
 					}
 				}
 			}
-			/* License Revoke: tick down and restore when expired */
-			if (_ap_license_revoke_ticks > 0 && _ap_session_started) {
+			/* License Revoke: tick down and restore when expired.
+			 * NOTE: Does NOT require _ap_session_started — ticks must
+			 * count down even if AP is temporarily disconnected, otherwise
+			 * the revoke becomes effectively permanent. */
+			if (_ap_license_revoke_ticks > 0) {
 				_ap_license_revoke_ticks--;
 				if (_ap_license_revoke_ticks == 0) {
 					CompanyID cid = tick_cid;
