@@ -3335,13 +3335,14 @@ static void AP_OnItemReceived(const APItem &item)
 
 	} else if (item.item_name == "Vehicle License Revoke") {
 		/* Pick a random vehicle category and block it for 1-2 in-game years.
-		 * 1 in-game year ≈ 365 × 74 ticks = 27010 ticks. */
+		 * Timer is in realtime ticks (250 ms each).  At normal game speed
+		 * 1 in-game year ≈ 13.5 min real time = 3240 realtime ticks. */
 		static const VehicleType types[]     = { VEH_TRAIN, VEH_ROAD, VEH_AIRCRAFT, VEH_SHIP };
 		static const char *const type_names[] = { "Trains", "Road Vehicles", "Aircraft", "Ships" };
 		int idx = (int)InteractiveRandomRange(4);
 		_ap_license_revoke_type  = (int)types[idx];
-		_ap_license_revoke_ticks = 27010 + (int)InteractiveRandomRange(27010); /* 1–2 years */
-		int years_approx = (_ap_license_revoke_ticks / 27010) + 1;
+		_ap_license_revoke_ticks = 3240 + (int)InteractiveRandomRange(3240); /* 1–2 years realtime */
+		int years_approx = (_ap_license_revoke_ticks / 3240) + 1;
 
 		/* Immediately hide all engines of this category for the local company */
 		for (Engine *e : Engine::Iterate()) {
