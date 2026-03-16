@@ -58,6 +58,50 @@ CARGO_BY_LANDSCAPE = {
 # Backwards compat — used for class-level access before landscape is known
 CARGO_TYPES = CARGO_BY_LANDSCAPE[0]
 
+# FIRS Industry Replacement Set cargo lists per economy.
+# When FIRS is enabled, these replace the vanilla cargo lists entirely.
+# Each economy has a completely different set of industries and cargo types.
+FIRS_CARGO_BY_ECONOMY = {
+    0: [  # Temperate Basic
+        "Passengers", "Mail", "Coal", "Engineering Supplies",
+        "Farm Supplies", "Fish", "Food", "Goods",
+        "Grain", "Iron Ore", "Livestock", "Metal",
+        "Oil", "Sand", "Scrap Metal", "Steel",
+        "Stone", "Wood",
+    ],
+    1: [  # Arctic Basic
+        "Passengers", "Mail", "Chemicals", "Engineering Supplies",
+        "Explosives", "Farm Supplies", "Fish", "Food",
+        "Kaolin", "Livestock", "Logs", "Lumber",
+        "Metal", "Paper", "Peat", "Phosphate",
+        "Potash", "Zinc",
+    ],
+    2: [  # Tropic Basic
+        "Passengers", "Mail", "Chemicals", "Copper",
+        "Diamonds", "Engineering Supplies", "Farm Supplies",
+        "Fish", "Food", "Fruit", "Goods",
+        "Livestock", "Nuts", "Oil", "Rubber",
+        "Wood",
+    ],
+    3: [  # Steeltown
+        "Passengers", "Mail", "Carbon Black", "Cast Pipe",
+        "Cement", "Chemicals", "Chrome", "Chlorine",
+        "Coal", "Coke", "Engineering Supplies", "Iron Ore",
+        "Limestone", "Manganese", "Metal", "Oxygen",
+        "Pig Iron", "Quicklime", "Sand", "Scrap Metal",
+        "Slag", "Soda Ash", "Steel Sections", "Steel Sheet",
+        "Steel Wire Rod", "Sulphur", "Zinc",
+    ],
+    4: [  # In A Hot Country
+        "Passengers", "Mail", "Chemicals", "Coffee",
+        "Copper", "Diamonds", "Engineering Supplies",
+        "Explosives", "Farm Supplies", "Food", "Fruit",
+        "Goods", "Logs", "Lumber", "Nuts",
+        "Oil", "Phosphate", "Rubber", "Stone",
+        "Sugar Cane",
+    ],
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  MISSION TEMPLATES
 #  Each entry: (description_template, amount_min, amount_max, unit)

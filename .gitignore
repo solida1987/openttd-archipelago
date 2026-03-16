@@ -1,14 +1,13 @@
 /.vs
 /build*
 CMakeSettings.json
-docs/aidocs/*
+docs/devnotes/*
 docs/gamedocs/*
 docs/source/*
 /out
 /vcpkg_installed
 
-# Local tooling / reference docs (not part of the project)
-/.claude/
+# Local config / reference docs (not part of the project)
 /Reference/
 build_inc.bat
 __pycache__/

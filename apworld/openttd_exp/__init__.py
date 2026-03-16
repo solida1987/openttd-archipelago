@@ -14,7 +14,7 @@ from BaseClasses import Region, Item, ItemClassification, Tutorial, MultiWorld
 from worlds.AutoWorld import World, WebWorld
 
 from .items import (
-    ITEM_TABLE, ALL_VEHICLES, TRAP_ITEMS, UTILITY_ITEMS, SPEED_BOOST_ITEMS,
+    ITEM_TABLE, ALL_VEHICLES, TRAP_ITEMS, UTILITY_ITEMS,
     ALL_TRAINS, ALL_WAGONS, ALL_ROAD_VEHICLES, ALL_AIRCRAFT, ALL_SHIPS,
     VANILLA_TRAINS, VANILLA_WAGONS, VANILLA_ROAD_VEHICLES,
     VANILLA_AIRCRAFT, VANILLA_SHIPS, IRON_HORSE_ENGINES,
@@ -33,7 +33,7 @@ from .items import (
 from .locations import (
     get_location_table, DIFFICULTY_DISTRIBUTION, MAX_MISSIONS_PER_DIFFICULTY,
     MISSION_TEMPLATES, PREDEFINED_MISSION_POOLS, CARGO_TYPES, CARGO_BY_LANDSCAPE,
-    RUIN_ID_BASE
+    FIRS_CARGO_BY_ECONOMY, RUIN_ID_BASE
 )
 from .options import OpenTTDOptions, OPTION_GROUPS
 from .rules import set_rules
@@ -237,7 +237,7 @@ class OpenTTDWorld(World):
                 wagon_count = sum(1 for v in ALL_WAGONS if v not in _TOYLAND_ONLY_VEHICLES)
             eligible_count -= wagon_count
 
-        speed_boost_count = 20  # SPEED_BOOST_ITEMS = ["Speed Boost"] * 20
+        speed_boost_count = self.options.speed_boost_count.value
 
         # ── Total item budget ────────────────────────────────────────────
         # Ruin + demigod locations need items too, so they add to the total.
@@ -315,9 +315,14 @@ class OpenTTDWorld(World):
         mission_count, _shop_item_count, _ruin_count, _dg_count = self._compute_pool_size()
         missions: List = []
 
-        # Climate-appropriate cargo list
+        # Climate-appropriate cargo list — use FIRS cargo if FIRS is enabled
         landscape = self.options.landscape.value
-        cargo_list = CARGO_BY_LANDSCAPE.get(landscape, CARGO_TYPES)
+        firs_enabled = bool(self.options.enable_firs.value) and landscape != 3  # no FIRS on Toyland
+        if firs_enabled:
+            firs_economy = self.options.firs_economy.value
+            cargo_list = FIRS_CARGO_BY_ECONOMY.get(firs_economy, CARGO_BY_LANDSCAPE.get(landscape, CARGO_TYPES))
+        else:
+            cargo_list = CARGO_BY_LANDSCAPE.get(landscape, CARGO_TYPES)
 
         # Estimate max serviceable towns from map dimensions.
         bits_x = self.options.map_size_x.map_bits
@@ -722,7 +727,7 @@ class OpenTTDWorld(World):
             utility_pool.extend(batch)
         utility_pool = utility_pool[:utility_target]
 
-        speed_boost_count = len(SPEED_BOOST_ITEMS)
+        speed_boost_count = self.options.speed_boost_count.value
         reserved = len(trap_pool) + len(utility_pool) + speed_boost_count
 
         # Infrastructure unlock items — added to pool when their toggles are enabled.
@@ -851,8 +856,8 @@ class OpenTTDWorld(World):
         # ── Assemble pool ─────────────────────────────────────────────────
         items_to_create: List[str] = vehicle_pool + infra_items + utility_pool + trap_pool
 
-        # Add 20 Speed Boost items (each gives +10% FF speed, 100%→300%)
-        items_to_create += SPEED_BOOST_ITEMS
+        # Add Speed Boost items (each gives +10% FF speed)
+        items_to_create += ["Speed Boost"] * speed_boost_count
 
         # Final pad/trim to exact location count (should be exact already)
         target = total_locations

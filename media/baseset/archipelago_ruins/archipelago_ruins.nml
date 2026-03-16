@@ -14,31 +14,33 @@ grf {
 }
 
 /* ---- Sprite templates ---- */
-/* Each ruin sprite is 64x40, packed left-to-right in sprites.png */
+/* Each ruin sprite is 64x40, packed left-to-right in sprites.png.
+ * Drawn as BUILDING sprites (above terrain) so they are clearly visible. */
 
-template tmpl_ground(x) {
-    [x, 0, 64, 40, -31, 0, "sprites.png"]
+template tmpl_building(x) {
+    [x, 0, 64, 40, -31, -9, "sprites.png"]
 }
 
 /* ---- Spritesets (one sprite each — no animation) ---- */
 
-spriteset(ss_rubble)       { tmpl_ground(  0) }
-spriteset(ss_broken_wall)  { tmpl_ground( 64) }
-spriteset(ss_crater)       { tmpl_ground(128) }
-spriteset(ss_foundation)   { tmpl_ground(192) }
-spriteset(ss_scorched)     { tmpl_ground(256) }
-spriteset(ss_overgrown)    { tmpl_ground(320) }
+spriteset(ss_rubble)       { tmpl_building(  0) }
+spriteset(ss_broken_wall)  { tmpl_building( 64) }
+spriteset(ss_crater)       { tmpl_building(128) }
+spriteset(ss_foundation)   { tmpl_building(192) }
+spriteset(ss_scorched)     { tmpl_building(256) }
+spriteset(ss_overgrown)    { tmpl_building(320) }
 
 /* ---- Sprite layouts ---- */
-/* For 3x3 objects: the ruin sprite is drawn on the center tile (relative_pos 1,1).
+/* For 3x3 objects: the ruin sprite is drawn as a building on the center tile
+ * (relative_pos 1,1). Normal ground underneath, ruin graphic on top.
  * All other tiles use the normal ground sprite only. */
 
-spritelayout layout_rubble      { ground { sprite: ss_rubble;      } }
-spritelayout layout_broken_wall { ground { sprite: ss_broken_wall; } }
-spritelayout layout_crater      { ground { sprite: ss_crater;      } }
-spritelayout layout_foundation  { ground { sprite: ss_foundation;  } }
-spritelayout layout_scorched    { ground { sprite: ss_scorched;    } }
-spritelayout layout_overgrown   { ground { sprite: ss_overgrown;   } }
+spritelayout layout_rubble      { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_rubble;      } }
+spritelayout layout_broken_wall { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_broken_wall; } }
+spritelayout layout_crater      { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_crater;      } }
+spritelayout layout_foundation  { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_foundation;  } }
+spritelayout layout_scorched    { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_scorched;    } }
+spritelayout layout_overgrown   { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_overgrown;   } }
 
 /* Empty ground layout for non-center tiles */
 spritelayout layout_empty       { ground { sprite: GROUNDSPRITE_NORMAL; } }
@@ -69,7 +71,7 @@ item(FEAT_OBJECTS, ruin_rubble, 0) {
         object_flags:           bitmask(OBJ_FLAG_IRREMOVABLE, OBJ_FLAG_ONLY_INGAME, OBJ_FLAG_NO_FOUNDATIONS);
         climates_available:     ALL_CLIMATES;
         num_views:              1;
-        height:                 0;
+        height:                 1;
     }
     graphics { default: sw_rubble; }
 }
@@ -87,7 +89,7 @@ item(FEAT_OBJECTS, ruin_broken_wall, 1) {
         object_flags:           bitmask(OBJ_FLAG_IRREMOVABLE, OBJ_FLAG_ONLY_INGAME, OBJ_FLAG_NO_FOUNDATIONS);
         climates_available:     ALL_CLIMATES;
         num_views:              1;
-        height:                 0;
+        height:                 1;
     }
     graphics { default: sw_broken_wall; }
 }
@@ -105,7 +107,7 @@ item(FEAT_OBJECTS, ruin_crater, 2) {
         object_flags:           bitmask(OBJ_FLAG_IRREMOVABLE, OBJ_FLAG_ONLY_INGAME, OBJ_FLAG_NO_FOUNDATIONS);
         climates_available:     ALL_CLIMATES;
         num_views:              1;
-        height:                 0;
+        height:                 1;
     }
     graphics { default: sw_crater; }
 }
@@ -123,7 +125,7 @@ item(FEAT_OBJECTS, ruin_foundation, 3) {
         object_flags:           bitmask(OBJ_FLAG_IRREMOVABLE, OBJ_FLAG_ONLY_INGAME, OBJ_FLAG_NO_FOUNDATIONS);
         climates_available:     ALL_CLIMATES;
         num_views:              1;
-        height:                 0;
+        height:                 1;
     }
     graphics { default: sw_foundation; }
 }
@@ -141,7 +143,7 @@ item(FEAT_OBJECTS, ruin_scorched, 4) {
         object_flags:           bitmask(OBJ_FLAG_IRREMOVABLE, OBJ_FLAG_ONLY_INGAME, OBJ_FLAG_NO_FOUNDATIONS);
         climates_available:     ALL_CLIMATES;
         num_views:              1;
-        height:                 0;
+        height:                 1;
     }
     graphics { default: sw_scorched; }
 }
@@ -159,7 +161,7 @@ item(FEAT_OBJECTS, ruin_overgrown, 5) {
         object_flags:           bitmask(OBJ_FLAG_IRREMOVABLE, OBJ_FLAG_ONLY_INGAME, OBJ_FLAG_NO_FOUNDATIONS);
         climates_available:     ALL_CLIMATES;
         num_views:              1;
-        height:                 0;
+        height:                 1;
     }
     graphics { default: sw_overgrown; }
 }

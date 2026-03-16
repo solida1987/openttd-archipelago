@@ -280,6 +280,18 @@ class StartingCashBonus(Choice):
     default = 0
 
 
+class SpeedBoostCount(Range):
+    """How many Speed Boost items to place in the multiworld pool.
+    Each Speed Boost gives +10% fast-forward speed.
+    20 items = 100% → 300% max speed (default).
+    100 items = 100% → 1100% max speed.
+    More items means more chances to go faster, but takes up item slots."""
+    display_name = "Speed Boost Count"
+    range_start = 20
+    range_end   = 100
+    default     = 20
+
+
 # ═══════════════════════════════════════════════════════════════
 #  ITEM POOL
 # ═══════════════════════════════════════════════════════════════
@@ -1143,6 +1155,7 @@ OPTION_GROUPS = [
     ]),
     OptionGroup("Items & Shop", [
         UtilityCount,
+        SpeedBoostCount,
         ShopPriceTier,
         StartingCashBonus,
     ]),
@@ -1293,6 +1306,7 @@ class OpenTTDOptions(PerGameCommonOptions):
     extreme_tier_vehicle_multiplier: ExtremeTierVehicleMultiplier
     # Shop & Items
     utility_count:                   UtilityCount
+    speed_boost_count:               SpeedBoostCount
     shop_price_tier:                 ShopPriceTier
     starting_cash_bonus:             StartingCashBonus
     # Item Pool
