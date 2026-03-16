@@ -165,8 +165,8 @@ void         AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profi
 void         AP_SetCumulStats(const uint64_t *cargo_in, int num_cargo, int64_t profit_in);
 std::string  AP_GetMaintainCountersStr();
 void         AP_SetMaintainCountersStr(const std::string &s);
-void         AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station, int *license_ticks, int *license_type);
-void         AP_SetEffectTimers(int fuel, int cargo, int reliability, int station, int license_ticks, int license_type);
+void         AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station, int *license_ticks, int *license_type, int *breakdown);
+void         AP_SetEffectTimers(int fuel, int cargo, int reliability, int station, int license_ticks, int license_type, int breakdown);
 std::string  AP_GetNamedEntityStr();
 void         AP_SetNamedEntityStr(const std::string &s);
 std::string  AP_GetSentShopStr();
@@ -264,14 +264,15 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "maintain", AP_GetMaintainCountersStr());
         KVSet(_ap_sl_blob, "named",    AP_GetNamedEntityStr());
 
-        int fuel = 0, carg = 0, rel = 0, sta = 0, lic_t = 0, lic_v = -1;
-        AP_GetEffectTimers(&fuel, &carg, &rel, &sta, &lic_t, &lic_v);
+        int fuel = 0, carg = 0, rel = 0, sta = 0, lic_t = 0, lic_v = -1, brk = 0;
+        AP_GetEffectTimers(&fuel, &carg, &rel, &sta, &lic_t, &lic_v, &brk);
         KVSet(_ap_sl_blob, "fuel_ticks",  IStr(fuel));
         KVSet(_ap_sl_blob, "cargo_ticks", IStr(carg));
         KVSet(_ap_sl_blob, "rel_ticks",   IStr(rel));
         KVSet(_ap_sl_blob, "sta_ticks",   IStr(sta));
         KVSet(_ap_sl_blob, "lic_ticks",   IStr(lic_t));
         KVSet(_ap_sl_blob, "lic_type",    IStr(lic_v));
+        KVSet(_ap_sl_blob, "brk_ticks",   IStr(brk));
 
         /* Colby Event */
         int   co_step = 0; int64_t co_del = 0; int co_town = (int)UINT16_MAX;
@@ -419,7 +420,8 @@ struct APSTChunkHandler : ChunkHandler {
 
             AP_SetEffectTimers(getint("fuel_ticks"), getint("cargo_ticks"),
                                getint("rel_ticks"),  getint("sta_ticks"),
-                               getint("lic_ticks"),  getint("lic_type"));
+                               getint("lic_ticks"),  getint("lic_type"),
+                               getint("brk_ticks"));
 
             /* Colby Event */
             AP_SetColbyState(

@@ -505,6 +505,9 @@ bool AP_IsTerraformLowerLocked();
 bool AP_IsTownActionLocked(uint8_t action_idx); ///< action_idx: 0-7 (TownAction enum)
 bool AP_IsTownActionLocked();                   ///< true if ANY town action is locked
 
+/** Industry protection: industries linked to active missions cannot close. */
+bool AP_IsIndustryProtected(uint16_t industry_id);
+
 /** Save/load getters and setters for infrastructure locks. */
 void     AP_SetLockedTrackDirs(uint8_t railtype, uint8_t mask);
 uint8_t  AP_GetLockedRoadDirs();

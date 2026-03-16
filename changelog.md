@@ -3,19 +3,24 @@
 ## [exp-1.2.1] — 2026-03-16
 
 ### Fixed
-- **Graphical glitch when demigod company spawns** — The God of Wackens spawning a rival AI company left grey rendering corruption on the toolbar and viewport. Fix: added `MarkWholeScreenDirty()` after demigod company naming completes.
-- **Paper Truck and other wagons appearing on wrong climate** — Wagon climate filtering was completely missing. Fix: added `NON_TEMPERATE_WAGONS`, `NON_ARCTIC_WAGONS`, `NON_TROPIC_WAGONS` frozensets and applied them at all 3 climate filter points.
-- **FillError crash during generation** — AP's fill algorithm only puts filler items in EXCLUDED locations, but we had far more EXCLUDED slots than filler items. Fix: replaced the entire PRIORITY/EXCLUDED system with manual placement (see Changed).
-- **Speed Boost items trimmed from pool** — 20 Speed Boost items were not counted in `reserved`, making `vehicle_slots` 20 too large and trimming all speed boosts. Fix: added `speed_boost_count` to `reserved`.
+- **Graphical glitch when demigod company spawns** — Fix: added `MarkWholeScreenDirty()` after demigod company naming completes.
+- **Paper Truck and other wagons appearing on wrong climate** — Fix: added wagon climate exclusion frozensets at all 3 filter points.
+- **FillError crash during generation** — Fix: replaced PRIORITY/EXCLUDED system with manual placement.
+- **Speed Boost items trimmed from pool** — Fix: added `speed_boost_count` to `reserved`.
+- **Airplane license revocation permanent** — When the trap expired, only engines in `_ap_unlocked_engine_ids` were unhidden. If no aircraft items had been received yet, all aircraft stayed hidden forever. Fix: unconditionally unhide all engines of the revoked type when the timer expires.
+- **Infrastructure unlocks lost on reconnect** — All infrastructure unlocks (tracks, roads, signals, bridges, tunnels, airports, trees, terraform, town actions) were below the replay guard. On reconnect, slot_data reset lock states and replayed items were skipped. Fix: split item handling into two chains — traps (skip on replay) and infrastructure (always re-apply).
+- **Breakdown Wave permanent** — Breakdown Wave set reliability to 1 with no timer, leaving vehicles permanently broken. Fix: now lasts 60 seconds, then automatically restores normal reliability.
 
 ### Changed
-- **Item distribution now uses fixed percentages instead of AP's priority system** — Removed the 7 "Advanced Balancing" YAML options (`easy_mission_priority`, `medium_mission_priority`, `hard_mission_priority`, `extreme_mission_priority`, `ruin_priority`, `demigod_priority`, `shop_progression_limit`). Progression items are now placed manually in `pre_fill` with a fixed split: 40% missions / 40% shop / 10% ruins / 10% demigods (adjusted when pools are disabled). Missions fill easy→medium→hard→extreme so early progression lands in easy missions. This guarantees balanced distribution regardless of pool sizes.
+- **Item distribution uses fixed percentages** — Removed 7 "Advanced Balancing" YAML options. Progression items now manually placed: 40% missions / 40% shop / 10% ruins / 10% demigods. Missions fill easy→hard so early progression lands in easy missions.
+- **Service intervals default to percentage-based** — AP sessions now force percentage-based service intervals (default 30%). Vehicles auto-service when reliability drops below threshold, fixing the issue where vehicles ran indefinitely at 0% reliability with day-based intervals.
 
 ### Added
-- **Colby Event: reopen dismissed popups** — If the Colby arrest/escape decision popup is accidentally closed (X button), a "Reopen Colby Decision" button appears in the Colby status window. The popup also auto-reopens after ~30 seconds. Custom window replaces ShowQuery so X=dismiss is distinct from choosing an option.
-- **Victory vehicle requirement option** — `victory_vehicle_requirement` (5-50, default 15) controls how many vehicles the logic requires before Victory is reachable.
-- **Tier vehicle multipliers** — `hard_tier_vehicle_multiplier` (1-5x) and `extreme_tier_vehicle_multiplier` (1-10x) for sphere progression.
-- **Minimum 150 missions** — Mission count now targets at least 150, distributed across all 4 difficulty tiers. Per-tier cap raised from 25 to 50.
+- **Colby Event: reopen dismissed popups** — "Reopen Colby Decision" button in status window + auto-reopen after ~30 seconds.
+- **Mission-linked industry protection** — Industries tied to active (incomplete) missions can no longer close down. Production is also kept at a minimum playable level (25% of default). No more "closing down" notifications for protected industries.
+- **Victory vehicle requirement option** — `victory_vehicle_requirement` (5-50, default 15).
+- **Tier vehicle multipliers** — `hard_tier_vehicle_multiplier` (1-5x) and `extreme_tier_vehicle_multiplier` (1-10x).
+- **Minimum 150 missions** — Distributed across all 4 difficulty tiers, per-tier cap raised to 50.
 
 ---
 
