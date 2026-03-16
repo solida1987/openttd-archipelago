@@ -51,6 +51,8 @@
 #include "timer/timer_game_economy.h"
 #include "timer/timer_game_tick.h"
 
+#include "archipelago.h"
+
 #include "table/strings.h"
 #include "table/industry_land.h"
 #include "table/build_industry.h"
@@ -3035,6 +3037,16 @@ static void ChangeIndustryProduction(Industry *i, bool monthly)
 	/* Recalculate production_rate
 	 * For non-smooth economy these should always be synchronized with prod_level */
 	if (recalculate_multipliers) i->RecomputeProductionMultipliers();
+
+	/* Archipelago: industries linked to active missions never close.
+	 * Also keep production at a playable level (minimum PRODLEVEL_DEFAULT/4). */
+	if (AP_IsIndustryProtected(i->index.base())) {
+		closeit = false;
+		if (i->prod_level < PRODLEVEL_DEFAULT / 4) {
+			i->prod_level = PRODLEVEL_DEFAULT / 4;
+			recalculate_multipliers = true;
+		}
+	}
 
 	/* Close if needed and allowed */
 	if (closeit && !CheckIndustryCloseDownProtection(i->type) && !i->ctlflags.Test(IndustryControlFlag::NoClosure)) {

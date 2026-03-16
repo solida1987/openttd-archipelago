@@ -3019,6 +3019,7 @@ static APSlotData  _ap_pending_sd;
 bool               _ap_pending_world_start         = false; ///< Non-static: accessed by network_bridge_client.cpp
 static bool        _ap_goal_sent                   = false;
 static bool        _ap_session_started             = false; ///< True once we've done first-tick setup in GM_NORMAL
+static int         _ap_breakdown_wave_ticks        = 0;     ///< >0 while breakdown wave is active (~60 seconds)
 static int         _ap_fuel_shortage_ticks         = 0;     ///< >0 while fuel shortage slowdown is active
 static int         _ap_cargo_bonus_ticks           = 0;     ///< >0 while 2x cargo payment is active (240 ticks = 60s)
 static int         _ap_reliability_boost_ticks     = 0;     ///< >0 while reliability boost active (90 game-days)
@@ -3208,28 +3209,33 @@ static void AP_OnItemReceived(const APItem &item)
 		return;
 	}
 
-	/* Everything below here is NON-idempotent — skip on replay */
-	if (is_replay) {
-		Debug(misc, 1, "[AP] Skipping already-applied item idx={} '{}'", item.server_index, item.item_name);
-		return;
-	}
-
-	/* Trap / utility items */
+	/* Traps and consumables (money, Speed Boost) are NON-idempotent — skip on replay.
+	 * Infrastructure unlocks (tracks, roads, signals, bridges, tunnels, airports,
+	 * trees, terraform, town actions) are IDEMPOTENT and MUST re-apply on reconnect,
+	 * because slot_data resets all lock states. */
 	AP_TRACE(fmt::format("ProcessingItem: '{}' (not a vehicle — checking trap/utility)", item.item_name));
 	CompanyID cid = _local_company;
 	if (cid >= MAX_COMPANIES) return;
 	Company *c = Company::GetIfValid(cid);
 	if (c == nullptr) return;
 
-	/* ── TRAPS ─────────────────────────────────────────── */
+	/* ── TRAPS (non-idempotent — skip on replay) ──────── */
+	if (is_replay) {
+		/* Jump past all traps to infrastructure unlocks below */
+		goto infra_unlocks;
+	}
 	if (item.item_name == "Breakdown Wave") {
+		/* 60-second breakdown timer (240 ticks × 250 ms).
+		 * While active, the per-tick handler keeps reliability at 1.
+		 * When it expires, vehicles are restored to normal reliability. */
+		_ap_breakdown_wave_ticks = 240;
 		for (Vehicle *v : Vehicle::Iterate()) {
 			if (v->owner == cid && v->IsPrimaryVehicle()) {
 				v->breakdown_chance = 255;
 				v->reliability = 1;
 			}
 		}
-		AP_ShowNews("[AP] TRAP: Breakdown Wave hit!");
+		AP_ShowNews("[AP] TRAP: Breakdown Wave! All vehicles unreliable for 60 seconds!");
 	} else if (item.item_name == "Recession") {
 		if (c->money >= 0) {
 			/* Player has positive cash: halve it */
@@ -3407,13 +3413,26 @@ static void AP_OnItemReceived(const APItem &item)
 		AP_ChangeMoney(cid, (Money)100000LL);
 		AP_ShowNews(fmt::format("[AP] Bonus: +{}!", AP_Money((Money)100000LL)));
 
+	/* ── Speed Boost (non-idempotent: cumulative +10 per item) ────── */
+	} else if (item.item_name == "Speed Boost") {
+		if (_ap_ff_speed < 300) {
+			_ap_ff_speed = std::min(_ap_ff_speed + 10, 300);
+			_settings_client.gui.fast_forward_speed_limit = (uint16_t)_ap_ff_speed;
+			AP_ShowNews(fmt::format("[AP] Speed Boost! Fast forward now {}% speed.", _ap_ff_speed));
+		} else {
+			AP_ShowNews("[AP] Speed Boost received (already at max 300%).");
+		}
+	}
+
+	/* ── INFRASTRUCTURE UNLOCKS (idempotent — safe to re-apply on reconnect) ─ */
+	infra_unlocks:
 	/* ── TRACK DIRECTION UNLOCK ITEMS ───────────────────────────────────
 	 * 24 items: 4 rail types × 6 track directions.
 	 * RailType: 0=Normal, 1=Electric, 2=Monorail, 3=Maglev
 	 * Track bits: 0=NE-SW, 1=NW-SE, 2=N, 3=S, 4=W, 5=E
 	 */
 	// Normal Rail (railtype=0)
-	} else if (item.item_name == "Normal Rail Track: NE-SW") {
+	if (item.item_name == "Normal Rail Track: NE-SW") {
 		_ap_locked_track_dirs[0] &= ~(1u << 0);
 		AP_ShowNews("[AP] Unlocked: Normal Rail Track NE-SW!");
 	} else if (item.item_name == "Normal Rail Track: NW-SE") {
@@ -3657,17 +3676,7 @@ static void AP_OnItemReceived(const APItem &item)
 		_ap_locked_town_actions &= ~(1u << 7);
 		AP_ShowNews("[AP] Unlocked: Town Action - Bribe Authority!");
 
-	/* ── Speed Boost ──────────────────────────────────────────────────── */
-	} else if (item.item_name == "Speed Boost") {
-		if (_ap_ff_speed < 300) {
-			_ap_ff_speed = std::min(_ap_ff_speed + 10, 300);
-			_settings_client.gui.fast_forward_speed_limit = (uint16_t)_ap_ff_speed;
-			AP_ShowNews(fmt::format("[AP] Speed Boost! Fast forward now {}% speed.", _ap_ff_speed));
-		} else {
-			AP_ShowNews("[AP] Speed Boost received (already at max 300%).");
-		}
-
-	} else {
+	} else if (!is_replay) {
 		AP_WARN("Unknown item: '" + item.item_name + "' — not handled");
 	}
 
@@ -4627,6 +4636,18 @@ bool AP_IsBridgeLocked() { return _ap_locked_bridges != 0; }
 uint16_t AP_GetLockedBridges() { return _ap_locked_bridges; }
 void     AP_SetLockedBridges(uint16_t mask) { _ap_locked_bridges = mask; }
 
+/* ─── Industry protection API ──────────────────────────────────────────── */
+
+bool AP_IsIndustryProtected(uint16_t industry_id)
+{
+	if (!AP_IsActive()) return false;
+	for (const APMission &m : _ap_pending_sd.missions) {
+		if (m.completed) continue;
+		if (m.named_entity.id == (int32_t)industry_id) return true;
+	}
+	return false;
+}
+
 /* ─── Tunnel lock API ───────────────────────────────────────────────────── */
 
 bool AP_IsTunnelLocked() { return _ap_locked_tunnels; }
@@ -5401,7 +5422,7 @@ bool AP_IsDayNightDisabled()
 	return _ap_daynight_disabled;
 }
 
-void AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station, int *license_ticks, int *license_type)
+void AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station, int *license_ticks, int *license_type, int *breakdown)
 {
 	*fuel         = _ap_fuel_shortage_ticks;
 	*cargo        = _ap_cargo_bonus_ticks;
@@ -5409,9 +5430,10 @@ void AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station, i
 	*station      = _ap_station_boost_ticks;
 	*license_ticks = _ap_license_revoke_ticks;
 	*license_type  = _ap_license_revoke_type;
+	*breakdown     = _ap_breakdown_wave_ticks;
 }
 
-void AP_SetEffectTimers(int fuel, int cargo, int reliability, int station, int license_ticks, int license_type)
+void AP_SetEffectTimers(int fuel, int cargo, int reliability, int station, int license_ticks, int license_type, int breakdown)
 {
 	_ap_fuel_shortage_ticks      = fuel;
 	_ap_cargo_bonus_ticks        = cargo;
@@ -5419,6 +5441,7 @@ void AP_SetEffectTimers(int fuel, int cargo, int reliability, int station, int l
 	_ap_station_boost_ticks      = station;
 	_ap_license_revoke_ticks     = license_ticks;
 	_ap_license_revoke_type      = license_type;
+	_ap_breakdown_wave_ticks     = breakdown;
 }
 
 std::string AP_GetCompletedMissionsStr()
@@ -6525,6 +6548,14 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			_settings_game.vehicle.never_expire_vehicles = true;
 			_settings_game.station.never_expire_airports = true;
 
+			/* Force percentage-based service intervals (default 30%).
+			 * This ensures vehicles go to depot when reliability drops
+			 * below 30%, which is critical for traps like Breakdown Wave
+			 * that set reliability to 1. Day-based intervals miss this. */
+			if (c != nullptr) {
+				c->settings.vehicle.servint_ispercent = true;
+			}
+
 			/* Build the engine name → ID lookup map (uses current language = English) */
 			BuildEngineMap();
 
@@ -6867,6 +6898,35 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Bridge mode uses Company 0 (host company) on dedicated server */
 			CompanyID tick_cid = _ap_bridge_mode ? CompanyID(0) : _local_company;
 
+			/* Breakdown Wave: keep reliability at 1 while active, restore when expired */
+			if (_ap_breakdown_wave_ticks > 0) {
+				_ap_breakdown_wave_ticks--;
+				if (_ap_session_started) {
+					CompanyID cid = tick_cid;
+					if (_ap_breakdown_wave_ticks > 0) {
+						/* Still active: keep vehicles broken */
+						for (Vehicle *v : Vehicle::Iterate()) {
+							if (v->owner == cid && v->IsPrimaryVehicle()) {
+								v->breakdown_chance = 255;
+								v->reliability = 1;
+							}
+						}
+					} else {
+						/* Expired: restore normal reliability from engine specs */
+						for (Vehicle *v : Vehicle::Iterate()) {
+							if (v->owner == cid && v->IsPrimaryVehicle()) {
+								const Engine *e = v->GetEngine();
+								if (e != nullptr) {
+									v->reliability = e->reliability;
+									v->breakdown_chance = 128;
+								}
+							}
+						}
+						AP_ShowNews("[AP] Breakdown Wave ended! Vehicles returning to normal reliability.");
+					}
+				}
+			}
+
 			/* Fuel Shortage: re-apply speed cap every tick while active */
 			if (_ap_fuel_shortage_ticks > 0) {
 				_ap_fuel_shortage_ticks--;
@@ -6924,11 +6984,13 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				_ap_license_revoke_ticks--;
 				if (_ap_license_revoke_ticks == 0) {
 					CompanyID cid = tick_cid;
+					/* Unhide ALL engines of the revoked type unconditionally.
+					 * Previously only unhid engines in _ap_unlocked_engine_ids,
+					 * which left aircraft (etc.) permanently hidden if the player
+					 * had no unlocked engines of that type when the trap fired. */
 					for (Engine *e : Engine::Iterate()) {
 						if ((int)e->type != _ap_license_revoke_type) continue;
-						if (_ap_unlocked_engine_ids.count(e->index) || !_ap_engine_map_built) {
-							e->company_hidden.Reset(cid);
-						}
+						e->company_hidden.Reset(cid);
 					}
 					_ap_license_revoke_type = -1;
 					MarkWholeScreenDirty();
