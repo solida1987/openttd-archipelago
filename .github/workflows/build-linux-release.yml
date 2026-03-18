@@ -33,6 +33,7 @@ jobs:
           libopusfile-dev \
           libpng-dev \
           libfluidsynth-dev \
+          libssl-dev \
           zlib1g-dev \
           zip
       env:
@@ -44,7 +45,7 @@ jobs:
         # Read version from the bat script
         AP_VERSION=$(grep -oP 'set AP_VERSION=\K[0-9.]+' "stable release/stable_build_and_package.bat" | head -1)
         if [ -z "$AP_VERSION" ]; then
-          AP_VERSION="1.2.1"
+          AP_VERSION="1.3.0"
         fi
         echo "ap_version=$AP_VERSION" >> "$GITHUB_OUTPUT"
         echo "AP Version: v$AP_VERSION"
@@ -58,7 +59,6 @@ jobs:
         curl -sL https://cdn.openttd.org/opengfx-releases/8.0/opengfx-8.0-all.zip -o opengfx.zip
         unzip -o opengfx.zip "opengfx-8.0.tar" 2>/dev/null || unzip -oj opengfx.zip -d . 2>/dev/null
         if [ ! -f opengfx-8.0.tar ]; then
-          # Some zips have it nested
           find . -name "opengfx-8.0.tar" -exec mv {} . \; 2>/dev/null
         fi
         rm -f opengfx.zip
@@ -83,6 +83,32 @@ jobs:
         echo "[OK] openmsx-0.4.2.tar ($(du -h openmsx-0.4.2.tar | cut -f1))"
 
         ls -lh *.tar
+
+    - name: Download SimpleAI and AI libraries
+      run: |
+        echo "=== Downloading SimpleAI + AI libraries ==="
+
+        # SimpleAI v14 (needed for demigod mode)
+        mkdir -p staging/data/ai
+        curl -sL "https://bananas-api.openttd.org/package/ai/534d504c/14" -o /tmp/simpleai_meta.json || true
+        # Direct download from BaNaNaS CDN
+        curl -sL "https://binaries.openttd.org/bananas/ai/534d504c-SimpleAI-14.tar.gz" -o /tmp/simpleai.tar.gz 2>/dev/null || \
+        curl -sL "https://proxy.binaries.openttd.org/bananas/ai/534d504c-SimpleAI-14.tar.gz" -o /tmp/simpleai.tar.gz 2>/dev/null || true
+        if [ -f /tmp/simpleai.tar.gz ] && [ -s /tmp/simpleai.tar.gz ]; then
+          tar -xzf /tmp/simpleai.tar.gz -C staging/data/ai/ 2>/dev/null || true
+          echo "[OK] SimpleAI-14 downloaded"
+        else
+          echo "[WARN] Could not download SimpleAI - demigod mode may not work"
+        fi
+
+        # AI libraries (pathfinder.road, pathfinder.rail, graph.aystar, queue.binary_heap)
+        # These are needed for SimpleAI to function
+        mkdir -p staging/data/ai/library
+        for lib in "pathfinder/road" "pathfinder/rail" "graph/aystar" "queue/binary_heap"; do
+          libname=$(echo "$lib" | tr '/' '.')
+          mkdir -p "staging/data/ai/library/$lib"
+          echo "[INFO] AI library $libname — will be auto-downloaded by OpenTTD on first use"
+        done
 
     - name: Patch for stable release
       run: |
@@ -112,14 +138,15 @@ jobs:
         echo "=== Building openttd.apworld ==="
         mkdir -p staging/apworld
         cp -r apworld/openttd_exp staging/apworld/openttd
+        rm -rf staging/apworld/openttd/__pycache__
 
         # Patch game name
         sed -i 's/OpenTTD-Exp/OpenTTD/g' staging/apworld/openttd/__init__.py
         sed -i 's/OpenTTD-Exp/OpenTTD/g' staging/apworld/openttd/archipelago.json
 
-        # Create .apworld (ZIP)
+        # Create .apworld (ZIP with forward-slash paths)
         cd staging/apworld
-        zip -r openttd.apworld openttd/
+        zip -r openttd.apworld openttd/ -x "openttd/__pycache__/*" "*.pyc"
         echo "OK: openttd.apworld created ($(du -h openttd.apworld | cut -f1))"
 
     - name: Assemble release package
@@ -129,7 +156,7 @@ jobs:
         OUT="staging/${RELEASE_NAME}"
         mkdir -p "$OUT"
 
-        # Binary
+        # ── Binary ──────────────────────────────────────────────
         INSTALL_DIR="build/install"
         if [ -f "$INSTALL_DIR/bin/openttd" ]; then
           cp "$INSTALL_DIR/bin/openttd" "$OUT/openttd"
@@ -140,33 +167,39 @@ jobs:
         fi
         chmod +x "$OUT/openttd"
 
-        # Baseset from installed location
+        # ── Baseset from cmake install ──────────────────────────
         for dir in "$INSTALL_DIR/share/games/openttd/baseset" "$INSTALL_DIR/baseset"; do
           if [ -d "$dir" ]; then
             cp -r "$dir" "$OUT/baseset"
             break
           fi
         done
-        # Fallback: copy from source
         if [ ! -d "$OUT/baseset" ]; then
           mkdir -p "$OUT/baseset"
         fi
 
-        # Copy bundled baseset assets
-        for f in baseset/opengfx-8.0.tar baseset/opensfx-1.0.3.tar baseset/openmsx-0.4.2.tar baseset/archipelago_icons.grf; do
+        # Copy bundled baseset assets (downloaded to media/baseset/)
+        # NB: baseset/ i repo-root har kun archipelago_icons.grf tracked
+        # Tarballs er downloaded til media/baseset/ i et tidligere step
+        for f in media/baseset/opengfx-8.0.tar media/baseset/opensfx-1.0.3.tar media/baseset/openmsx-0.4.2.tar; do
           if [ -f "$f" ]; then
             cp "$f" "$OUT/baseset/"
           fi
         done
 
-        # Extract tar basesets into baseset/
+        # archipelago_icons.grf (tracked i baseset/)
+        if [ -f "baseset/archipelago_icons.grf" ]; then
+          cp "baseset/archipelago_icons.grf" "$OUT/baseset/"
+        fi
+
+        # Extract tar basesets into baseset/ (opengfx, opensfx, openmsx)
         for tarfile in "$OUT/baseset/"*.tar; do
           if [ -f "$tarfile" ]; then
             tar -xf "$tarfile" -C "$OUT/baseset/" 2>/dev/null || true
           fi
         done
 
-        # Lang
+        # ── Lang (built from source = correct LANGUAGE_PACK_VERSION) ──
         for dir in "$INSTALL_DIR/share/games/openttd/lang" "$INSTALL_DIR/lang" "build/lang"; do
           if [ -d "$dir" ]; then
             cp -r "$dir" "$OUT/lang"
@@ -174,7 +207,7 @@ jobs:
           fi
         done
 
-        # AI, Game, Scripts, Docs
+        # ── AI, Game, Scripts ───────────────────────────────────
         for subdir in ai game scripts; do
           for dir in "$INSTALL_DIR/share/games/openttd/$subdir" "$INSTALL_DIR/$subdir"; do
             if [ -d "$dir" ]; then
@@ -182,79 +215,108 @@ jobs:
               break
             fi
           done
-          # Fallback from source
           if [ ! -d "$OUT/$subdir" ] && [ -d "$subdir" ]; then
             cp -r "$subdir" "$OUT/$subdir"
           fi
         done
 
-        # Bridge (Python AP server)
-        if [ -d "bridge" ]; then
-          cp -r bridge "$OUT/bridge"
-        fi
-
-        # APWorld
+        # ── APWorld ─────────────────────────────────────────────
         mkdir -p "$OUT/apworld"
         cp staging/apworld/openttd.apworld "$OUT/apworld/"
         cp -r staging/apworld/openttd "$OUT/apworld/openttd"
 
-        # MoneyQuests GameScript
+        # ── MoneyQuests GameScript ──────────────────────────────
         if [ -d "gamescript/MoneyQuests" ]; then
           mkdir -p "$OUT/game"
           cp -r gamescript/MoneyQuests "$OUT/game/MoneyQuests"
         fi
 
-        # NewGRF
+        # ── NewGRF ──────────────────────────────────────────────
         mkdir -p "$OUT/newgrf"
         if [ -d "newgrf" ]; then
           cp -r newgrf/* "$OUT/newgrf/" 2>/dev/null || true
         fi
+        # archipelago_ruins.grf (fallback fra media/baseset/)
         if [ -f "media/baseset/archipelago_ruins.grf" ]; then
           cp media/baseset/archipelago_ruins.grf "$OUT/newgrf/"
         fi
 
-        # Data template (portable config, AI libraries, etc.)
-        if [ -d "dist/data_template" ]; then
-          cp -r dist/data_template "$OUT/data"
+        # ── Data directory (portable config, AI) ────────────────
+        # Opret data-mappe med minimal portable config
+        mkdir -p "$OUT/data/ai"
+        mkdir -p "$OUT/data/save/autosave"
+        mkdir -p "$OUT/data/scenario"
+
+        # Kopiér SimpleAI hvis downloaded
+        if [ -d "staging/data/ai" ]; then
+          cp -r staging/data/ai/* "$OUT/data/ai/" 2>/dev/null || true
         fi
 
-        # SimpleAI
-        SIMPLEAI_TAR="dist/data_template/content_download/ai/534d504c-SimpleAI-14.tar"
-        if [ -f "$SIMPLEAI_TAR" ]; then
-          mkdir -p "$OUT/data/ai"
-          tar -xf "$SIMPLEAI_TAR" -C "$OUT/data/ai" 2>/dev/null || true
-        fi
+        # Opret default openttd.cfg for portable mode
+        cat > "$OUT/data/openttd.cfg" << 'OTTDCFG'
+[misc]
+display_opt = SHOW_TOWN_NAMES|SHOW_STATION_NAMES|SHOW_SIGNS|FULL_ANIMATION|FULL_DETAIL|WAYPOINTS|SHOW_COMPETITOR_SIGNS
+[gui]
+autosave = monthly
+toolbar_pos = 1
+statusbar_pos = 1
+window_snap_radius = 10
+population_in_label = true
+measure_tooltip = true
+loading_indicators = 2
+default_signal_type = 3
+[network]
+server_name = OpenTTD Archipelago Server
+[game_creation]
+generation_seed = 0
+OTTDCFG
+        echo "[OK] data/openttd.cfg created (portable config)"
 
-        # Docs
+        # ── Docs ────────────────────────────────────────────────
         for f in README.md CONTRIBUTING.md COPYING.md CREDITS.md CHANGELOG.md KNOWN_BUGS.md INSTALL.md; do
           if [ -f "$f" ]; then
             cp "$f" "$OUT/"
           fi
         done
 
-        # Launch script for Linux
+        # ── Launch scripts ──────────────────────────────────────
         cat > "$OUT/start.sh" << 'LAUNCHER'
-        #!/bin/bash
-        # OpenTTD Archipelago - Linux Launcher
-        SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-        cd "$SCRIPT_DIR"
-        export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
-        ./openttd -d "$SCRIPT_DIR/data" "$@"
-        LAUNCHER
+#!/bin/bash
+# OpenTTD Archipelago - Linux Launcher
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+./openttd "$@"
+LAUNCHER
         chmod +x "$OUT/start.sh"
 
-        # Create tar.gz
+        cat > "$OUT/server.sh" << 'SERVERSRC'
+#!/bin/bash
+# OpenTTD Archipelago - Dedicated Server Launcher
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+exec ./openttd -D -d net=2 "$@"
+SERVERSRC
+        chmod +x "$OUT/server.sh"
+
+        # ── Create tar.gz ───────────────────────────────────────
         cd staging
         tar czf "${RELEASE_NAME}.tar.gz" "${RELEASE_NAME}/"
         echo "OK: ${RELEASE_NAME}.tar.gz created ($(du -h ${RELEASE_NAME}.tar.gz | cut -f1))"
 
-        # Verify
+        # ── Verify ──────────────────────────────────────────────
         echo ""
         echo "=== Verification ==="
         [ -f "$OUT/openttd" ] && echo "[OK] openttd binary" || echo "[MISSING] openttd binary"
         [ -d "$OUT/baseset" ] && echo "[OK] baseset/" || echo "[MISSING] baseset/"
         [ -d "$OUT/lang" ] && echo "[OK] lang/" || echo "[MISSING] lang/"
         [ -f "$OUT/apworld/openttd.apworld" ] && echo "[OK] apworld/openttd.apworld" || echo "[MISSING] apworld/openttd.apworld"
+        [ -d "$OUT/newgrf" ] && echo "[OK] newgrf/" || echo "[MISSING] newgrf/"
+        [ -f "$OUT/newgrf/iron_horse.grf" ] && echo "[OK] newgrf/iron_horse.grf" || echo "[WARN] newgrf/iron_horse.grf missing"
+        [ -f "$OUT/newgrf/archipelago_ruins.grf" ] && echo "[OK] newgrf/archipelago_ruins.grf" || echo "[WARN] newgrf/archipelago_ruins.grf missing"
+        [ -d "$OUT/game/MoneyQuests" ] && echo "[OK] game/MoneyQuests/" || echo "[WARN] game/MoneyQuests/ missing"
+        [ -f "$OUT/start.sh" ] && echo "[OK] start.sh" || echo "[MISSING] start.sh"
+        [ -f "$OUT/server.sh" ] && echo "[OK] server.sh" || echo "[MISSING] server.sh"
+        [ -f "$OUT/data/openttd.cfg" ] && echo "[OK] data/openttd.cfg" || echo "[WARN] data/openttd.cfg missing"
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4

@@ -22,7 +22,6 @@
 #include "../saveload/saveload.h"
 #include "../thread.h"
 #include "../window_func.h"
-#include "../network/network_bridge.h"
 #include "../archipelago_gui.h"
 #include <iostream>
 #include "dedicated_v.h"
@@ -209,17 +208,7 @@ void VideoDriver_Dedicated::MainLoop()
 
 	/* If SwitchMode is SM_LOAD_GAME / SM_START_HEIGHTMAP, it means that the user used the '-g' options */
 	if (_switch_mode != SM_LOAD_GAME && _switch_mode != SM_START_HEIGHTMAP) {
-		/* AP Bridge mode: load slot data from file BEFORE generating the world.
-		 * This sets up all game settings and NewGRFs so the FIRST world gen is
-		 * correct — no need for gen_world via TCP (which caused server reboot). */
-		uint32_t seed = GENERATE_NEW_SEED;
-		if (BridgeLoadSlotDataFromFile()) {
-			AP_ConsumeWorldStart();
-			seed = AP_GetWorldSeed();
-			if (seed == 0) seed = GENERATE_NEW_SEED;
-			Debug(net, 1, "[bridge] Generating world with AP settings (seed={})", seed);
-		}
-		StartNewGameWithoutGUI(seed);
+		StartNewGameWithoutGUI(GENERATE_NEW_SEED);
 	}
 
 	this->is_game_threaded = false;

@@ -1,6 +1,7 @@
 /.vs
 /build*
 CMakeSettings.json
+.ap_version
 docs/devnotes/*
 docs/gamedocs/*
 docs/source/*
@@ -19,6 +20,13 @@ __pycache__/
 # Local baseset tarballs (large binaries, bundled separately)
 /baseset/*.tar
 /media/baseset/*.tar
+
+# Internal / private files
+prompt.txt
+item_pool_setop.xlsx
+*.bak
+/backup/
+/.claude/
 
 # Old / archived files
 /old/

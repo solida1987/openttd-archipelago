@@ -23,7 +23,7 @@ All vehicles are locked at game start and randomized into the multiworld item po
 - **11 difficulty presets** — Casual through Madness, plus fully custom sliders
 - **Death Link** — vehicle crashes send deaths to the multiworld
 - **God of Wackens Wrath** — destructive actions (bulldozing, terraforming) anger the God through 5 escalating punishment levels
-- **Multiplayer mode** — cooperative play via bridge architecture. Multiple players share one company
+- **Multiplayer mode** — cooperative play via dedicated server. Multiple players share one company
 - **Community Vehicle Names** — vehicles auto-named after community members
 - **Redesigned status bar** — full-width bottom panel with AP message log, button bar, and live stats
 - **Vehicle Index** — searchable catalogue of all available vehicles with lock/unlock status
@@ -35,19 +35,27 @@ All vehicles are locked at game start and randomized into the multiworld item po
 
 ### Play (Windows, standalone)
 
-1. Download `openttd-archipelago-v1.2.4-win64.zip` from [Releases](../../releases/latest)
+1. Download `openttd-archipelago-v1.3.0-win64.zip` from [Releases](../../releases/latest)
 2. Extract anywhere — OpenGFX, OpenSFX, and OpenMSX are included. No separate OpenTTD install needed
 3. Copy `openttd.apworld` into your Archipelago `custom_worlds/` directory:
    - Default path: `C:\ProgramData\Archipelago\custom_worlds\`
 4. Generate a multiworld using your YAML (see [YAML Setup](#yaml-setup))
 5. Launch `openttd.exe`, click **Archipelago** in the main menu, enter your connection details
 
+### Play (Linux, standalone)
+
+1. Download `openttd-archipelago-v1.3.0-linux-amd64.tar.gz` from [Releases](../../releases/latest)
+2. Extract anywhere — all assets are included
+3. Copy `apworld/openttd/` to your Archipelago `custom_worlds/` directory
+4. Run `./openttd` (or `./server.sh` for dedicated server)
+5. Connect via the in-game Archipelago menu
+
 ### Multiplayer (cooperative)
 
 1. Follow steps 1–4 above
 2. Set `multiplayer_mode: true` in your YAML
-3. Run `Server.bat` or use the bridge application in the `bridge/` folder
-4. Other players connect to the host's IP on port 23969 using standard OpenTTD multiplayer join
+3. Host starts the game and opens it to multiplayer via the in-game Archipelago menu
+4. Other players connect to the host's IP using standard OpenTTD multiplayer join
 5. All players share one company and work toward the same goal
 
 ---
@@ -113,7 +121,7 @@ See [docs/yaml_options.md](docs/yaml_options.md) for all options with descriptio
 
 ### Requirements
 
-- Windows 10/11 (MSVC build only — Linux/Mac builds not currently tested)
+- Windows 10/11 (MSVC) or Linux x64 (GCC/Clang)
 - [Visual Studio 2022](https://visualstudio.microsoft.com/) with C++ workload
 - [vcpkg](https://vcpkg.io/) for dependencies
 - CMake 3.21+
@@ -134,7 +142,7 @@ cmake --build build --config Release
 
 # 4. Package a standalone ZIP
 .\build_and_package.bat
-# Output: dist\openttd-archipelago-v1.2.4-win64.zip
+# Output: dist\openttd-archipelago-v1.3.0-win64.zip
 ```
 
 ---
@@ -143,8 +151,8 @@ cmake --build build --config Release
 
 | Issue | Severity | Notes |
 |-------|----------|-------|
-| Windows only | Medium | Linux/Mac not tested. Wine may work but is unsupported |
-| Bridge multiplayer requires Python 3.10+ | Low | Only needed for cooperative multiplayer mode |
+| Mac not supported | Medium | macOS is not tested. Wine may work but is unsupported |
+| Multiplayer requires dedicated server setup | Low | Only needed for cooperative multiplayer mode |
 | FIRS cargo combinations | Low | Some mission templates may produce unexpected cargo targets with FIRS enabled |
 
 ---

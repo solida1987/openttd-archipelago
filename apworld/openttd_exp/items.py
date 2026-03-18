@@ -323,10 +323,16 @@ ELECTRIC_TRACK_ITEMS: List[str] = [f"Electrified Track: {d}"  for d in _TRACK_DI
 MONORAIL_TRACK_ITEMS: List[str] = [f"Monorail Track: {d}"     for d in _TRACK_DIR_SUFFIXES]
 MAGLEV_TRACK_ITEMS:   List[str] = [f"Maglev Track: {d}"       for d in _TRACK_DIR_SUFFIXES]
 
+# NewGRF rail types — only enter item pool when corresponding NewGRF is enabled.
+# AP indices: 4=Narrow Gauge (IH NAAN), 5=Metro (IH MTRO), 6=Vacuum Tube (Vactrain VACT)
+NARROW_GAUGE_TRACK_ITEMS: List[str] = [f"Narrow Gauge Track: {d}" for d in _TRACK_DIR_SUFFIXES]
+METRO_TRACK_ITEMS:        List[str] = [f"Metro Track: {d}"        for d in _TRACK_DIR_SUFFIXES]
+VACTUBE_TRACK_ITEMS:      List[str] = [f"Vacuum Tube Track: {d}"  for d in _TRACK_DIR_SUFFIXES]
+
 ALL_TRACK_DIRECTION_ITEMS: List[str] = (
     NORMAL_TRACK_ITEMS + ELECTRIC_TRACK_ITEMS +
     MONORAIL_TRACK_ITEMS + MAGLEV_TRACK_ITEMS
-)  # 24 items total
+)  # 24 vanilla items (NewGRF items are added conditionally)
 
 # Back-compat alias (old 6-item global list — no longer used in pool, kept for any imports)
 RAIL_DIRECTION_ITEMS: List[str] = ALL_TRACK_DIRECTION_ITEMS
@@ -381,8 +387,9 @@ TRAIN_TO_RAILTYPE: Dict[str, int] = {
     "Lev4 'Chimaera' (Electric)":    3,
     "Wizzowow Rocketeer":            3,
 }
-# IH engines: all run on Normal Rail (0). IH replaces vanilla normal-rail locos.
-# Any "IH: *" name not in the dict above → assume Normal Rail.
+# IH engines: most run on Normal Rail (0), but many are ELECTRIC (ELRL),
+# NARROW GAUGE (NAAN), or METRO (MTRO). See IH_ELRL_ENGINES etc. below.
+# Any "IH: *" name not in a non-standard set → assume Normal Rail.
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  UNIVERSAL STARTER WAGONS
@@ -392,12 +399,183 @@ TRAIN_TO_RAILTYPE: Dict[str, int] = {
 
 UNIVERSAL_STARTER_WAGONS: List[str] = ["Passenger Carriage", "Mail Van"]
 
-# Convenience: per-railtype track item lists indexed by RailType value 0-3
+# ─────────────────────────────────────────────────────────────────────────────
+#  SAFE STARTER FILTERS
+#  Used to restrict the starting-vehicle pool so the player always receives
+#  something immediately usable on a fresh map.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Aircraft that can land on the always-free Small Airport.
+# Large jets need "Airport: Large" or bigger — unsafe as sole starters.
+SMALL_AIRCRAFT: frozenset = frozenset({
+    "Sampson U52", "Coleman Count", "FFP Dart", "Yate Haugan",
+    "Bakewell Cotswald LB-3", "Dinger 100", "Airtaxi A21",
+    "Tricario Helicopter", "Guru X2 Helicopter",
+    # Toyland
+    "Ploddyphut 100", "Flashbang X1", "Powernaut Helicopter",
+})
+
+# Road vehicles carrying processed cargo that may not exist on a fresh map.
+# Goods→factory, Steel→steel mill, Armoured→bank, Food→processing, Paper→mill.
+UNSAFE_STARTER_ROAD_VEHICLES: frozenset = frozenset({
+    # Goods (need factory)
+    "Balogh Goods Truck", "Goss Goods Truck", "Craighead Goods Truck",
+    # Steel (need steel mill)
+    "Balogh Steel Truck", "Kelling Steel Truck", "Uhl Steel Truck",
+    # Armoured (need bank in large city)
+    "Balogh Armoured Truck", "Uhl Armoured Truck", "Foster Armoured Truck",
+    # Food (need food processing plant)
+    "Perry Food Van", "Foster Food Van", "Chippy Food Van",
+    # Paper (need paper mill)
+    "Balogh Paper Truck", "MPS Paper Truck", "Uhl Paper Truck",
+})
+
+# Vanilla ships safe for starting: passenger ferries + hovercraft + Toyland cargo.
+# Oil tankers and specialised cargo ships may lack matching industries nearby.
+SAFE_STARTER_SHIPS: frozenset = frozenset({
+    "MPS Passenger Ferry", "FFP Passenger Ferry",
+    "Chugger-Chug Passenger Ferry", "Shivershake Passenger Ferry",
+    "Bakewell 300 Hovercraft",
+    "MightyMover Cargo Ship", "Powernaut Cargo Ship",   # Toyland
+})
+
+# SHARK ships safe for starting (passenger / early versatile).
+SAFE_STARTER_SHARK: frozenset = frozenset({
+    "SHARK: Whitgift",     # passenger ferry
+    "SHARK: Malin",        # versatile (early)
+    "SHARK: Eddystone",    # versatile (early)
+})
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  IRON HORSE — Non-standard-rail engine sets
+#  Derived from Iron Horse 4.14.1 source (base_track_type assignments).
+#  Used to exclude non-standard-rail engines from the safe starter pool.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# IH engines requiring ELECTRIFIED rail (ELRL / OHLE power).
+# These need catenary (electrified track) — NOT safe as starters with only Normal Rail.
+IH_ELRL_ENGINES: frozenset = frozenset({
+    # Electric railcars / EMUs
+    "IH: Athena", "IH: Geronimo", "IH: Breeze", "IH: Zeus",
+    "IH: Ares", "IH: Dover", "IH: Jupiter", "IH: Pylon",
+    # Express electric railcars
+    "IH: High Flyer", "IH: Sunshine Coast", "IH: Olympic",
+    "IH: Chronos", "IH: Nimbus",
+    # TGV / high-speed electric
+    "IH: Alizé", "IH: Brenner", "IH: Skeiron", "IH: Helm Wind",
+    # Electric freight / express locos
+    "IH: Cyclone", "IH: Shoebox", "IH: Ultra Shoebox",
+    "IH: Hurly Burly", "IH: Moor Gallop", "IH: Roarer", "IH: Fury",
+    "IH: Stalwart", "IH: Zebedee", "IH: Screamer", "IH: Avenger",
+    "IH: Sizzler", "IH: Booster", "IH: Tornado", "IH: Pinhorse",
+    "IH: Argus", "IH: Stoat", "IH: Zest", "IH: Flindermouse",
+    "IH: Dryth", "IH: Peasweep", "IH: Resistance", "IH: Flanders Storm",
+})
+
+# IH engines requiring METRO rail (MTRO).
+IH_METRO_ENGINES: frozenset = frozenset({
+    "IH: Bankside", "IH: Canary", "IH: Hammersmith", "IH: Longwater",
+    "IH: Poplar", "IH: Ravensbourne", "IH: Serpentine", "IH: Tideway",
+    "IH: Tyburn", "IH: Walbrook", "IH: Wandle", "IH: Westbourne",
+})
+
+# IH engines requiring NARROW GAUGE rail (NAAN).
+IH_NARROW_GAUGE_ENGINES: frozenset = frozenset({
+    "IH: 0-4-4-0 Alfama", "IH: 0-4-4-0 Thor", "IH: 2-6-0+0-6-2 Nile",
+    "IH: 2-6-2 Cheese Bug", "IH: 2-6-4 Bean Feast", "IH: Boar Cat",
+    "IH: Gargouille", "IH: Golfinho", "IH: Higuma", "IH: Hinterland",
+    "IH: Mumble", "IH: Pikel", "IH: Ruby", "IH: Snapper", "IH: Zorro",
+})
+
+# Combined: ALL IH engines that do NOT run on standard Normal Rail.
+# These must be excluded from the starting vehicle pool.
+IH_NON_STANDARD_ENGINES: frozenset = IH_ELRL_ENGINES | IH_METRO_ENGINES | IH_NARROW_GAUGE_ENGINES
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SAFE STARTER TRAIN FILTER
+#  Starting trains MUST run on Normal Rail (railtype 0) with steam or diesel
+#  power. Electric, Monorail, Maglev, Narrow Gauge, Metro, and Vactrain
+#  engines are excluded — the player only has Normal Rail track at game start.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Vanilla trains that are safe starters: Normal Rail steam + diesel only.
+# Excludes Electric (railtype 1), Monorail (2), Maglev (3), and Toyland.
+VANILLA_SAFE_STARTER_TRAINS: frozenset = frozenset({
+    v for v, rt in TRAIN_TO_RAILTYPE.items()
+    if rt == 0 and "(Electric)" not in v
+})
+
+# AP25 small aircraft (can use Small Airport — safe as starters).
+# Data from aircraftpack2025_summary.txt — small_plane + helicopter types.
+SMALL_AIRCRAFT_AP25: frozenset = frozenset({
+    "AP25: BAC 1-11", "AP25: McDonnell Douglas DC-9",
+    "AP25: Aérospatiale Hirondelle", "AP25: BAe 146",
+    "AP25: Fokker 100", "AP25: Learjet 60",
+    # Helicopters (always small-airport compatible)
+    "AP25: Aérospatiale AS 332", "AP25: Mil Mi-26T",
+    "AP25: Sikorsky S-92", "AP25: Kamov Ka-62",
+    "AP25: Lilium Airtaxi", "AP25: Airbus RACER",
+})
+
+# Military aircraft safe for small airports.
+# Helicopters + fighters + trainers + light aircraft = small.
+# Large transports (C-5, C-17, An-22, Il-76, C-141, etc.) = LARGE, excluded.
+SMALL_AIRCRAFT_MIL: frozenset = frozenset({
+    # Fighters (all small in MIL GRF)
+    "MIL: Avro 504", "MIL: Nieuport-Delage NiD 29", "MIL: Avia B.3",
+    "MIL: Aero A.18", "MIL: Avia B.21", "MIL: Avia Ba.33",
+    "MIL: Avia B.534", "MIL: Polikarpov I-16", "MIL: Hawker Hurricane IIC",
+    "MIL: Avia B.35", "MIL: Mitsubishi A6M Zero", "MIL: Grumman F6F Hellcat",
+    "MIL: Yakovlev Yak-9", "MIL: Avia S-199", "MIL: Hawker Sea Hawk",
+    "MIL: Mikoyan-Gurevich MiG-15", "MIL: North American F-86 Sabre",
+    "MIL: Aero S-103", "MIL: Mikoyan-Gurevich MiG-19",
+    "MIL: Mikoyan-Gurevich MiG-21", "MIL: Dassault Mirage III",
+    "MIL: Aero S-105", "MIL: McDonnell F-4 Phantom II",
+    "MIL: General Dynamics F-16 Fighting Falcon",
+    "MIL: Mikoyan-Gurevich MiG-29", "MIL: Dassault Mirage 2000",
+    "MIL: McDonnell Douglas F/A-18 Hornet", "MIL: Saab JAS 39 Gripen",
+    "MIL: Sukhoi Su-30", "MIL: Dassault Rafale",
+    "MIL: Lockheed Martin F-35A Lightning II", "MIL: Sukhoi Su-57",
+    # Training / Courier / Light aircraft (small)
+    "MIL: Letov S.328", "MIL: Zlin Z.12", "MIL: Aero A.304",
+    "MIL: Aero A.304 (courier)", "MIL: Aero L-29", "MIL: Aero L-39",
+    "MIL: Aero L-159", "MIL: Aero L-39NG",
+    # Small transports (prop planes, small enough for small airports)
+    "MIL: Antonov An-2", "MIL: Let L-410", "MIL: Antonov An-24",
+    "MIL: Antonov An-26", "MIL: Grumman C-2 Greyhound", "MIL: Let L-410NG",
+    # Reconnaissance (small drones / UAVs)
+    "MIL: Northrop Grumman RQ-4 Global Hawk",
+    "MIL: Lockheed Martin RQ-170 Sentinel",
+    # Helicopters (all small-airport compatible — use heliports)
+    "MIL: Sikorsky CH-37 Mojave", "MIL: Bell UH-1 Iroquois",
+    "MIL: Mil Mi-6", "MIL: Aerospatiale SA 321 Super Frelon",
+    "MIL: Aerospatiale SA 330 Puma", "MIL: Sikorsky CH-53E Super Stallion",
+    "MIL: Mil Mi-26", "MIL: Eurocopter AS 532 Cougar",
+    "MIL: Sikorsky UH-60 Black Hawk", "MIL: Mil Mi-17",
+    "MIL: AgustaWestland AW101 Merlin", "MIL: AgustaWestland AW139",
+    "MIL: Eurocopter EC725 Caracal", "MIL: Sikorsky CH-148 Cyclone",
+    "MIL: Sikorsky CH-53K King Stallion", "MIL: Mil Mi-38",
+})
+
+# Large military transports — NOT safe as starters (need large airport).
+LARGE_AIRCRAFT_MIL: frozenset = frozenset({
+    "MIL: Douglas C-74 Globemaster", "MIL: Douglas C-124 Globemaster II",
+    "MIL: Antonov An-12", "MIL: Lockheed C-141 Starlifter",
+    "MIL: Antonov An-22", "MIL: Lockheed C-5 Galaxy",
+    "MIL: Ilyushin Il-76", "MIL: Boeing C-17 Globemaster III",
+    "MIL: Airbus A400M Atlas",
+})
+
+# Convenience: per-railtype track item lists indexed by AP rail type index.
+# 0-3 = vanilla (match C++ RailType enum), 4-6 = NewGRF (mapped at runtime).
 TRACK_ITEMS_BY_RAILTYPE: List[List[str]] = [
-    NORMAL_TRACK_ITEMS,    # 0
-    ELECTRIC_TRACK_ITEMS,  # 1
-    MONORAIL_TRACK_ITEMS,  # 2
-    MAGLEV_TRACK_ITEMS,    # 3
+    NORMAL_TRACK_ITEMS,         # 0 — vanilla
+    ELECTRIC_TRACK_ITEMS,       # 1 — vanilla
+    MONORAIL_TRACK_ITEMS,       # 2 — vanilla
+    MAGLEV_TRACK_ITEMS,         # 3 — vanilla
+    NARROW_GAUGE_TRACK_ITEMS,   # 4 — Iron Horse (NAAN)
+    METRO_TRACK_ITEMS,          # 5 — Iron Horse (MTRO)
+    VACTUBE_TRACK_ITEMS,        # 6 — Vactrain (VACT)
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -408,6 +586,7 @@ TRACK_ITEMS_BY_RAILTYPE: List[List[str]] = [
 TRACK_DIRECTION_ITEMS: List[str] = ALL_TRACK_DIRECTION_ITEMS
 
 ROAD_DIRECTION_ITEMS: List[str] = ["Road: NE-SW", "Road: NW-SE"]
+TRAM_DIRECTION_ITEMS: List[str] = ["Tram: NE-SW", "Tram: NW-SE"]
 
 SIGNAL_ITEMS: List[str] = [
     "Signal: Block", "Signal: Entry", "Signal: Exit",
@@ -1045,11 +1224,22 @@ ESSENTIAL_VEHICLES: frozenset = frozenset({
     "Ploddyphut 100", "Flashbang X1",
     # ── Aircraft — Toyland helicopter ────────────────────────────────────
     "Powernaut Helicopter",
-    # ── Iron Horse — 10 early steam engines (replace vanilla when IH on) ─
+    # ── Iron Horse — 21 progression engines (one per wheel arrangement) ──
     "IH: 0-6-0 Fireball", "IH: 0-6-0 Hercules", "IH: 0-6-0 Lamia",
     "IH: 0-8-0 Eastern", "IH: 0-8-0 Haar", "IH: 0-8-0 Saxon",
     "IH: 2-6-0 Braf", "IH: 2-6-0 Diablo", "IH: 2-6-2 Arrow",
     "IH: 2-4-0 Reliance",
+    "IH: 0-10-0 Decapod", "IH: 0-10-0 Girt Licker", "IH: 0-4-0+0-4-0 Pika",
+    "IH: 0-6-0+0-6-0 Keen", "IH: 0-6-0+0-6-0 Xerxes", "IH: 0-6-2 Buffalo",
+    "IH: 2-6-2 Ox", "IH: 2-8-2 Backbone", "IH: 4-4-2 Swift",
+    "IH: 4-6-4 Satyr", "IH: 4-8-0 Tyrconnell",
+    # ── AP25 — 12 small aircraft (can use Small Airport) ────────────────
+    "AP25: BAC 1-11", "AP25: McDonnell Douglas DC-9",
+    "AP25: Aérospatiale Hirondelle", "AP25: BAe 146",
+    "AP25: Fokker 100", "AP25: Learjet 60",
+    "AP25: Aérospatiale AS 332", "AP25: Mil Mi-26T",
+    "AP25: Sikorsky S-92", "AP25: Kamov Ka-62",
+    "AP25: Lilium Airtaxi", "AP25: Airbus RACER",
     # ── SHARK — 5 essential ships (replace vanilla progression ships when SHARK on)
     "SHARK: Whitgift",       # passenger ferry replacement
     "SHARK: Lantau",         # oil tanker replacement
@@ -1091,13 +1281,17 @@ def _build_item_table() -> Dict[str, OpenTTDItemData]:
     # Speed Boost: only ONE entry needed — C++ accumulates each copy received
     add("Speed Boost", ItemClassification.useful, ItemType.UTILITY, "speed_boost")
 
-    # Rail direction unlocks — 24 items (4 rail types × 6 directions).
+    # Rail direction unlocks — 24 vanilla + 18 NewGRF items.
     # Registered always so create_item() works; only enter pool when option enabled.
     for name in ALL_TRACK_DIRECTION_ITEMS:
+        add(name, ItemClassification.progression, ItemType.UTILITY, "rail_direction")
+    for name in NARROW_GAUGE_TRACK_ITEMS + METRO_TRACK_ITEMS + VACTUBE_TRACK_ITEMS:
         add(name, ItemClassification.progression, ItemType.UTILITY, "rail_direction")
 
     # Infrastructure unlock items — registered always, only enter pool when toggled on
     for name in ROAD_DIRECTION_ITEMS:
+        add(name, ItemClassification.progression, ItemType.UTILITY, "road_direction")
+    for name in TRAM_DIRECTION_ITEMS:
         add(name, ItemClassification.progression, ItemType.UTILITY, "road_direction")
     for name in SIGNAL_ITEMS:
         add(name, ItemClassification.progression, ItemType.UTILITY, "signal")
@@ -1136,8 +1330,9 @@ def _build_item_table() -> Dict[str, OpenTTDItemData]:
     for name in VACTRAIN_ENGINES:
         add(name, ItemClassification.useful, ItemType.VEHICLE, "train")
     # Aircraftpack 2025 — always registered, only pooled when enabled
+    # 12 small aircraft are in ESSENTIAL_VEHICLES (progression), rest are useful
     for name in AIRCRAFTPACK_AIRCRAFT:
-        add(name, ItemClassification.useful, ItemType.VEHICLE, "aircraft")
+        add(name, vehicle_cls(name), ItemType.VEHICLE, "aircraft")
 
     add("Victory", ItemClassification.progression, ItemType.VICTORY, "victory")
     return table

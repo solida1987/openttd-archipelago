@@ -200,6 +200,15 @@ struct StatusBarWindow : Window {
 				int checked = AP_GetCheckedLocationCount();
 				int total   = AP_GetTotalLocationCount();
 				DrawString(r.left + 4, r.right - 4, r.top + 2, GetString(STR_AP_STATUSBAR_CHECKS, checked, total), TC_YELLOW, SA_LEFT);
+
+				/* Stars counter (collected / total) */
+				int star_pool = AP_GetStarPoolSize();
+				if (star_pool > 0) {
+					int star_collected = AP_GetStarsCollected();
+					int line2_y = r.top + 2 + GetCharacterHeight(FS_NORMAL) + 1;
+					std::string star_str = fmt::format("Stars: {}/{}", star_collected, star_pool);
+					DrawString(r.left + 4, r.right - 4, line2_y, star_str, TC_GOLD, SA_LEFT);
+				}
 				break;
 			}
 		}
@@ -243,6 +252,7 @@ struct StatusBarWindow : Window {
 			case WID_S_AP_BTN_MISSIONS: ShowArchipelagoMissionsWindow(); break;
 			case WID_S_AP_BTN_DEMIGODS: ShowArchipelagoDemigodWindow();  break;
 			case WID_S_AP_BTN_RUINS:    ShowArchipelagoRuinsTrackerWindow(); break;
+			case WID_S_AP_BTN_STARS:    ShowArchipelagoStarTrackerWindow(); break;
 			case WID_S_AP_BTN_EVENTS:   ShowArchipelagoColbyWindow();    break;
 			case WID_S_AP_BTN_SHOP:     ShowArchipelagoShopWindow();     break;
 			case WID_S_AP_BTN_GUIDE:    ShowArchipelagoGuideWindow();    break;
@@ -282,7 +292,8 @@ static constexpr std::initializer_list<NWidgetPart> _nested_main_status_widgets 
 			NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WID_S_AP_BTN_SHOP),     SetStringTip(STR_ARCHIPELAGO_BTN_SHOP),     SetMinimalSize(45, 14),
 			NWidget(WWT_PUSHTXTBTN, COLOUR_BROWN,  WID_S_AP_BTN_RUINS),    SetStringTip(STR_ARCHIPELAGO_BTN_RUINS),    SetMinimalSize(50, 14),
 			NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WID_S_AP_BTN_EVENTS),   SetStringTip(STR_ARCHIPELAGO_BTN_COLBY),    SetMinimalSize(55, 14),
-			NWidget(WWT_PUSHTXTBTN, COLOUR_RED,    WID_S_AP_BTN_DEMIGODS), SetStringTip(STR_ARCHIPELAGO_BTN_DEMIGOD),  SetMinimalSize(70, 14),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_S_AP_BTN_DEMIGODS), SetStringTip(STR_ARCHIPELAGO_BTN_DEMIGOD),  SetMinimalSize(70, 14),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WID_S_AP_BTN_STARS),    SetStringTip(STR_ARCHIPELAGO_BTN_STARS),    SetMinimalSize(50, 14),
 			NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WID_S_AP_BTN_GUIDE),    SetStringTip(STR_ARCHIPELAGO_BTN_GUIDE),    SetMinimalSize(50, 14),
 			NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WID_S_AP_BTN_INDEX),    SetStringTip(STR_ARCHIPELAGO_BTN_INDEX),    SetMinimalSize(50, 14),
 		EndContainer(),

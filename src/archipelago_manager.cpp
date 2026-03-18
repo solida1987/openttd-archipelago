@@ -90,6 +90,7 @@
 #include "object_type.h"
 #include "landscape.h"
 #include "landscape_cmd.h"
+#include "effectvehicle_func.h"
 #include "terraform_cmd.h"
 #include "gfxinit.h"
 #include "fileio_func.h"
@@ -98,6 +99,9 @@
 #include "saveload/saveload.h"
 #include "fios.h"
 #include "safeguards.h"
+
+/* Bridge mode removed — variable kept as always-false for code that still references it. */
+bool _ap_bridge_mode = false;
 
 /* Console log helpers */
 #define AP_LOG(msg)  IConsolePrint(CC_INFO,    "[AP] " + std::string(msg))
@@ -696,9 +700,9 @@ static bool EvaluateMission(APMission &m)
 		current = (int64_t)m.maintain_months_ok;
 	}
 
-	/* ── "buy a vehicle from the shop" ────────────────────────────────
+	/* ── "buy any item from the shop" ─────────────────────────────────
 	 * Triggered when player buys anything from the AP shop. */
-	else if (m.type == "buy a vehicle from the shop" || m.type == "buy") {
+	else if (m.type == "buy any item from the shop" || m.type == "buy a vehicle from the shop" || m.type == "buy") {
 		current = _ap_shop_purchased ? 1 : 0;
 	}
 
@@ -759,21 +763,61 @@ bool AP_IsEngineUnlocked(uint32_t engine_id)
 
 /* ── Track direction locks ──────────────────────────────────────────────── *
  * One bitmask per rail type (bits 0-5 = TRACK_X..TRACK_RIGHT).
- * Index matches C++ RailType enum: 0=Normal, 1=Electric, 2=Monorail, 3=Maglev.
+ * AP index 0-3 = vanilla (Normal, Electric, Monorail, Maglev).
+ * AP index 4-6 = NewGRF (Narrow Gauge/IH, Metro/IH, Vacuum Tube/Vactrain).
+ * NewGRF types use runtime-detected RailType IDs mapped to AP indices.
  * When enable_rail_direction_unlocks is true in slot_data, all bytes are set
  * to 0x3F (all 6 bits) at session start. Each received item clears one bit.
  * Array is fully unlocked (all zeros) when option is disabled.
  */
-static constexpr int AP_NUM_RAILTYPES = 4;
-static uint8_t _ap_locked_track_dirs[AP_NUM_RAILTYPES] = {0, 0, 0, 0};
+static constexpr int AP_NUM_RAILTYPES = 7;  /* 4 vanilla + NG + Metro + VacTube */
+static uint8_t _ap_locked_track_dirs[AP_NUM_RAILTYPES] = {};
 /** True once session init has set the initial lock state.
  *  Reset to false by AP_OnSlotData so reconnects don't re-lock
  *  directions that were already restored from the savegame. */
 static bool _ap_track_dirs_inited = false;
 
+/* Discovered NewGRF rail type IDs (runtime — set by AP_DetectNewGRFRailTypes).
+ * 0xFF = not present (GRF not loaded). */
+static uint8_t _ap_ng_rt_id    = 0xFF;  /* Narrow Gauge — IH label 'NAAN' */
+static uint8_t _ap_metro_rt_id = 0xFF;  /* Metro — IH label 'MTRO' */
+static uint8_t _ap_vact_rt_id  = 0xFF;  /* Vacuum Tube — Vactrain label 'VACT' */
+
+/** Map a runtime RailType to our fixed AP lock array index.
+ *  Returns 0xFF for unknown/unhandled types (not locked). */
+static uint8_t AP_MapRailTypeToIndex(uint8_t rt)
+{
+	if (rt < 4) return rt;                  /* vanilla */
+	if (rt == _ap_ng_rt_id)    return 4;    /* Narrow Gauge */
+	if (rt == _ap_metro_rt_id) return 5;    /* Metro */
+	if (rt == _ap_vact_rt_id)  return 6;    /* Vacuum Tube */
+	return 0xFF;
+}
+
+/** Detect NewGRF rail type IDs by scanning loaded GRF labels.
+ *  Must be called AFTER GRFs are loaded (i.e. at session start, not before map gen). */
+static void AP_DetectNewGRFRailTypes()
+{
+	RailType ng = GetRailTypeByLabel('NAAN');
+	_ap_ng_rt_id = (ng != INVALID_RAILTYPE) ? (uint8_t)ng : 0xFF;
+
+	RailType metro = GetRailTypeByLabel('MTRO');
+	_ap_metro_rt_id = (metro != INVALID_RAILTYPE) ? (uint8_t)metro : 0xFF;
+
+	RailType vact = GetRailTypeByLabel('VACT');
+	_ap_vact_rt_id = (vact != INVALID_RAILTYPE) ? (uint8_t)vact : 0xFF;
+
+	Debug(misc, 1, "[AP] NewGRF rail types detected: NG={} Metro={} VacTube={}",
+	      (int)_ap_ng_rt_id, (int)_ap_metro_rt_id, (int)_ap_vact_rt_id);
+}
+
 /* Road direction locks: bit 0=X (NE-SW), bit 1=Y (NW-SE) */
 static uint8_t _ap_locked_road_dirs = 0;
 static bool    _ap_road_dirs_inited = false;
+
+/* Tram direction locks: bit 0=X (NE-SW), bit 1=Y (NW-SE) */
+static uint8_t _ap_locked_tram_dirs = 0;
+static bool    _ap_tram_dirs_inited = false;
 
 /* Signal locks: bits 0-5 map to SignalType enum */
 static uint8_t _ap_locked_signals = 0;
@@ -803,6 +847,15 @@ static bool    _ap_terraform_inited = false;
 static uint8_t _ap_locked_town_actions = 0;
 static bool    _ap_town_actions_inited = false;
 
+/* Iron Horse wagon bundle: IH wagons have no AP items, so when wagon
+ * unlocks are enabled we piggyback them onto IH engine unlocks.
+ * Each IH engine unlock auto-unlocks a proportional batch of IH wagons. */
+static std::vector<EngineID> _ap_ih_wagon_queue;   ///< All IH wagon EngineIDs (sorted by ID)
+static uint32_t              _ap_ih_grfid = 0;      ///< Iron Horse GRF ID (learned at runtime)
+static int                   _ap_ih_engines_total = 0;
+static bool                  _ap_ih_wagons_built = false;
+static bool                  _ap_ih_wagon_unlocks = false; ///< Cached from slot data (set in AP_OnSlotData)
+
 /* ── Ruin Objects ──────────────────────────────────────────────── */
 /* GRFID "APRU" — stored little-endian as read by ReadDWord():
  *   file bytes  41 50 52 55  →  LE uint32  0x55525041              */
@@ -816,6 +869,77 @@ static ObjectType _ap_ruin_types[AP_NUM_RUIN_TYPES] = {
 };
 static bool _ap_ruin_types_resolved = false;
 
+/* ── Star Objects ──────────────────────────────────────────────── */
+/* GRFID "APST" — stored little-endian as read by ReadDWord():
+ *   file bytes  41 50 53 54  →  LE uint32  0x54535041              */
+static constexpr uint32_t AP_STARS_GRFID = 0x54535041;
+static constexpr int AP_NUM_STAR_TYPES = 3;
+
+/* Cached ObjectType indices for the 3 star types (resolved after GRF load). */
+static ObjectType _ap_star_types[AP_NUM_STAR_TYPES] = {
+	INVALID_OBJECT_TYPE, INVALID_OBJECT_TYPE, INVALID_OBJECT_TYPE
+};
+static bool _ap_star_types_resolved = false;
+static std::vector<APStar> _ap_stars;
+static int _ap_stars_collected = 0;
+static bool _ap_stars_initial_spawned = false;
+
+/** Resolve star ObjectTypes by scanning ObjectSpecs for our GRFID.
+ *  Called once after world generation when the GRF is loaded. */
+static void AP_ResolveStarTypes()
+{
+	if (_ap_star_types_resolved) return;
+	_ap_star_types_resolved = true;
+
+	for (int i = 0; i < AP_NUM_STAR_TYPES; i++) _ap_star_types[i] = INVALID_OBJECT_TYPE;
+
+	int found = 0;
+	const auto &specs = ObjectSpec::Specs();
+	for (size_t idx = NEW_OBJECT_OFFSET; idx < specs.size(); idx++) {
+		const ObjectSpec &s = specs[idx];
+		if (!s.IsEnabled()) continue;
+		if (s.grf_prop.grfid != AP_STARS_GRFID) continue;
+		uint16_t local_id = s.grf_prop.local_id;
+		if (local_id < AP_NUM_STAR_TYPES) {
+			_ap_star_types[local_id] = static_cast<ObjectType>(idx);
+			found++;
+			AP_LOG(fmt::format("Resolved star type {} → ObjectType {}", local_id, idx));
+		}
+	}
+	if (found == 0) {
+		AP_WARN(fmt::format("No star ObjectTypes found! GRFID=0x{:08X} not in loaded GRFs", AP_STARS_GRFID));
+	} else {
+		AP_OK(fmt::format("Resolved {}/{} star ObjectTypes", found, AP_NUM_STAR_TYPES));
+	}
+}
+
+/** Check if a tile is near a building (house, industry, station, non-AP object).
+ *  Used to ensure stars spawn in wilderness, not near towns. */
+static bool AP_IsTileNearBuilding(TileIndex center, int radius)
+{
+	int cx = (int)TileX(center);
+	int cy = (int)TileY(center);
+	for (int dy = -radius; dy <= radius; dy++) {
+		for (int dx = -radius; dx <= radius; dx++) {
+			int tx = cx + dx, ty = cy + dy;
+			if (tx < 0 || ty < 0 || tx >= (int)Map::SizeX() || ty >= (int)Map::SizeY()) continue;
+			TileIndex t = TileXY(tx, ty);
+			if (IsTileType(t, MP_HOUSE)) return true;
+			if (IsTileType(t, MP_INDUSTRY)) return true;
+			if (IsTileType(t, MP_STATION)) return true;
+			/* Allow AP objects (stars, ruins), block all other objects */
+			if (IsTileType(t, MP_OBJECT)) {
+				ObjectType ot = GetObjectType(t);
+				bool is_ap = false;
+				for (int i = 0; i < AP_NUM_STAR_TYPES; i++) if (ot == _ap_star_types[i]) is_ap = true;
+				for (int i = 0; i < AP_NUM_RUIN_TYPES; i++) if (ot == _ap_ruin_types[i]) is_ap = true;
+				if (!is_ap) return true;
+			}
+		}
+	}
+	return false;
+}
+
 /** Resolve ruin ObjectTypes by scanning ObjectSpecs for our GRFID.
  *  Called once after world generation when the GRF is loaded. */
 static void AP_ResolveRuinTypes()
@@ -825,7 +949,10 @@ static void AP_ResolveRuinTypes()
 
 	for (int i = 0; i < AP_NUM_RUIN_TYPES; i++) _ap_ruin_types[i] = INVALID_OBJECT_TYPE;
 
+	int found = 0;
 	const auto &specs = ObjectSpec::Specs();
+	Debug(misc, 1, "[AP] ResolveRuinTypes: scanning {} object specs (NEW_OBJECT_OFFSET={})",
+	      specs.size(), NEW_OBJECT_OFFSET);
 	for (size_t idx = NEW_OBJECT_OFFSET; idx < specs.size(); idx++) {
 		const ObjectSpec &s = specs[idx];
 		if (!s.IsEnabled()) continue;
@@ -833,8 +960,14 @@ static void AP_ResolveRuinTypes()
 		uint16_t local_id = s.grf_prop.local_id;
 		if (local_id < AP_NUM_RUIN_TYPES) {
 			_ap_ruin_types[local_id] = static_cast<ObjectType>(idx);
+			found++;
 			AP_LOG(fmt::format("Resolved ruin type {} → ObjectType {}", local_id, idx));
 		}
+	}
+	if (found == 0) {
+		AP_WARN(fmt::format("No ruin ObjectTypes found! GRFID=0x{:08X} not in loaded GRFs", AP_RUINS_GRFID));
+	} else {
+		AP_OK(fmt::format("Resolved {}/{} ruin ObjectTypes", found, AP_NUM_RUIN_TYPES));
 	}
 }
 
@@ -878,6 +1011,11 @@ static bool AP_PlaceRuin(int ruin_index)
 	AP_WARN(fmt::format("Failed to place ruin type {} after 5000 attempts", ruin_index));
 	return false;
 }
+
+/* ── Star Placement — forward declarations (defined after _ap_pending_sd) ── */
+static bool AP_PlaceSingleStar(APStar &star);
+static void AP_InitStarEntries();
+static int  AP_PlaceStarBatch(int batch_size);
 
 /* ── Ruin Gameplay System ─────────────────────────────────────────── */
 /* Active ruins on the map, requiring cargo delivery to clear.        */
@@ -1271,6 +1409,109 @@ void AP_RegisterConsoleCommands()
 }
 
 /* -------------------------------------------------------------------------
+ * Iron Horse wagon bundle helpers
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Build the IH wagon queue by scanning all engines from the same GRF as
+ * the given IH engine.  Called lazily on the first IH engine unlock.
+ */
+static void AP_BuildIHWagonQueue(EngineID ih_engine_id)
+{
+	const Engine *ref = Engine::GetIfValid(ih_engine_id);
+	if (ref == nullptr || ref->grf_prop.grffile == nullptr) return;
+
+	_ap_ih_grfid = ref->grf_prop.grfid;
+	_ap_ih_wagon_queue.clear();
+	_ap_ih_engines_total = 0;
+
+	for (const Engine *e : Engine::Iterate()) {
+		if (e->type != VEH_TRAIN) continue;
+		if (e->grf_prop.grffile == nullptr || e->grf_prop.grfid != _ap_ih_grfid) continue;
+
+		bool is_wagon = (e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON);
+		if (is_wagon) {
+			_ap_ih_wagon_queue.push_back(e->index);
+		} else {
+			_ap_ih_engines_total++;
+		}
+	}
+
+	/* Sort by EngineID so early/basic wagons come first */
+	std::sort(_ap_ih_wagon_queue.begin(), _ap_ih_wagon_queue.end());
+	_ap_ih_wagons_built = true;
+
+	Debug(misc, 1, "[AP] IH wagon queue: {} wagons across {} engines (grfid={:08X})",
+	      _ap_ih_wagon_queue.size(), _ap_ih_engines_total, _ap_ih_grfid);
+}
+
+/**
+ * Unlock a proportional batch of IH wagons based on how many IH engines
+ * have been unlocked so far.  Safe to call multiple times (idempotent).
+ */
+static void AP_UnlockIHWagonBatch()
+{
+	if (!_ap_ih_wagons_built || _ap_ih_wagon_queue.empty() || _ap_ih_engines_total == 0) return;
+	if (!_ap_ih_wagon_unlocks) return;
+
+	CompanyID cid = _ap_bridge_mode ? CompanyID(0) : _local_company;
+	if (cid >= MAX_COMPANIES) return;
+
+	/* Count how many IH engines are currently unlocked */
+	int engines_unlocked = 0;
+	for (const Engine *e : Engine::Iterate()) {
+		if (e->type != VEH_TRAIN) continue;
+		if (e->grf_prop.grffile == nullptr || e->grf_prop.grfid != _ap_ih_grfid) continue;
+		if (e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON) continue;
+		if (_ap_unlocked_engine_ids.count(e->index)) engines_unlocked++;
+	}
+
+	int total_wagons = (int)_ap_ih_wagon_queue.size();
+	/* Each IH engine unlock gives 1-4 wagons, cycling: 1,2,3,4,1,2,3,4...
+	 * This feels like progression — some unlocks are small, some are big.
+	 * Average 2.5 per engine, so all ~178 wagons unlock after ~71 engines. */
+	int target = 0;
+	for (int i = 1; i <= engines_unlocked; i++) {
+		target += 1 + ((i - 1) % 4);  /* cycle: 1, 2, 3, 4, 1, 2, 3, 4 ... */
+	}
+	if (target > total_wagons) target = total_wagons;
+
+	int newly_unlocked = 0;
+	for (int i = 0; i < target; i++) {
+		EngineID wid = _ap_ih_wagon_queue[i];
+		if (_ap_unlocked_engine_ids.count(wid)) continue; /* already done */
+
+		Engine *w = Engine::GetIfValid(wid);
+		if (w == nullptr) continue;
+
+		_ap_unlocked_engine_ids.insert(wid);
+		w->flags.Set(EngineFlag::Available);
+		if (_ap_bridge_mode) {
+			w->company_avail.Set();
+			for (const Company *co : Company::Iterate()) {
+				CompanyID old = _current_company;
+				_current_company = OWNER_DEITY;
+				Command<CMD_ENGINE_CTRL>::Post(wid, co->index, true);
+				_current_company = old;
+			}
+		} else {
+			CompanyID old = _current_company;
+			_current_company = OWNER_DEITY;
+			Command<CMD_ENGINE_CTRL>::Do(DoCommandFlags{DoCommandFlag::Execute},
+				wid, cid, true);
+			_current_company = old;
+		}
+		newly_unlocked++;
+	}
+
+	if (newly_unlocked > 0) {
+		InvalidateWindowClassesData(WC_BUILD_VEHICLE, 0);
+		Debug(misc, 1, "[AP] IH wagon batch: unlocked {} wagons ({}/{} total, {}/{} engines)",
+		      newly_unlocked, target, total_wagons, engines_unlocked, _ap_ih_engines_total);
+	}
+}
+
+/* -------------------------------------------------------------------------
  * AP_UnlockEngineByName
  * Calls OpenTTD's own EnableEngineForCompany() which handles:
  *   - company_avail.Set(company)
@@ -1507,6 +1748,15 @@ bool AP_UnlockEngineByName(const std::string &name)
 	 * EnableEngineForCompany() only sets company_avail, but the build-vehicle
 	 * window also checks EngineFlag::Available before showing any engine. */
 	e->flags.Set(EngineFlag::Available);
+
+	/* Archipelago: force the current landscape climate bit so the engine is
+	 * fully functional (IsEnabled, cargo capacity, buy command all check this).
+	 * NewGRF engines may not have the climate set for this landscape, but AP
+	 * explicitly chose them — they MUST work. */
+	if (!e->info.climates.Test(_settings_game.game_creation.landscape)) {
+		e->info.climates.Set(_settings_game.game_creation.landscape);
+		AP_TRACE(fmt::format("ForceClimate: eid={} landscape={}", (int)it->second.base(), (int)_settings_game.game_creation.landscape));
+	}
 	if (_ap_bridge_mode) {
 		/* Bridge mode: unlock for ALL companies.
 		 * Use ::Post so the command propagates to all connected clients
@@ -1522,9 +1772,19 @@ bool AP_UnlockEngineByName(const std::string &name)
 		/* Singleplayer: execute directly */
 		CompanyID old = _current_company;
 		_current_company = OWNER_DEITY;
-		Command<CMD_ENGINE_CTRL>::Do(DoCommandFlags{DoCommandFlag::Execute},
+		CommandCost res = Command<CMD_ENGINE_CTRL>::Do(DoCommandFlags{DoCommandFlag::Execute},
 			it->second, cid, true);
 		_current_company = old;
+		int eid_val = (int)it->second.base();
+		int cid_val = (int)cid.base();
+		const char *res_str = res.Succeeded() ? "OK" : "FAIL";
+		int avail_val = e->company_avail.Test(cid) ? 1 : 0;
+		int enabled_val = e->IsEnabled() ? 1 : 0;
+		int flag_val = e->flags.Test(EngineFlag::Available) ? 1 : 0;
+		bool str_ok = e->info.string_id != STR_NEWGRF_INVALID_ENGINE;
+		bool climate_ok = e->info.climates.Test(_settings_game.game_creation.landscape);
+		AP_TRACE(fmt::format("CMD_ENGINE_CTRL: eid={} cid={} result={} avail={} enabled={} available={} str_ok={} climate_ok={}",
+			eid_val, cid_val, res_str, avail_val, enabled_val, flag_val, str_ok ? 1 : 0, climate_ok ? 1 : 0));
 	}
 
 	/* Unlock any additional engines that share this name (e.g. all three
@@ -1536,6 +1796,9 @@ bool AP_UnlockEngineByName(const std::string &name)
 			if (extra_e == nullptr) continue;
 			_ap_unlocked_engine_ids.insert(extra_eid);
 			extra_e->flags.Set(EngineFlag::Available);
+			if (!extra_e->info.climates.Test(_settings_game.game_creation.landscape)) {
+				extra_e->info.climates.Set(_settings_game.game_creation.landscape);
+			}
 			if (_ap_bridge_mode) {
 				extra_e->company_avail.Set();
 				for (const Company *co : Company::Iterate()) {
@@ -1557,6 +1820,15 @@ bool AP_UnlockEngineByName(const std::string &name)
 	/* Explicitly invalidate the build-vehicle window so the new engine shows up */
 	InvalidateWindowClassesData(WC_BUILD_VEHICLE, 0);
 	Debug(misc, 0, "[AP] Engine unlocked: {}", resolved);
+
+	/* Iron Horse wagon bundle: if this was an IH engine unlock and wagon
+	 * unlocks are enabled, auto-unlock a proportional batch of IH wagons.
+	 * The "IH: " prefix is still present in the original item name. */
+	if (name.size() > 4 && name.substr(0, 4) == "IH: " && _ap_ih_wagon_unlocks) {
+		if (!_ap_ih_wagons_built) AP_BuildIHWagonQueue(it->second);
+		AP_UnlockIHWagonBatch();
+	}
+
 	return true;
 }
 
@@ -3016,7 +3288,7 @@ bool AP_IsWrathEnabled() { return _ap_wrath_enabled; }
  * ---------------------------------------------------------------------- */
 
 static APSlotData  _ap_pending_sd;
-bool               _ap_pending_world_start         = false; ///< Non-static: accessed by network_bridge_client.cpp
+bool               _ap_pending_world_start         = false;
 static bool        _ap_goal_sent                   = false;
 static bool        _ap_session_started             = false; ///< True once we've done first-tick setup in GM_NORMAL
 static int         _ap_breakdown_wave_ticks        = 0;     ///< >0 while breakdown wave is active (~60 seconds)
@@ -3113,6 +3385,9 @@ static void AP_OnSlotData(const APSlotData &sd)
 	_ap_session_started = false; /* reset so first-tick setup runs again */
 	_ap_goal_sent       = false;
 	_ap_engine_map_built = false; /* rebuild map for new session */
+	_ap_star_types_resolved = false; /* re-resolve star ObjectTypes on reconnect */
+	_ap_ih_wagons_built  = false; /* rebuild IH wagon queue for new session */
+	_ap_ih_wagon_unlocks = sd.enable_wagon_unlocks; /* cache for early-access functions */
 	_ap_cargo_map_built  = false; /* rebuild cargo map for new session */
 	_ap_track_dirs_inited = false; /* allow session init to re-evaluate lock state */
 	_ap_road_dirs_inited  = false;
@@ -3508,6 +3783,63 @@ static void AP_OnItemReceived(const APItem &item)
 	} else if (item.item_name == "Maglev Track: E") {
 		_ap_locked_track_dirs[3] &= ~(1u << 5);
 		AP_ShowNews("[AP] Unlocked: Maglev Track E!");
+	// Narrow Gauge (AP index=4, IH NewGRF)
+	} else if (item.item_name == "Narrow Gauge Track: NE-SW") {
+		_ap_locked_track_dirs[4] &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Narrow Gauge Track NE-SW!");
+	} else if (item.item_name == "Narrow Gauge Track: NW-SE") {
+		_ap_locked_track_dirs[4] &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Narrow Gauge Track NW-SE!");
+	} else if (item.item_name == "Narrow Gauge Track: N") {
+		_ap_locked_track_dirs[4] &= ~(1u << 2);
+		AP_ShowNews("[AP] Unlocked: Narrow Gauge Track N!");
+	} else if (item.item_name == "Narrow Gauge Track: S") {
+		_ap_locked_track_dirs[4] &= ~(1u << 3);
+		AP_ShowNews("[AP] Unlocked: Narrow Gauge Track S!");
+	} else if (item.item_name == "Narrow Gauge Track: W") {
+		_ap_locked_track_dirs[4] &= ~(1u << 4);
+		AP_ShowNews("[AP] Unlocked: Narrow Gauge Track W!");
+	} else if (item.item_name == "Narrow Gauge Track: E") {
+		_ap_locked_track_dirs[4] &= ~(1u << 5);
+		AP_ShowNews("[AP] Unlocked: Narrow Gauge Track E!");
+	// Metro (AP index=5, IH NewGRF)
+	} else if (item.item_name == "Metro Track: NE-SW") {
+		_ap_locked_track_dirs[5] &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Metro Track NE-SW!");
+	} else if (item.item_name == "Metro Track: NW-SE") {
+		_ap_locked_track_dirs[5] &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Metro Track NW-SE!");
+	} else if (item.item_name == "Metro Track: N") {
+		_ap_locked_track_dirs[5] &= ~(1u << 2);
+		AP_ShowNews("[AP] Unlocked: Metro Track N!");
+	} else if (item.item_name == "Metro Track: S") {
+		_ap_locked_track_dirs[5] &= ~(1u << 3);
+		AP_ShowNews("[AP] Unlocked: Metro Track S!");
+	} else if (item.item_name == "Metro Track: W") {
+		_ap_locked_track_dirs[5] &= ~(1u << 4);
+		AP_ShowNews("[AP] Unlocked: Metro Track W!");
+	} else if (item.item_name == "Metro Track: E") {
+		_ap_locked_track_dirs[5] &= ~(1u << 5);
+		AP_ShowNews("[AP] Unlocked: Metro Track E!");
+	// Vacuum Tube (AP index=6, Vactrain NewGRF)
+	} else if (item.item_name == "Vacuum Tube Track: NE-SW") {
+		_ap_locked_track_dirs[6] &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Vacuum Tube Track NE-SW!");
+	} else if (item.item_name == "Vacuum Tube Track: NW-SE") {
+		_ap_locked_track_dirs[6] &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Vacuum Tube Track NW-SE!");
+	} else if (item.item_name == "Vacuum Tube Track: N") {
+		_ap_locked_track_dirs[6] &= ~(1u << 2);
+		AP_ShowNews("[AP] Unlocked: Vacuum Tube Track N!");
+	} else if (item.item_name == "Vacuum Tube Track: S") {
+		_ap_locked_track_dirs[6] &= ~(1u << 3);
+		AP_ShowNews("[AP] Unlocked: Vacuum Tube Track S!");
+	} else if (item.item_name == "Vacuum Tube Track: W") {
+		_ap_locked_track_dirs[6] &= ~(1u << 4);
+		AP_ShowNews("[AP] Unlocked: Vacuum Tube Track W!");
+	} else if (item.item_name == "Vacuum Tube Track: E") {
+		_ap_locked_track_dirs[6] &= ~(1u << 5);
+		AP_ShowNews("[AP] Unlocked: Vacuum Tube Track E!");
 
 	/* ── ROAD DIRECTION UNLOCK ITEMS ────────────────────────────────── */
 	} else if (item.item_name == "Road: NE-SW") {
@@ -3516,6 +3848,14 @@ static void AP_OnItemReceived(const APItem &item)
 	} else if (item.item_name == "Road: NW-SE") {
 		_ap_locked_road_dirs &= ~(1u << 1);
 		AP_ShowNews("[AP] Unlocked: Road NW-SE!");
+
+	/* ── TRAM DIRECTION UNLOCK ITEMS ───────────────────────────────── */
+	} else if (item.item_name == "Tram: NE-SW") {
+		_ap_locked_tram_dirs &= ~(1u << 0);
+		AP_ShowNews("[AP] Unlocked: Tram NE-SW!");
+	} else if (item.item_name == "Tram: NW-SE") {
+		_ap_locked_tram_dirs &= ~(1u << 1);
+		AP_ShowNews("[AP] Unlocked: Tram NW-SE!");
 
 	/* ── SIGNAL UNLOCK ITEMS ────────────────────────────────────────── */
 	} else if (item.item_name == "Signal: Block") {
@@ -3645,10 +3985,11 @@ static void AP_OnItemReceived(const APItem &item)
 	/* ── TERRAFORM UNLOCK ITEMS ─────────────────────────────────────── */
 	} else if (item.item_name == "Terraform: Raise Land") {
 		_ap_locked_terraform &= ~(1u << 0);
-		/* Also auto-unlock Level Land (needs both raise+lower) */
+		InvalidateWindowClassesData(WC_SCEN_LAND_GEN);
 		AP_ShowNews("[AP] Unlocked: Raise Land!");
 	} else if (item.item_name == "Terraform: Lower Land") {
 		_ap_locked_terraform &= ~(1u << 1);
+		InvalidateWindowClassesData(WC_SCEN_LAND_GEN);
 		AP_ShowNews("[AP] Unlocked: Lower Land!");
 
 	/* ── TOWN AUTHORITY ACTION UNLOCK ITEMS ─────────────────────────── */
@@ -3976,13 +4317,31 @@ void AP_ConsumeWorldStart()
 		auto rg = std::make_unique<GRFConfig>(RUINS_FILENAME);
 		rg->SetSuitablePalette();
 
-		/* Try baseset dir first (next to openttd.exe), then newgrf dir */
-		if (!FillGRFDetails(*rg, false, BASESET_DIR) &&
-		    !FillGRFDetails(*rg, false, NEWGRF_DIR)) {
+		/* Try newgrf dir first (LoadNewGRF searches NEWGRF_DIR for non-baseset GRFs),
+		 * then baseset dir as fallback */
+		if (!FillGRFDetails(*rg, false, NEWGRF_DIR) &&
+		    !FillGRFDetails(*rg, false, BASESET_DIR)) {
 			AP_WARN("archipelago_ruins.grf not found — ruin objects will not appear.");
 		} else if (rg->status != GCS_NOT_FOUND && rg->status != GCS_DISABLED) {
 			AppendToGRFConfigList(_grfconfig_newgame, std::move(rg));
 			AP_OK("Archipelago Ruins GRF activated for new game.");
+		}
+	}
+
+	/* ── NewGRF: Archipelago Stars ──────────────────────────────────── */
+	{
+		/* The stars GRF is in baseset/ (copied by CMake). It defines 3
+		 * object types used to visualise star collectibles on the map. */
+		static const std::string STARS_FILENAME = "archipelago_stars.grf";
+		auto sg = std::make_unique<GRFConfig>(STARS_FILENAME);
+		sg->SetSuitablePalette();
+
+		if (!FillGRFDetails(*sg, false, NEWGRF_DIR) &&
+		    !FillGRFDetails(*sg, false, BASESET_DIR)) {
+			AP_WARN("archipelago_stars.grf not found — star objects will not appear.");
+		} else if (sg->status != GCS_NOT_FOUND && sg->status != GCS_DISABLED) {
+			AppendToGRFConfigList(_grfconfig_newgame, std::move(sg));
+			AP_OK("Archipelago Stars GRF activated for new game.");
 		}
 	}
 
@@ -4415,8 +4774,7 @@ uint32_t AP_GetWorldSeed()
 }
 
 /**
- * Called from the bridge server handler (network_bridge.cpp) to populate
- * _ap_pending_sd with slot data received from the Python AP Bridge.
+ * Populate _ap_pending_sd with slot data.
  * After calling this, the caller should invoke AP_ConsumeWorldStart()
  * to apply all settings and NewGRFs, then StartNewGameWithoutGUI().
  */
@@ -4571,8 +4929,9 @@ bool AP_IsTierUnlocked(const std::string &difficulty)
 
 bool AP_IsTrackDirLocked(uint8_t railtype, uint8_t track)
 {
-	if (railtype >= AP_NUM_RAILTYPES) return false;
-	const uint8_t mask = _ap_locked_track_dirs[railtype];
+	uint8_t idx = AP_MapRailTypeToIndex(railtype);
+	if (idx >= AP_NUM_RAILTYPES) return false;
+	const uint8_t mask = _ap_locked_track_dirs[idx];
 	if (mask == 0) return false; /* fast path: this rail type fully unlocked */
 
 	/* Paired tracks share a toolbar button and unlock as a unit:
@@ -4584,16 +4943,29 @@ bool AP_IsTrackDirLocked(uint8_t railtype, uint8_t track)
 	return (mask & (1u << track)) != 0;
 }
 
-/** Returns locked track dir bitmask for a given rail type (for saveload). */
+/** Returns locked track dir bitmask for a given runtime rail type.
+ *  Maps the runtime RailType through AP_MapRailTypeToIndex so NewGRF
+ *  types (NG, Metro, VacTube) resolve correctly regardless of load order.
+ *  Use this from UI and command code where you have a runtime RailType. */
 uint8_t AP_GetLockedTrackDirs(uint8_t railtype)
 {
-	if (railtype >= AP_NUM_RAILTYPES) return 0;
-	return _ap_locked_track_dirs[railtype];
+	uint8_t idx = AP_MapRailTypeToIndex(railtype);
+	if (idx >= AP_NUM_RAILTYPES) return 0;
+	return _ap_locked_track_dirs[idx];
 }
-/** Restores locked track dir bitmask for a given rail type from savegame. */
-void AP_SetLockedTrackDirs(uint8_t railtype, uint8_t mask)
+/** Returns locked track dir bitmask by direct AP array index (0-6).
+ *  Use this from saveload and network code where you already have the
+ *  AP index, not a runtime RailType. */
+uint8_t AP_GetLockedTrackDirsRaw(uint8_t ap_index)
 {
-	if (railtype < AP_NUM_RAILTYPES) _ap_locked_track_dirs[railtype] = mask;
+	if (ap_index >= AP_NUM_RAILTYPES) return 0;
+	return _ap_locked_track_dirs[ap_index];
+}
+/** Restores locked track dir bitmask by direct AP array index (0-6).
+ *  Use this from saveload and network code. */
+void AP_SetLockedTrackDirs(uint8_t ap_index, uint8_t mask)
+{
+	if (ap_index < AP_NUM_RAILTYPES) _ap_locked_track_dirs[ap_index] = mask;
 }
 
 // Back-compat shims — kept so any future callers don't break
@@ -4611,6 +4983,17 @@ bool AP_IsRoadDirLocked(uint8_t axis)
 
 uint8_t AP_GetLockedRoadDirs() { return _ap_locked_road_dirs; }
 void    AP_SetLockedRoadDirs(uint8_t mask) { _ap_locked_road_dirs = mask; }
+
+/* ─── Tram direction lock API ──────────────────────────────────────────── */
+
+bool AP_IsTramDirLocked(uint8_t axis)
+{
+	if (_ap_locked_tram_dirs == 0) return false;
+	return (_ap_locked_tram_dirs & (1u << axis)) != 0;
+}
+
+uint8_t AP_GetLockedTramDirs() { return _ap_locked_tram_dirs; }
+void    AP_SetLockedTramDirs(uint8_t mask) { _ap_locked_tram_dirs = mask; }
 
 /* ─── Signal lock API ───────────────────────────────────────────────────── */
 
@@ -4830,8 +5213,9 @@ std::string AP_GetRuinsStr()
 		out += fmt::format("{};{};{};{}", r.id, r.tile, r.object_variant, (int)r.town_id);
 		for (size_t i = 0; i < r.cargo_reqs.size(); i++) {
 			out += ';';
-			out += fmt::format("{}:{}:{}", (int)r.cargo_reqs[i].cargo,
-			       r.cargo_reqs[i].required, r.cargo_reqs[i].delivered);
+			out += fmt::format("{}:{}:{}:{}", (int)r.cargo_reqs[i].cargo,
+			       r.cargo_reqs[i].required, r.cargo_reqs[i].delivered,
+			       r.cargo_reqs[i].cargo_name);
 		}
 	}
 	return out;
@@ -4911,9 +5295,13 @@ void AP_SetRuinsStr(const std::string &s)
 			req.cargo     = (uint8_t)parse_int(cargo_parts[0]);
 			req.required  = parse_i64(cargo_parts[1]);
 			req.delivered = parse_i64(cargo_parts[2]);
-			/* Cargo name is resolved later when ruin functions are available;
-			 * for now just use a placeholder. */
-			req.cargo_name = fmt::format("cargo#{}", (int)req.cargo);
+			/* New saves (exp-5.0+) include cargo name as 4th field.
+			 * Old saves fall back to placeholder resolved by AP_RefreshRuinNames(). */
+			if (cargo_parts.size() >= 4 && !cargo_parts[3].empty()) {
+				req.cargo_name = cargo_parts[3];
+			} else {
+				req.cargo_name = fmt::format("cargo#{}", (int)req.cargo);
+			}
 			r.cargo_reqs.push_back(req);
 		}
 
@@ -4923,6 +5311,275 @@ void AP_SetRuinsStr(const std::string &s)
 	AP_OK(fmt::format("Loaded ruin state: {}/{} spawned, {} completed, {} active, {} cooldown months",
 	       _ap_ruins_spawned, _ap_pending_sd.ruin_pool_size, _ap_active_ruins.size(),
 	       _ap_ruins_completed, _ap_ruin_cooldown_months));
+}
+
+/* ── Star System API & save/load ───────────────────────────────────── */
+
+/* ── Star Placement (implementations — after _ap_pending_sd) ────────── */
+
+static bool AP_PlaceSingleStar(APStar &star)
+{
+	AP_ResolveStarTypes();
+	ObjectType ot = _ap_star_types[star.object_variant % AP_NUM_STAR_TYPES];
+	if (ot == INVALID_OBJECT_TYPE) return false;
+
+	int skip_invalid = 0, skip_edge = 0, skip_type = 0, skip_building = 0, skip_cmd = 0;
+	for (int attempt = 0; attempt < 5000; attempt++) {
+		TileIndex tile = RandomTile();
+		if (!IsValidTile(tile)) { skip_invalid++; continue; }
+		if (TileX(tile) < 2 || TileY(tile) < 2 ||
+		    TileX(tile) >= Map::SizeX() - 2 || TileY(tile) >= Map::SizeY() - 2) { skip_edge++; continue; }
+
+		/* Quick pre-filter: only clear land or trees, away from towns */
+		if (!IsTileType(tile, MP_CLEAR) && !IsTileType(tile, MP_TREES)) { skip_type++; continue; }
+		if (AP_IsTileNearBuilding(tile, 4)) { skip_building++; continue; }
+
+		CompanyID old = _current_company;
+		_current_company = _local_company;
+		auto ret = Command<CMD_BUILD_OBJECT>::Do(
+			DoCommandFlags{DoCommandFlag::Execute, DoCommandFlag::Auto, DoCommandFlag::NoTestTownRating, DoCommandFlag::NoModifyTownRating},
+			tile, ot, 0);
+		_current_company = old;
+
+		if (ret.Succeeded()) {
+			star.tile = tile.base();
+			return true;
+		}
+		skip_cmd++;
+	}
+	AP_WARN(fmt::format("Star placement stats: invalid={} edge={} type={} near_building={} cmd_fail={}",
+		skip_invalid, skip_edge, skip_type, skip_building, skip_cmd));
+	return false;
+}
+
+static int _ap_stars_revealed = 0;
+
+/** Escalating cost: 50k, 500k, 1M, 5M, 10M, 20M, 50M */
+static const int64_t _star_reveal_costs[] = {
+    50000, 500000, 1000000, 5000000, 10000000, 20000000, 50000000
+};
+static constexpr int _star_reveal_cost_count = 7;
+
+/** Initialise star entries (without placing them on map yet).
+ *  Actual placement happens gradually via AP_StarMonthlyTick(). */
+static void AP_InitStarEntries()
+{
+	auto &sd = _ap_pending_sd;
+	if (!sd.enable_stars || sd.star_pool_size <= 0) return;
+
+	_ap_stars.clear();
+	_ap_stars_collected = 0;
+	_ap_stars_revealed = 0;
+	AP_ResolveStarTypes();
+
+	for (int i = 0; i < sd.star_pool_size && i < (int)sd.star_locations.size(); i++) {
+		APStar star;
+		star.id = i;
+		star.location_name = sd.star_locations[i];
+		star.object_variant = i % AP_NUM_STAR_TYPES;
+		/* tile stays UINT32_MAX — placed later by monthly tick */
+		_ap_stars.push_back(star);
+	}
+	AP_OK(fmt::format("Initialised {} star entries (placement pending)", (int)_ap_stars.size()));
+}
+
+/** Try to place up to `batch_size` unplaced stars on the map.
+ *  Returns number successfully placed this batch. */
+static int AP_PlaceStarBatch(int batch_size)
+{
+	int placed = 0;
+	for (APStar &star : _ap_stars) {
+		if (placed >= batch_size) break;
+		if (star.tile != UINT32_MAX) continue;  /* already placed */
+		if (star.collected) continue;            /* already collected */
+		if (AP_PlaceSingleStar(star)) {
+			placed++;
+		}
+	}
+	if (placed > 0) {
+		int total_placed = (int)std::count_if(_ap_stars.begin(), _ap_stars.end(),
+			[](const APStar &s){ return s.tile != UINT32_MAX; });
+		AP_OK(fmt::format("Placed {} stars this batch ({}/{} total on map)",
+			placed, total_placed, (int)_ap_stars.size()));
+	}
+	return placed;
+}
+
+/* ── Star System API ───────────────────────────────────────────────── */
+
+bool AP_IsStarTile(uint32_t tile_index)
+{
+	for (const APStar &s : _ap_stars) {
+		if (s.tile == tile_index && !s.collected) return true;
+	}
+	return false;
+}
+
+bool AP_CollectStar(uint32_t tile_index)
+{
+	for (APStar &star : _ap_stars) {
+		if (star.tile != tile_index || star.collected) continue;
+		star.collected = true;
+		_ap_stars_collected++;
+
+		/* Explosion effect */
+		TileIndex ti{tile_index};
+		CreateEffectVehicleAbove(
+			TileX(ti) * TILE_SIZE + TILE_SIZE / 2,
+			TileY(ti) * TILE_SIZE + TILE_SIZE / 2,
+			2, EV_EXPLOSION_SMALL);
+
+		/* Remove the object via command system using OWNER_WATER.
+		 * OWNER_WATER bypasses ALL removal checks including OBJ_FLAG_IRREMOVABLE
+		 * (see object_cmd.cpp ClearTile_Object: "Water can remove everything!"). */
+		CompanyID old = _current_company;
+		_current_company = OWNER_WATER;
+		Command<CMD_LANDSCAPE_CLEAR>::Do(
+			DoCommandFlags{DoCommandFlag::Execute}, ti);
+		_current_company = old;
+
+		/* If this star was revealed in the tracker, decrement the reveal count
+		 * so the player doesn't get a free reveal of the next star. */
+		int pos = 0;
+		for (const APStar &s2 : _ap_stars) {
+			if (&s2 == &star) break;
+			if (!s2.collected) pos++;
+		}
+		if (pos < _ap_stars_revealed) {
+			_ap_stars_revealed--;
+		}
+
+		/* Send AP check */
+		AP_SendCheckByName(star.location_name);
+
+		/* Refresh statusbar and star tracker window */
+		InvalidateWindowData(WC_STATUS_BAR, 0, 0);
+		InvalidateWindowClassesData(WC_ARCHIPELAGO_STAR_TRACKER, 0);
+
+		AP_OK(fmt::format("Star {} collected at tile {}", star.location_name, tile_index));
+		return true;
+	}
+	return false;
+}
+
+int AP_GetStarsCollected() { return _ap_stars_collected; }
+int AP_GetStarPoolSize()   { return (int)_ap_stars.size(); }
+
+int64_t AP_GetStarRevealCost()
+{
+    int idx = std::min(_ap_stars_revealed, _star_reveal_cost_count - 1);
+    return _star_reveal_costs[idx];
+}
+
+int AP_GetStarsRevealed() { return _ap_stars_revealed; }
+
+std::vector<APStarView> AP_GetRevealedStarViews()
+{
+    std::vector<APStarView> views;
+    int reveal_count = 0;
+    for (const APStar &s : _ap_stars) {
+        if (s.collected) continue;
+        if (reveal_count < _ap_stars_revealed) {
+            APStarView v;
+            v.id = s.id;
+            v.location_name = s.location_name;
+            v.tile = s.tile;
+            v.collected = false;
+            v.revealed = true;
+            views.push_back(v);
+            reveal_count++;
+        }
+    }
+    return views;
+}
+
+bool AP_RevealNextStar()
+{
+    /* Find next uncollected, unrevealed star */
+    int uncollected_count = 0;
+    for (const APStar &s : _ap_stars) {
+        if (!s.collected) uncollected_count++;
+    }
+    if (uncollected_count <= _ap_stars_revealed) return false; /* All already revealed or collected */
+
+    int64_t cost = AP_GetStarRevealCost();
+
+    /* Check if player can afford it */
+    CompanyID company = _local_company;
+    if (company >= MAX_COMPANIES) return false;
+    const Company *c = Company::GetIfValid(company);
+    if (!c) return false;
+    if (c->money < (Money)cost) return false;
+
+    /* Deduct money */
+    SubtractMoneyFromCompany(CommandCost(EXPENSES_OTHER, (Money)cost));
+
+    _ap_stars_revealed++;
+    return true;
+}
+
+std::string AP_GetStarsStr()
+{
+	std::string out = fmt::format("{},{},{}", _ap_stars_collected, _ap_stars_revealed,
+		_ap_stars_initial_spawned ? 1 : 0);
+	for (const APStar &s : _ap_stars) {
+		out += '#';
+		out += fmt::format("{};{};{};{}", s.id, s.tile, s.object_variant, s.collected ? 1 : 0);
+	}
+	return out;
+}
+
+void AP_SetStarsStr(const std::string &s)
+{
+	_ap_stars.clear();
+	_ap_stars_collected = 0;
+	_ap_stars_revealed = 0;
+	_ap_stars_initial_spawned = false;
+	if (s.empty()) return;
+
+	auto split = [](const std::string &str, char delim) -> std::vector<std::string> {
+		std::vector<std::string> v;
+		std::string tok;
+		for (char c : str) {
+			if (c == delim) { v.push_back(tok); tok.clear(); }
+			else tok += c;
+		}
+		if (!tok.empty()) v.push_back(tok);
+		return v;
+	};
+	auto parse_int = [](const std::string &s2, int def = 0) -> int {
+		int r = def;
+		std::from_chars(s2.data(), s2.data() + s2.size(), r);
+		return r;
+	};
+	auto parse_u32 = [](const std::string &s2) -> uint32_t {
+		uint32_t r = UINT32_MAX;
+		std::from_chars(s2.data(), s2.data() + s2.size(), r);
+		return r;
+	};
+
+	auto parts = split(s, '#');
+	if (parts.empty()) return;
+	/* Header: "collected,revealed" (revealed may be absent in older saves) */
+	auto header_fields = split(parts[0], ',');
+	_ap_stars_collected = parse_int(header_fields[0]);
+	if (header_fields.size() >= 2) _ap_stars_revealed = parse_int(header_fields[1]);
+	if (header_fields.size() >= 3) _ap_stars_initial_spawned = (parse_int(header_fields[2]) != 0);
+
+	for (size_t i = 1; i < parts.size(); i++) {
+		auto fields = split(parts[i], ';');
+		if (fields.size() < 4) continue;
+		APStar star;
+		star.id = parse_int(fields[0]);
+		star.tile = parse_u32(fields[1]);
+		star.object_variant = parse_int(fields[2]);
+		star.collected = (fields[3] == "1");
+		if (star.id >= 0 && star.id < (int)_ap_pending_sd.star_locations.size()) {
+			star.location_name = _ap_pending_sd.star_locations[star.id];
+		}
+		_ap_stars.push_back(star);
+	}
+	AP_OK(fmt::format("Loaded star state: {} collected, {} total", _ap_stars_collected, _ap_stars.size()));
 }
 
 /** Re-resolve ruin location_name and cargo_name after slot_data/cargo-map
@@ -4935,10 +5592,26 @@ static void AP_RefreshRuinNames()
 		if (ruin.id >= 0 && ruin.id < (int)_ap_pending_sd.ruin_locations.size()) {
 			ruin.location_name = _ap_pending_sd.ruin_locations[ruin.id];
 		}
-		/* Fix cargo_name via reverse cargo map lookup */
+		/* Fix cargo_name — skip if already resolved (exp-5.0+ saves include names).
+		 * Only fix placeholder names that start with "cargo#". */
 		for (auto &req : ruin.cargo_reqs) {
+			if (req.cargo_name.substr(0, 6) != "cargo#") continue;
+			/* Try reverse cargo map lookup first */
+			bool found = false;
 			for (const auto &[name, ct] : _ap_cargo_map) {
-				if (ct == (CargoType)req.cargo) { req.cargo_name = name; break; }
+				if (ct == (CargoType)req.cargo) { req.cargo_name = name; found = true; break; }
+			}
+			/* Fallback: scan all CargoSpecs directly (handles FIRS and other NewGRFs) */
+			if (!found) {
+				for (const CargoSpec *cs : CargoSpec::Iterate()) {
+					if (cs->Index() == (CargoType)req.cargo) {
+						req.cargo_name = GetString(cs->name);
+						/* Lowercase for consistency with _ap_cargo_map keys */
+						for (char &ch : req.cargo_name) ch = (char)tolower((unsigned char)ch);
+						found = true;
+						break;
+					}
+				}
 			}
 		}
 	}
@@ -5976,6 +6649,34 @@ static void AP_RuinMonthlyTick()
 	}
 }
 
+/** Monthly tick for star spawn control.
+ *  First tick: initialise star entries.
+ *  Every tick after: place up to 10 unplaced stars per month.
+ *  This spreads placement over time, avoiding a big lag spike. */
+static void AP_StarMonthlyTick()
+{
+	if (!_ap_pending_sd.enable_stars || _ap_pending_sd.star_pool_size <= 0) return;
+	if (!_ap_session_started) return;
+
+	/* First tick: create all star entries (no map placement yet) */
+	if (!_ap_stars_initial_spawned) {
+		_ap_stars_initial_spawned = true;
+		if (_ap_stars.empty()) {
+			AP_InitStarEntries();
+		}
+		/* Place first batch immediately */
+		AP_PlaceStarBatch(10);
+		return;
+	}
+
+	/* Subsequent ticks: place 10 more unplaced stars per month */
+	bool any_unplaced = std::any_of(_ap_stars.begin(), _ap_stars.end(),
+		[](const APStar &s){ return s.tile == UINT32_MAX && !s.collected; });
+	if (any_unplaced) {
+		AP_PlaceStarBatch(10);
+	}
+}
+
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 /** Get "IndustryType near TownName" label. */
@@ -6330,6 +7031,9 @@ static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 
 		/* ── Ruin spawn control ── */
 		AP_RuinMonthlyTick();
+
+		/* ── Star spawn control ── */
+		AP_StarMonthlyTick();
 	}
 );
 
@@ -6389,6 +7093,23 @@ static void AP_ApplyServerCheckedLocations()
 		}
 	}
 
+	/* ── Sync stars ───────────────────────────────────────────── */
+	int stars_synced = 0;
+	for (APStar &star : _ap_stars) {
+		if (!star.collected && _ap_server_checked_locations.count(star.location_name)) {
+			star.collected = true;
+			_ap_stars_collected++;
+			stars_synced++;
+			/* Remove object from map if present */
+			if (star.tile != UINT32_MAX && IsValidTile(TileIndex{star.tile})) {
+				CompanyID old = _current_company;
+				_current_company = OWNER_DEITY;
+				Command<CMD_LANDSCAPE_CLEAR>::Do(DoCommandFlags{DoCommandFlag::Execute}, TileIndex{star.tile});
+				_current_company = old;
+			}
+		}
+	}
+
 	/* ── Sync shop purchases ───────────────────────────────────── */
 	for (const std::string &loc : _ap_server_checked_locations) {
 		if (loc.rfind("Shop_Purchase_", 0) == 0) {
@@ -6405,7 +7126,10 @@ static void AP_ApplyServerCheckedLocations()
 	if (shop_synced > 0) {
 		IConsolePrint(CC_WHITE, fmt::format("[AP] Synced {} shop purchases from AP server.", shop_synced));
 	}
-	if (missions_synced > 0 || shop_synced > 0) {
+	if (stars_synced > 0) {
+		IConsolePrint(CC_WHITE, fmt::format("[AP] Synced {} collected stars from AP server.", stars_synced));
+	}
+	if (missions_synced > 0 || shop_synced > 0 || stars_synced > 0) {
 		SetWindowClassesDirty(WC_ARCHIPELAGO);
 		_ap_status_dirty.store(true);
 	}
@@ -6644,12 +7368,16 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				 * These use Command::Do(DC_EXEC) directly and RandomRange(),
 				 * which diverges server/client game state. */
 				if (_ap_pending_sd.multiplayer_mode) {
-					IConsolePrint(CC_WHITE, "[AP] Multiplayer mode: disabling ruins, Colby, Demigod, Wrath.");
+					IConsolePrint(CC_WHITE, "[AP] Multiplayer mode: disabling ruins, stars, Colby, Demigod, Wrath.");
 					_ap_pending_sd.ruin_pool_size   = 0;
+					_ap_pending_sd.enable_stars     = false;
 					_ap_pending_sd.colby_event      = false;
 					_ap_pending_sd.demigod_enabled  = false;
 					_ap_pending_sd.wrath_enabled    = false;
 				}
+
+				/* Stars — spawned via AP_StarMonthlyTick() on first monthly tick
+				 * (same pattern as ruins — ensures GRF objects are fully loaded) */
 
 				/* Colby Event — initialise town selection and cargo type */
 				_ap_colby_enabled    = _ap_pending_sd.colby_event;
@@ -6734,10 +7462,10 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_WATER);
 			InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_AIR);
 			AP_OK(fmt::format("AP session started: {} engines locked, all railtypes/roadtypes unlocked.", locked_count));
-			AP_TRACE(fmt::format("=== SESSION START SUMMARY === missions={} starting_vehicles={} pending_items={} wrath={} colby={} demigod={} ruin_pool={}",
+			AP_TRACE(fmt::format("=== SESSION START SUMMARY === missions={} starting_vehicles={} pending_items={} wrath={} colby={} demigod={} ruin_pool={} stars={}",
 				(int)_ap_pending_sd.missions.size(), (int)_ap_pending_sd.starting_vehicles.size(),
 				(int)_ap_pending_items.size(), (int)_ap_pending_sd.wrath_enabled, (int)_ap_pending_sd.colby_event,
-				(int)_ap_pending_sd.demigod_enabled, _ap_pending_sd.ruin_pool_size));
+				(int)_ap_pending_sd.demigod_enabled, _ap_pending_sd.ruin_pool_size, (int)_ap_stars.size()));
 
 			/* Unlock all starting vehicles.
 			 * The APWorld is responsible for ensuring only climate-compatible
@@ -6789,19 +7517,37 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			 *   - Reconnect (AP_OnSlotData resets _ap_session_started to false but
 			 *     does NOT reset the flag): flag is true → skip init entirely.
 			 *     Item replay via flush restores any missing unlocks automatically. */
+			AP_DetectNewGRFRailTypes();
+
 			if (_ap_pending_sd.enable_rail_direction_unlocks && !_ap_track_dirs_inited) {
 				bool any_loaded = false;
 				for (int rt = 0; rt < AP_NUM_RAILTYPES; rt++) {
 					if (_ap_locked_track_dirs[rt] != 0) { any_loaded = true; break; }
 				}
 				if (!any_loaded) {
-					for (int rt = 0; rt < AP_NUM_RAILTYPES; rt++)
+					/* Fresh start: lock vanilla types (0-3) always */
+					for (int rt = 0; rt < 4; rt++)
 						_ap_locked_track_dirs[rt] = 0x3Fu;
 				}
+				/* Always ensure NewGRF types are locked if their GRF is active
+				 * and they haven't been touched yet (handles saves created before
+				 * NewGRF rail locking was implemented — vanilla locks exist but
+				 * NG/Metro/VacTube were 0x00). */
+				if (_ap_pending_sd.enable_iron_horse && _ap_ng_rt_id != 0xFF
+				    && _ap_locked_track_dirs[4] == 0)
+					_ap_locked_track_dirs[4] = 0x3Fu;  /* Narrow Gauge */
+				if (_ap_pending_sd.enable_iron_horse && _ap_metro_rt_id != 0xFF
+				    && _ap_locked_track_dirs[5] == 0)
+					_ap_locked_track_dirs[5] = 0x3Fu;  /* Metro */
+				if (_ap_pending_sd.enable_vactrain && _ap_vact_rt_id != 0xFF
+				    && _ap_locked_track_dirs[6] == 0)
+					_ap_locked_track_dirs[6] = 0x3Fu;  /* Vacuum Tube */
 				_ap_track_dirs_inited = true;
-				Debug(misc, 1, "[AP] Track dir locks init: Normal=0x{:02X} Elec=0x{:02X} Mono=0x{:02X} Maglev=0x{:02X}",
+				Debug(misc, 1, "[AP] Track dir locks init: Normal=0x{:02X} Elec=0x{:02X} Mono=0x{:02X} Maglev=0x{:02X} NG=0x{:02X} Metro=0x{:02X} VacTube=0x{:02X}",
 				      (unsigned)_ap_locked_track_dirs[0], (unsigned)_ap_locked_track_dirs[1],
-				      (unsigned)_ap_locked_track_dirs[2], (unsigned)_ap_locked_track_dirs[3]);
+				      (unsigned)_ap_locked_track_dirs[2], (unsigned)_ap_locked_track_dirs[3],
+				      (unsigned)_ap_locked_track_dirs[4], (unsigned)_ap_locked_track_dirs[5],
+				      (unsigned)_ap_locked_track_dirs[6]);
 			} else if (!_ap_pending_sd.enable_rail_direction_unlocks) {
 				for (int rt = 0; rt < AP_NUM_RAILTYPES; rt++)
 					_ap_locked_track_dirs[rt] = 0;
@@ -6816,6 +7562,16 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			} else if (!_ap_pending_sd.enable_road_direction_unlocks) {
 				_ap_locked_road_dirs = 0;
 				_ap_road_dirs_inited = false;
+			}
+
+			/* ── Tram direction locks ────────────────────────────────────── */
+			if (_ap_pending_sd.enable_road_direction_unlocks && !_ap_tram_dirs_inited) {
+				if (_ap_locked_tram_dirs == 0) _ap_locked_tram_dirs = 0x03u; /* bits 0-1 */
+				_ap_tram_dirs_inited = true;
+				Debug(misc, 1, "[AP] Tram dir locks init: 0x{:02X}", (unsigned)_ap_locked_tram_dirs);
+			} else if (!_ap_pending_sd.enable_road_direction_unlocks) {
+				_ap_locked_tram_dirs = 0;
+				_ap_tram_dirs_inited = false;
 			}
 
 			/* ── Signal locks ────────────────────────────────────────────── */

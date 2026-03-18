@@ -414,12 +414,17 @@ struct BuildRoadToolbarWindow : Window {
 			}
 		}
 
-		/* AP road direction locks: grey out locked direction buttons */
+		/* AP road/tram direction locks: grey out locked direction buttons */
 		if (AP_IsActive()) {
 			if (RoadTypeIsRoad(this->roadtype)) {
 				if (AP_IsRoadDirLocked(0)) this->SetWidgetDisabledState(WID_ROT_ROAD_X, true);
 				if (AP_IsRoadDirLocked(1)) this->SetWidgetDisabledState(WID_ROT_ROAD_Y, true);
 				if (AP_IsRoadDirLocked(0) && AP_IsRoadDirLocked(1)) this->SetWidgetDisabledState(WID_ROT_AUTOROAD, true);
+			} else {
+				/* Tram toolbar */
+				if (AP_IsTramDirLocked(0)) this->SetWidgetDisabledState(WID_ROT_ROAD_X, true);
+				if (AP_IsTramDirLocked(1)) this->SetWidgetDisabledState(WID_ROT_ROAD_Y, true);
+				if (AP_IsTramDirLocked(0) && AP_IsTramDirLocked(1)) this->SetWidgetDisabledState(WID_ROT_AUTOROAD, true);
 			}
 			if (AP_IsTunnelLocked()) this->SetWidgetDisabledState(WID_ROT_BUILD_TUNNEL, true);
 			if (AP_IsBridgeLocked()) this->SetWidgetDisabledState(WID_ROT_BUILD_BRIDGE, true);

@@ -8,6 +8,10 @@ from .items import (
     # Infrastructure item lists for sphere/progression logic
     ALL_TRACK_DIRECTION_ITEMS, ROAD_DIRECTION_ITEMS, SIGNAL_ITEMS,
     BRIDGE_ITEMS, TUNNEL_ITEMS, AIRPORT_ITEMS, TERRAFORM_ITEMS,
+    # NewGRF rail direction items
+    NARROW_GAUGE_TRACK_ITEMS, METRO_TRACK_ITEMS, VACTUBE_TRACK_ITEMS,
+    # Tram direction items
+    TRAM_DIRECTION_ITEMS,
 )
 
 if TYPE_CHECKING:
@@ -77,13 +81,20 @@ def has_cargo_capability(state: CollectionState, player: int) -> bool:
 # ---------------------------------------------------------------------------
 
 def has_any_rail_direction(state: CollectionState, player: int) -> bool:
-    """Player has at least one rail track direction unlock (any rail type)."""
-    return any(state.has(item, player) for item in ALL_TRACK_DIRECTION_ITEMS)
+    """Player has at least one rail track direction unlock (any rail type, incl. NewGRF)."""
+    return any(state.has(item, player) for item in
+               ALL_TRACK_DIRECTION_ITEMS + NARROW_GAUGE_TRACK_ITEMS +
+               METRO_TRACK_ITEMS + VACTUBE_TRACK_ITEMS)
 
 
 def has_any_road_direction(state: CollectionState, player: int) -> bool:
-    """Player has at least one road direction unlock."""
+    """Player has at least one road direction unlock (roads only, not trams)."""
     return any(state.has(item, player) for item in ROAD_DIRECTION_ITEMS)
+
+
+def has_any_tram_direction(state: CollectionState, player: int) -> bool:
+    """Player has at least one tram direction unlock."""
+    return any(state.has(item, player) for item in TRAM_DIRECTION_ITEMS)
 
 
 def has_any_signal(state: CollectionState, player: int) -> bool:
@@ -154,7 +165,7 @@ def _build_effective_rules(world: "OpenTTDWorld"):
         "have aircraft":     lambda state, player: has_aircraft(state, player),
         "have ships":        lambda state, player: has_ships(state, player),
         "have road vehicles":lambda state, player: has_road_vehicles(state, player),
-        "connect cities":    lambda state, player: has_trains(state, player) or has_road_vehicles(state, player),
+        "cities":            lambda state, player: has_trains(state, player) or has_road_vehicles(state, player),
     }
 
     # ── Mission rule builder ────────────────────────────────────────────
@@ -209,7 +220,7 @@ def _mission_vehicle_type(mission: dict) -> str:
         return "aircraft"
     if mtype == "have ships" or unit == "ships":
         return "ship"
-    if mtype == "connect cities":
+    if mtype == "cities":
         return "train_or_road"
     return "any"
 
@@ -411,6 +422,13 @@ def set_rules(world: "OpenTTDWorld") -> None:
         loc.access_rule = (
             lambda vr=veh_req: lambda state: has_transport_vehicles(state, player, vr)
         )(veh_req)
+
+    # ------------------------------------------------------------------
+    # Stars: always reachable (click to collect, no vehicle needed)
+    # ------------------------------------------------------------------
+    star_region = multiworld.get_region("star", player)
+    for loc in star_region.locations:
+        pass  # default access_rule is already lambda state: True
 
     # ------------------------------------------------------------------
     # Victory

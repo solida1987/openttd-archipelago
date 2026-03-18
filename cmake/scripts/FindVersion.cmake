@@ -67,14 +67,19 @@ if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
     )
     string(REGEX REPLACE ".*/" "" BRANCH "${BRANCH}")
 
-    # Get the tag
-    execute_process(COMMAND ${GIT_EXECUTABLE} name-rev --name-only --tags --no-undefined HEAD
-                    OUTPUT_VARIABLE TAG
-                    OUTPUT_STRIP_TRAILING_WHITESPACE
-                    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                    ERROR_QUIET
-    )
-    string(REGEX REPLACE "\^0$" "" TAG "${TAG}")
+    # Get the tag — check .ap_version override first (written by build scripts)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/.ap_version")
+        file(READ "${CMAKE_SOURCE_DIR}/.ap_version" TAG)
+        string(STRIP "${TAG}" TAG)
+    else()
+        execute_process(COMMAND ${GIT_EXECUTABLE} name-rev --name-only --tags --no-undefined HEAD
+                        OUTPUT_VARIABLE TAG
+                        OUTPUT_STRIP_TRAILING_WHITESPACE
+                        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                        ERROR_QUIET
+        )
+        string(REGEX REPLACE "\^0$" "" TAG "${TAG}")
+    endif()
 
     if(REV_MODIFIED EQUAL 0)
         set(HASHPREFIX "-g")
