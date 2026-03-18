@@ -1,0 +1,93 @@
+/*
+ * Archipelago Stars NewGRF
+ * Defines 3 star object variants for the Archipelago multiworld randomiser.
+ * Stars are 1x1 tile collectibles — click to collect and send an AP check.
+ * Drawn as black outline only (pen-drawn look), mostly transparent.
+ */
+
+grf {
+    grfid: "APST";
+    name: string(STR_GRF_NAME);
+    desc: string(STR_GRF_DESC);
+    version: 1;
+    min_compatible_version: 1;
+}
+
+/* ---- String table ---- */
+/* These are embedded in the GRF; the C++ side identifies objects by GRFID + local_id. */
+
+/* ---- Sprite templates ---- */
+/* Each star sprite is 64x31, packed left-to-right in sprites.png.
+ * Drawn as BUILDING sprites (above terrain) so they float slightly above ground. */
+
+template tmpl_star(x) {
+    [x, 0, 64, 31, -31, -16, "sprites.png"]
+}
+
+/* ---- Spritesets ---- */
+
+spriteset(ss_star_1) { tmpl_star(  0) }
+spriteset(ss_star_2) { tmpl_star( 64) }
+spriteset(ss_star_3) { tmpl_star(128) }
+
+/* ---- Sprite layouts ---- */
+
+spritelayout layout_star_1 { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_star_1; } }
+spritelayout layout_star_2 { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_star_2; } }
+spritelayout layout_star_3 { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_star_3; } }
+
+/* ---- Object definitions (1x1) ---- */
+
+item(FEAT_OBJECTS, star_variant_1, 0) {
+    property {
+        class:                  "APST";
+        classname:              string(STR_GRF_NAME);
+        name:                   string(STR_GRF_NAME);
+        size:                   [1, 1];
+        build_cost_multiplier:  0;
+        remove_cost_multiplier: 0;
+        introduction_date:      date(0, 1, 1);
+        end_of_life_date:       date(5000000, 1, 1);
+        object_flags:           bitmask(OBJ_FLAG_IRREMOVABLE, OBJ_FLAG_ONLY_INGAME, OBJ_FLAG_NO_FOUNDATIONS);
+        climates_available:     ALL_CLIMATES;
+        num_views:              1;
+        height:                 0;
+    }
+    graphics { default: layout_star_1; }
+}
+
+item(FEAT_OBJECTS, star_variant_2, 1) {
+    property {
+        class:                  "APST";
+        classname:              string(STR_GRF_NAME);
+        name:                   string(STR_GRF_NAME);
+        size:                   [1, 1];
+        build_cost_multiplier:  0;
+        remove_cost_multiplier: 0;
+        introduction_date:      date(0, 1, 1);
+        end_of_life_date:       date(5000000, 1, 1);
+        object_flags:           bitmask(OBJ_FLAG_IRREMOVABLE, OBJ_FLAG_ONLY_INGAME, OBJ_FLAG_NO_FOUNDATIONS);
+        climates_available:     ALL_CLIMATES;
+        num_views:              1;
+        height:                 0;
+    }
+    graphics { default: layout_star_2; }
+}
+
+item(FEAT_OBJECTS, star_variant_3, 2) {
+    property {
+        class:                  "APST";
+        classname:              string(STR_GRF_NAME);
+        name:                   string(STR_GRF_NAME);
+        size:                   [1, 1];
+        build_cost_multiplier:  0;
+        remove_cost_multiplier: 0;
+        introduction_date:      date(0, 1, 1);
+        end_of_life_date:       date(5000000, 1, 1);
+        object_flags:           bitmask(OBJ_FLAG_IRREMOVABLE, OBJ_FLAG_ONLY_INGAME, OBJ_FLAG_NO_FOUNDATIONS);
+        climates_available:     ALL_CLIMATES;
+        num_views:              1;
+        height:                 0;
+    }
+    graphics { default: layout_star_3; }
+}

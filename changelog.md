@@ -1,6 +1,6 @@
 # Changelog — OpenTTD Archipelago
 
-## [exp-5.0] — 2026-03-16
+## [exp-5.0] — 2026-03-17
 
 ### Fixed
 - **Graphical glitch when demigod company spawns** — Fix: added `MarkWholeScreenDirty()` after demigod company naming completes.
@@ -10,12 +10,17 @@
 - **Airplane license revocation permanent** — When the trap expired, only engines in `_ap_unlocked_engine_ids` were unhidden. If no aircraft items had been received yet, all aircraft stayed hidden forever. Fix: unconditionally unhide all engines of the revoked type when the timer expires.
 - **Infrastructure unlocks lost on reconnect** — All infrastructure unlocks (tracks, roads, signals, bridges, tunnels, airports, trees, terraform, town actions) were below the replay guard. On reconnect, slot_data reset lock states and replayed items were skipped. Fix: split item handling into two chains — traps (skip on replay) and infrastructure (always re-apply).
 - **Breakdown Wave permanent** — Breakdown Wave set reliability to 1 with no timer, leaving vehicles permanently broken. Fix: now lasts 60 seconds, then automatically restores normal reliability.
+- **Game name mismatch in Connect() calls** — All 3 Connect() calls in archipelago_gui.cpp hardcoded "OpenTTD" instead of "OpenTTD-Exp". The stable_release.bat sed patches this to "OpenTTD" for stable builds, so exp must use the exp name.
 
 ### Changed
 - **Item distribution uses fixed percentages** — Removed 7 "Advanced Balancing" YAML options. Progression items now manually placed: 40% missions / 40% shop / 10% ruins / 10% demigods. Missions fill easy→hard so early progression lands in easy missions.
 - **Service intervals default to percentage-based** — AP sessions now force percentage-based service intervals (default 30%). Vehicles auto-service when reliability drops below threshold, fixing the issue where vehicles ran indefinitely at 0% reliability with day-based intervals.
 
 ### Added
+- **Linux support** — Native OpenSSL TLS wrapper (`ApTlsCtx` using `SSL_CTX_new`, `SSL_connect`, `SSL_read`, `SSL_write`) mirroring the Windows SChannel pattern. WSS auto-detect: try TLS first, fallback to plain WS. CMakeLists.txt links OpenSSL on non-Windows platforms. GitHub Actions workflow installs `libssl-dev`.
+- **Iron Horse wagon classification** — All ~164 IH wagons sorted into cargo-type frozensets (`IH_PASSENGER_WAGONS`, `IH_MAIL_WAGONS`, `IH_COAL_WAGONS`, etc.) with climate-specific exclusion sets. Wagon guarantee logic uses IH-aware sets when Iron Horse is enabled.
+- **Safe starting vehicle guarantees** — New constants `SMALL_AIRCRAFT`, `UNSAFE_STARTER_ROAD_VEHICLES`, `SAFE_STARTER_SHIPS`, `SAFE_STARTER_SHARK`. Starting vehicle pools filtered to only immediately usable vehicles (no large jets without airport, no processed-cargo trucks, no oil tankers). Airport guarantee precollects "Airport: Large" if a starting aircraft needs it.
+- **Dual-platform packaging** — `stable_build_and_package.bat` and `exp_build_and_package.bat` now produce both Windows `.zip` and Linux `.tar.gz` from a single build run. Linux package uses the generic amd64 binary as base with AP files overlaid.
 - **Colby Event: reopen dismissed popups** — "Reopen Colby Decision" button in status window + auto-reopen after ~30 seconds.
 - **Mission-linked industry protection** — Industries tied to active (incomplete) missions can no longer close down. Production is also kept at a minimum playable level (25% of default). No more "closing down" notifications for protected industries.
 - **Victory vehicle requirement option** — `victory_vehicle_requirement` (5-50, default 15).

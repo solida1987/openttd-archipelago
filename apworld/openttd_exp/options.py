@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from Options import (
     Choice, Range, Toggle, DeathLink, PerGameCommonOptions,
-    OptionGroup
+    OptionGroup, Visibility
 )
 
 
@@ -429,6 +429,28 @@ class RuinCargoTypesMax(Range):
     range_start = 2
     range_end = 7
     default = 4
+
+
+# ═══════════════════════════════════════════════════════════════
+#  STARS (map collectibles)
+# ═══════════════════════════════════════════════════════════════
+
+class EnableStars(Toggle):
+    """Enable star collectibles scattered across the map.
+    Small star outlines are hidden in open fields. Click one to collect it
+    and send an Archipelago check. Stars never spawn near buildings."""
+    display_name = "Enable Stars"
+    default = 1
+
+
+class StarPoolSize(Range):
+    """Internal — kept for option compatibility but hidden.
+    Star count is computed dynamically (50/50 split with shop)."""
+    display_name = "Star Pool Size"
+    visibility = Visibility.none
+    range_start = 10
+    range_end = 2000
+    default = 50
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1324,6 +1346,9 @@ class OpenTTDOptions(PerGameCommonOptions):
     max_active_ruins:                MaxActiveRuins
     ruin_cargo_types_min:            RuinCargoTypesMin
     ruin_cargo_types_max:            RuinCargoTypesMax
+    # Stars
+    enable_stars:                    EnableStars
+    star_pool_size:                  StarPoolSize
     # Traps
     enable_traps:                    EnableTraps
     trap_count:                      TrapCount

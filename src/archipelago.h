@@ -92,6 +92,15 @@ struct APRuin {
 	bool             completed = false;
 };
 
+/** A star collectible on the map — click to collect and send an AP check. */
+struct APStar {
+	int         id = -1;             ///< Index (0-based)
+	std::string location_name;       ///< "Star_001" etc.
+	uint32_t    tile = UINT32_MAX;   ///< Map tile
+	int         object_variant = 0;  ///< 0-2 (which star sprite)
+	bool        collected = false;
+};
+
 /** A demigod boss definition received from APWorld slot_data. */
 struct APDemigodDef {
 	std::string location;        ///< "Demigod_001" — AP location name for check
@@ -266,6 +275,11 @@ struct APSlotData {
 	int                          ruin_cargo_min    = 2;   ///< Min cargo types per ruin
 	int                          ruin_cargo_max    = 4;   ///< Max cargo types per ruin
 	std::vector<std::string>     ruin_locations;           ///< Ordered location names from APWorld
+
+	/* ── Stars ─────────────────────────────────────────────────────── */
+	bool                     enable_stars      = true;
+	int                      star_pool_size    = 50;
+	std::vector<std::string> star_locations;
 
 	/* ── Demigods (God of Wackens) ─────────────────────────────────── */
 	bool                         demigod_enabled           = false;
@@ -486,14 +500,20 @@ bool AP_IsTierUnlocked(const std::string &difficulty);
  */
 bool AP_IsTrackDirLocked(uint8_t railtype, uint8_t track);
 
-/** Get the full locked-directions bitmask for a rail type (bits 0-5 = TRACK_X..TRACK_RIGHT). */
+/** Get the full locked-directions bitmask for a runtime rail type (bits 0-5 = TRACK_X..TRACK_RIGHT).
+ *  Maps runtime RailType → AP index internally (safe for NewGRF types). */
 uint8_t AP_GetLockedTrackDirs(uint8_t railtype);
+
+/** Get locked-directions bitmask by direct AP array index (0-6).
+ *  Use from saveload/network code where you already have the AP index. */
+uint8_t AP_GetLockedTrackDirsRaw(uint8_t ap_index);
 
 /** Back-compat shim — deprecated, always returns false. Use AP_IsTrackDirLocked. */
 bool AP_IsRailDirectionLocked(uint8_t track);
 
 /** Infrastructure lock checks — called from command intercepts. */
 bool AP_IsRoadDirLocked(uint8_t axis);        ///< axis: 0=X (NE-SW), 1=Y (NW-SE)
+bool AP_IsTramDirLocked(uint8_t axis);        ///< axis: 0=X (NE-SW), 1=Y (NW-SE)
 bool AP_IsSignalLocked(uint8_t sigtype);       ///< sigtype: 0-5 (SignalType enum)
 bool AP_IsBridgeLocked(uint8_t bridge_type);   ///< bridge_type: 0-12
 bool AP_IsBridgeLocked();                      ///< true if ANY bridge type is locked
@@ -512,6 +532,8 @@ bool AP_IsIndustryProtected(uint16_t industry_id);
 void     AP_SetLockedTrackDirs(uint8_t railtype, uint8_t mask);
 uint8_t  AP_GetLockedRoadDirs();
 void     AP_SetLockedRoadDirs(uint8_t mask);
+uint8_t  AP_GetLockedTramDirs();
+void     AP_SetLockedTramDirs(uint8_t mask);
 uint8_t  AP_GetLockedSignals();
 void     AP_SetLockedSignals(uint8_t mask);
 uint16_t AP_GetLockedBridges();
@@ -625,6 +647,28 @@ bool AP_IsRuinTile(uint32_t tile_index);
 
 /** Get all ruins (active + completed) for listing in the industry directory. */
 std::vector<APRuinView> AP_GetAllRuinViews();
+
+/* ── Stars ───────────────────────────────────────────────────────── */
+bool AP_IsStarTile(uint32_t tile_index);
+bool AP_CollectStar(uint32_t tile_index);
+int  AP_GetStarsCollected();
+int  AP_GetStarPoolSize();
+std::string AP_GetStarsStr();
+void        AP_SetStarsStr(const std::string &s);
+
+/** Star view for the tracker window. */
+struct APStarView {
+    int         id = -1;
+    std::string location_name;
+    uint32_t    tile = UINT32_MAX;
+    bool        collected = false;
+    bool        revealed = false;    ///< Has the player paid to reveal this star's location?
+};
+
+std::vector<APStarView> AP_GetRevealedStarViews();
+int64_t AP_GetStarRevealCost();    ///< Cost to reveal the next star location
+int     AP_GetStarsRevealed();     ///< Number of stars revealed so far
+bool    AP_RevealNextStar();       ///< Pay to reveal next uncollected+unrevealed star. Returns false if none left or can't afford.
 
 /* =========================================================================
  * LOCAL TASK SYSTEM

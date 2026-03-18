@@ -269,6 +269,80 @@ struct ApTlsCtx {
 };
 #endif /* _WIN32 */
 
+/* =========================================================================
+ * Linux / non-Windows OpenSSL TLS wrapper
+ * Same interface as ApTlsCtx above, but backed by libssl + libcrypto.
+ * Link with -lssl -lcrypto (handled in CMakeLists.txt).
+ * ========================================================================= */
+#ifndef _WIN32
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+struct ApTlsCtx {
+	SSL_CTX *ctx{ nullptr };
+	SSL     *ssl{ nullptr };
+
+	~ApTlsCtx()
+	{
+		if (ssl) SSL_free(ssl);   /* also closes the underlying fd */
+		if (ctx) SSL_CTX_free(ctx);
+	}
+
+	/** Perform TLS client handshake over an already-connected socket. */
+	bool Handshake(sock_t s, const std::string &hostname)
+	{
+		ctx = SSL_CTX_new(TLS_client_method());
+		if (!ctx) return false;
+
+		/* Use system-default CA certificates for server validation */
+		SSL_CTX_set_default_verify_paths(ctx);
+		SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
+
+		/* Only allow TLS 1.2+ (same as the Windows side) */
+		SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+
+		ssl = SSL_new(ctx);
+		if (!ssl) return false;
+
+		/* Attach the existing TCP socket */
+		if (!SSL_set_fd(ssl, (int)s)) return false;
+
+		/* SNI — required by most modern servers */
+		SSL_set_tlsext_host_name(ssl, hostname.c_str());
+
+		/* Perform the handshake */
+		int ret = SSL_connect(ssl);
+		if (ret != 1) return false;
+
+		return true;
+	}
+
+	/** Encrypt and send `len` plain bytes. */
+	bool Write([[maybe_unused]] sock_t s, const char *buf, int len)
+	{
+		while (len > 0) {
+			int w = SSL_write(ssl, buf, len);
+			if (w <= 0) return false;
+			buf += w;
+			len -= w;
+		}
+		return true;
+	}
+
+	/** Receive exactly `len` decrypted bytes. */
+	bool Read([[maybe_unused]] sock_t s, char *buf, int len)
+	{
+		while (len > 0) {
+			int r = SSL_read(ssl, buf, len);
+			if (r <= 0) return false;
+			buf += r;
+			len -= r;
+		}
+		return true;
+	}
+};
+#endif /* !_WIN32 */
+
 #include "console_func.h"
 #include "core/string_consumer.hpp"
 #include "safeguards.h"
@@ -617,6 +691,15 @@ static APSlotData ParseSlotData(const json &msg)
 		}
 	}
 
+	/* Stars */
+	sd.enable_stars    = d.value("enable_stars", true);
+	sd.star_pool_size  = d.value("star_pool_size", 50);
+	if (d.contains("star_locations") && d["star_locations"].is_array()) {
+		for (const auto &v : d["star_locations"]) {
+			if (v.is_string()) sd.star_locations.push_back(v.get<std::string>());
+		}
+	}
+
 	/* Demigods (God of Wackens) */
 	sd.demigod_enabled            = d.value("demigod_enabled", false);
 	sd.demigod_count              = d.value("demigod_count", 0);
@@ -767,15 +850,11 @@ static bool RawSendAll(sock_t s, const char *buf, int len)
 	return true;
 }
 
-#ifdef _WIN32
 static thread_local ApTlsCtx *tls_ctx_tl = nullptr; ///< set by WorkerThread
-#endif
 
 static bool SendAll(sock_t s, const char *buf, int len)
 {
-#ifdef _WIN32
 	if (tls_ctx_tl) return tls_ctx_tl->Write(s, buf, len);
-#endif
 	return RawSendAll(s, buf, len);
 }
 
@@ -791,9 +870,7 @@ static bool sock_timed_out()
 
 static bool RecvAll(sock_t s, char *buf, int len)
 {
-#ifdef _WIN32
 	if (tls_ctx_tl) return tls_ctx_tl->Read(s, buf, len);
-#endif
 	while (len > 0) {
 		int r = ::recv(s, buf, len, 0);
 		if (r <= 0) return false;
@@ -1119,7 +1196,25 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				}
 				location_ids["Goal_Victory"] = 6'110'000;
 
-				/* Build reverse map: ID → name */
+				/* Ruin locations: Ruin_001 = 6112000, Ruin_002 = 6112001, ... */
+				for (int i = 0; i < (int)sd.ruin_locations.size(); i++) {
+					location_ids[sd.ruin_locations[i]] = 6'112'000 + i;
+				}
+
+				/* Demigod locations: Demigod_001 = 6114000, ... */
+				for (int i = 0; i < (int)sd.demigods.size(); i++) {
+					location_ids[sd.demigods[i].location] = 6'114'000 + i;
+				}
+
+				/* Star locations: Star_001 = 6116000, Star_002 = 6116001, ... */
+				for (int i = 0; i < (int)sd.star_locations.size(); i++) {
+					location_ids[sd.star_locations[i]] = 6'116'000 + i;
+				}
+
+				Debug(misc, 0, "[AP] Registered {} location IDs ({} ruins, {} demigods, {} stars)",
+					location_ids.size(), sd.ruin_locations.size(), sd.demigods.size(), sd.star_locations.size());
+
+				/* Build reverse map: ID -> name */
 				location_id_to_name.clear();
 				for (auto &[name, id] : location_ids)
 					location_id_to_name[id] = name;
@@ -1510,15 +1605,71 @@ void ArchipelagoClient::WorkerThread()
 		AP_OK("Plain WS connection established.");
 	}
 #else
-	/* Non-Windows: plain WS only */
-	if (!DoWebSocketHandshake((int)s, host, port)) {
-		sock_close(s);
-		SetLastErrorInternal("WebSocket handshake failed");
-		state.store(APState::AP_ERROR);
-		PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
-		return;
+	/* ── Non-Windows: same WSS→WS auto-detect using OpenSSL ────────── */
+	ApTlsCtx *tls = nullptr;
+	bool ws_ok = false;
+
+	/* Attempt 1: WSS (TLS via OpenSSL) */
+	AP_LOG("Trying WSS (TLS via OpenSSL)...");
+	tls = new ApTlsCtx();
+	if (tls->Handshake(s, host)) {
+		tls_ctx_tl = tls;
+		AP_OK("TLS handshake OK — trying WebSocket upgrade...");
+		if (DoWebSocketHandshake((int)s, host, port)) {
+			ws_ok = true;
+			AP_OK("WSS connection established.");
+		} else {
+			AP_WARN("WSS WebSocket handshake failed — falling back to plain WS.");
+			delete tls; tls = nullptr; tls_ctx_tl = nullptr;
+		}
+	} else {
+		AP_WARN("TLS handshake failed — falling back to plain WS.");
+		delete tls; tls = nullptr;
 	}
-	AP_OK("WS connection established.");
+
+	if (!ws_ok) {
+		/* Attempt 2: plain WS — reconnect the socket */
+		sock_close(s);
+		if (tls_ctx_tl) { delete tls_ctx_tl; tls_ctx_tl = nullptr; }
+
+		struct addrinfo hints2{}, *res2 = nullptr;
+		hints2.ai_family   = AF_UNSPEC;
+		hints2.ai_socktype = SOCK_STREAM;
+		if (getaddrinfo(host.c_str(), port_str.c_str(), &hints2, &res2) != 0 || res2 == nullptr) {
+			SetLastErrorInternal("Could not resolve host: " + host);
+			state.store(APState::AP_ERROR);
+			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
+			return;
+		}
+		s = socket(res2->ai_family, res2->ai_socktype, res2->ai_protocol);
+		if (s == SOCK_INVALID) {
+			freeaddrinfo(res2);
+			SetLastErrorInternal("Socket creation failed (WS retry)");
+			state.store(APState::AP_ERROR);
+			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
+			return;
+		}
+		AP_LOG(fmt::format("Retrying TCP connect to {}:{} (plain WS)...", host, port));
+		if (connect(s, res2->ai_addr, (int)res2->ai_addrlen) != 0) {
+			freeaddrinfo(res2);
+			sock_close(s);
+			SetLastErrorInternal("Could not connect to " + host + ":" + fmt::format("{}", port));
+			state.store(APState::AP_ERROR);
+			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
+			return;
+		}
+		freeaddrinfo(res2);
+		AP_LOG("TCP reconnected — trying plain WebSocket...");
+		if (!DoWebSocketHandshake((int)s, host, port)) {
+			sock_close(s);
+			SetLastErrorInternal("WebSocket handshake failed (both WSS and WS attempted)");
+			AP_ERR("Both WSS and WS failed — check server address.");
+			state.store(APState::AP_ERROR);
+			PushEvent({ InboundEvent::DISCONNECTED, last_error, {}, {} });
+			return;
+		}
+		AP_OK("Plain WS connection established.");
+	}
 #endif
 
 	/* Set recv timeout AFTER handshake — short timeout so incoming items/checks
@@ -1562,9 +1713,7 @@ void ArchipelagoClient::WorkerThread()
 	}
 
 	sock_close(s);
-#ifdef _WIN32
 	if (tls_ctx_tl) { delete tls_ctx_tl; tls_ctx_tl = nullptr; }
-#endif
 	AP_WARN("Worker thread exiting — connection lost");
 	if (state.load() != APState::AP_ERROR) state.store(APState::DISCONNECTED);
 	PushEvent({ InboundEvent::DISCONNECTED, "Disconnected", {}, {} });

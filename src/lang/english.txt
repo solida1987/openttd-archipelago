@@ -2351,6 +2351,9 @@ STR_ARCHIPELAGO_INDEX_TAB_AIRCRAFT                              :{BLACK}Aircraft
 STR_ARCHIPELAGO_INDEX_TAB_SHIPS                                 :{BLACK}Ships
 STR_ARCHIPELAGO_INDEX_TAB_WAGONS                                :{BLACK}Wagons
 STR_ARCHIPELAGO_BTN_RUINS                                       :{BLACK}Ruins
+STR_ARCHIPELAGO_BTN_STARS                                       :{BLACK}Stars
+STR_ARCHIPELAGO_STAR_TRACKER_CAPTION                            :Star Tracker
+STR_ARCHIPELAGO_STAR_REVEAL_BTN                                 :{BLACK}Reveal Star Location
 STR_ARCHIPELAGO_BTN_DAYNIGHT_ON                                 :{BLACK}Day/Night: ON
 STR_ARCHIPELAGO_BTN_DAYNIGHT_OFF                                :{BLACK}Day/Night: OFF
 STR_ARCHIPELAGO_RUINS_CAPTION                                   :Archipelago - Ruins Tracker
@@ -2362,6 +2365,8 @@ STR_ERROR_ARCHIPELAGO_TUNNEL_LOCKED                             :Tunnel construc
 STR_ERROR_ARCHIPELAGO_AIRPORT_LOCKED                            :This airport type is locked. Unlock it via Archipelago.
 STR_ERROR_ARCHIPELAGO_TREE_LOCKED                               :This tree type is locked. Unlock it via Archipelago.
 STR_ERROR_ARCHIPELAGO_TERRAFORM_LOCKED                          :Terraforming in this direction is locked. Unlock it via Archipelago.
+STR_ERROR_ARCHIPELAGO_TERRAFORM_RAISE_LOCKED                    :Raise Land is locked. Find "Terraform: Raise Land" to unlock it.
+STR_ERROR_ARCHIPELAGO_TERRAFORM_LOWER_LOCKED                    :Lower Land is locked. Find "Terraform: Lower Land" to unlock it.
 
 STR_INTRO_BASESET                                               :{BLACK}The currently selected base graphics set is missing {NUM} sprite{P "" s}. Please check for updates for the baseset.
 STR_INTRO_TRANSLATION                                           :{BLACK}This translation misses {NUM} string{P "" s}. Please help make OpenTTD better by signing up as translator. See readme.txt for details.

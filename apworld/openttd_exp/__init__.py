@@ -25,15 +25,21 @@ from .items import (
     NON_TEMPERATE_ROAD_VEHICLES, NON_ARCTIC_ROAD_VEHICLES, NON_TROPIC_ROAD_VEHICLES,
     NON_TEMPERATE_WAGONS, NON_ARCTIC_WAGONS, NON_TROPIC_WAGONS,
     ALL_TRACK_DIRECTION_ITEMS, TRACK_ITEMS_BY_RAILTYPE,
+    NARROW_GAUGE_TRACK_ITEMS, METRO_TRACK_ITEMS, VACTUBE_TRACK_ITEMS,
     TRAIN_TO_RAILTYPE, UNIVERSAL_STARTER_WAGONS,
-    ROAD_DIRECTION_ITEMS, SIGNAL_ITEMS, BRIDGE_ITEMS, TUNNEL_ITEMS,
+    SMALL_AIRCRAFT, UNSAFE_STARTER_ROAD_VEHICLES,
+    SAFE_STARTER_SHIPS, SAFE_STARTER_SHARK,
+    IH_NON_STANDARD_ENGINES, VANILLA_SAFE_STARTER_TRAINS,
+    SMALL_AIRCRAFT_AP25, SMALL_AIRCRAFT_MIL, LARGE_AIRCRAFT_MIL,
+    ROAD_DIRECTION_ITEMS, TRAM_DIRECTION_ITEMS,
+    SIGNAL_ITEMS, BRIDGE_ITEMS, TUNNEL_ITEMS,
     AIRPORT_ITEMS, TREE_ITEMS, TERRAFORM_ITEMS, TOWN_ACTION_ITEMS,
     OpenTTDItemData
 )
 from .locations import (
     get_location_table, DIFFICULTY_DISTRIBUTION, MAX_MISSIONS_PER_DIFFICULTY,
     MISSION_TEMPLATES, PREDEFINED_MISSION_POOLS, CARGO_TYPES, CARGO_BY_LANDSCAPE,
-    FIRS_CARGO_BY_ECONOMY, RUIN_ID_BASE
+    FIRS_CARGO_BY_ECONOMY, RUIN_ID_BASE, STAR_ID_BASE
 )
 from .options import OpenTTDOptions, OPTION_GROUPS
 from .rules import set_rules
@@ -116,7 +122,7 @@ class OpenTTDWorld(World):
     # Pre-build with max possible config so AP can read locations at class level
     location_name_to_id: Dict[str, int] = {
         name: data.code
-        for name, data in get_location_table(mission_count=600, shop_item_count=600, ruin_count=100, demigod_count=10).items()
+        for name, data in get_location_table(mission_count=600, shop_item_count=600, ruin_count=100, demigod_count=10, star_count=1000).items()
     }
 
     # Slot data stored during generation
@@ -130,11 +136,11 @@ class OpenTTDWorld(World):
         self._shop_prices_cache: Dict[str, int] = {}
 
     def _get_location_table(self):
-        mc, shop, ruin, dg = self._compute_pool_size()
-        return get_location_table(mc, shop, ruin, dg)
+        mc, shop, ruin, dg, star = self._compute_pool_size()
+        return get_location_table(mc, shop, ruin, dg, star)
 
     def _compute_pool_size(self) -> tuple:
-        """Dynamically compute (mission_count, shop_item_count, ruin_count, demigod_count).
+        """Dynamically compute (mission_count, shop_item_count, ruin_count, demigod_count, star_count).
 
         Pool size is derived automatically from:
           - Available vehicles for the chosen landscape + active GRFs
@@ -207,12 +213,20 @@ class OpenTTDWorld(World):
         # Demigod locations — each one needs an item placed on it
         demigod_count = self.options.demigod_count.value if bool(self.options.enable_demigods.value) else 0
 
+        # Star locations — computed dynamically below (50/50 split with shop)
+        stars_enabled = bool(self.options.enable_stars.value)
+
         # Infrastructure unlock items — count based on enabled toggles
         infra_count = 0
         if bool(self.options.enable_rail_direction_unlocks.value):
-            infra_count += len(ALL_TRACK_DIRECTION_ITEMS)  # 24
+            infra_count += len(ALL_TRACK_DIRECTION_ITEMS)  # 24 vanilla
+            if ih_enabled:
+                infra_count += len(NARROW_GAUGE_TRACK_ITEMS) + len(METRO_TRACK_ITEMS)  # +12
+            if vac_enabled:
+                infra_count += len(VACTUBE_TRACK_ITEMS)  # +6
         if bool(self.options.enable_road_direction_unlocks.value):
             infra_count += len(ROAD_DIRECTION_ITEMS)  # 2
+            infra_count += len(TRAM_DIRECTION_ITEMS)   # 2
         if bool(self.options.enable_signal_unlocks.value):
             infra_count += len(SIGNAL_ITEMS)  # 6
         if bool(self.options.enable_bridge_unlocks.value):
@@ -240,41 +254,52 @@ class OpenTTDWorld(World):
         speed_boost_count = self.options.speed_boost_count.value
 
         # ── Total item budget ────────────────────────────────────────────
-        # Ruin + demigod locations need items too, so they add to the total.
-        total_items = (eligible_count + trap_count + utility_count
-                       + infra_count + speed_boost_count
-                       + ruin_count + demigod_count)
+        # All items that need locations (vehicles + traps + utility + infra + speed
+        # + ruins + demigods).  Stars and shop are computed from the remainder.
+        base_items = (eligible_count + trap_count + utility_count
+                      + infra_count + speed_boost_count)
+        total_items = base_items + ruin_count + demigod_count
 
-        # ── Fill order: missions → ruins → demigods → shop (last) ────────
-        # Missions are the primary gameplay locations and get filled first.
-        # Ruins and demigods are fixed-count.  Shop gets whatever is left
-        # over — it can be 0 if missions + ruins consume everything.
+        # ── Distribution: missions ~25%, rest split between stars/shop ──
+        # Missions get Easy 10% + Medium 5% + Hard 5% + Extreme 5% = 25% of items.
+        # Ruins and demigods are fixed-count (taken off the top).
+        # Stars + shop share whatever is left (50/50 split).
         #
-        # Target: at least 150 missions distributed across tiers.
-        # Hard cap: never create more locations than items (no phantoms).
-        MIN_TOTAL_MISSIONS = 150
-        budget_for_missions = total_items - ruin_count - demigod_count
-        target_missions = min(MIN_TOTAL_MISSIONS, max(10, budget_for_missions))
+        # We compute missions from the tier fractions applied to total_items,
+        # then cap so missions never consume more than ~40% of base_items,
+        # leaving enough room for stars + shop.
+        MAX_MISSION_FRACTION = 0.60
 
-        # Bump raw_half until tier-fraction split reaches the target.
-        raw_half = max(10, total_items // 2)
-        while True:
-            mission_count = 0
-            for _diff, fraction in DIFFICULTY_DISTRIBUTION.items():
-                tier = min(max(1, int(raw_half * fraction)), MAX_MISSIONS_PER_DIFFICULTY)
-                mission_count += tier
-            if mission_count >= target_missions:
-                break
-            raw_half += 10
+        # Compute mission count from difficulty distribution
+        mission_count = 0
+        for _diff, fraction in DIFFICULTY_DISTRIBUTION.items():
+            tier = min(max(1, int(total_items * fraction)), MAX_MISSIONS_PER_DIFFICULTY)
+            mission_count += tier
 
-        # Cap: missions can never exceed the budget (would leave <0 shop).
-        if mission_count > budget_for_missions:
-            mission_count = budget_for_missions
+        # Cap missions to leave room for stars + shop
+        max_missions = max(10, int(base_items * MAX_MISSION_FRACTION))
+        if mission_count > max_missions:
+            mission_count = max_missions
 
-        # Shop = whatever is left.  Can be 0 — that's fine.
-        shop_item_count = max(0, total_items - mission_count - ruin_count - demigod_count)
+        # Also cap to never exceed base_items (can't have more locations than items)
+        if mission_count > base_items:
+            mission_count = base_items
 
-        return mission_count, shop_item_count, ruin_count, demigod_count
+        # Remainder after missions = pool for stars + shop
+        remainder = max(0, base_items - mission_count)
+
+        # Split remainder 50/50 between stars and shop
+        if stars_enabled and remainder >= 2:
+            star_count = remainder // 2
+            shop_item_count = remainder - star_count
+        else:
+            star_count = 0
+            shop_item_count = remainder
+
+        # Total locations = mission_count + shop_item_count + ruin_count + demigod_count + star_count
+        # This equals base_items + ruin_count + demigod_count = total_items. Balanced.
+
+        return mission_count, shop_item_count, ruin_count, demigod_count, star_count
 
     def generate_early(self) -> None:
         """Generate mission content before items are placed."""
@@ -292,9 +317,9 @@ class OpenTTDWorld(World):
             player_count = len(self.multiworld.player_ids)
         except Exception:
             player_count = 1
-        mc, shop, ruin, dg = self._compute_pool_size()
-        total = mc + shop + ruin + dg
-        print(f"[OpenTTD] {player_count} player(s) → {mc} missions + {shop} shop + {ruin} ruins + {dg} demigods = {total} total locations")
+        mc, shop, ruin, dg, star = self._compute_pool_size()
+        total = mc + shop + ruin + dg + star
+        print(f"[OpenTTD] {player_count} player(s) → {mc} missions + {shop} shop + {ruin} ruins + {dg} demigods + {star} stars = {total} total locations")
         self._generate_missions()
 
     def _generate_missions(self) -> None:
@@ -312,7 +337,7 @@ class OpenTTDWorld(World):
             runtime, so cargo missions still feel varied across sessions.
         """
         rng = self.random
-        mission_count, _shop_item_count, _ruin_count, _dg_count = self._compute_pool_size()
+        mission_count, _shop_item_count, _ruin_count, _dg_count, _star_count = self._compute_pool_size()
         missions: List = []
 
         # Climate-appropriate cargo list — use FIRS cargo if FIRS is enabled
@@ -459,7 +484,7 @@ class OpenTTDWorld(World):
 
         # Create all regions
         region_names = ["Menu", "mission_easy", "mission_medium",
-                        "mission_hard", "mission_extreme", "shop", "ruin", "demigod", "goal"]
+                        "mission_hard", "mission_extreme", "shop", "ruin", "demigod", "star", "goal"]
         regions: Dict[str, Region] = {}
         for rname in region_names:
             regions[rname] = Region(rname, self.player, self.multiworld)
@@ -587,17 +612,75 @@ class OpenTTDWorld(World):
             "ship":         ship_pool,
         }
 
+        # ── Filter pools to safe starters only ────────────────────────
+        # TRAINS: starting trains MUST run on Normal Rail (railtype 0) with
+        # steam or diesel power.  Electric, Monorail, Maglev, Narrow Gauge,
+        # Metro, and Vactrain engines are excluded — the player starts with
+        # only Normal Rail track and cannot build electrified/special rails.
+        _vanilla_safe = set(VANILLA_SAFE_STARTER_TRAINS)
+        _ih_safe = set(IRON_HORSE_ENGINES) - IH_NON_STANDARD_ENGINES
+        _heqs_safe = set(HEQS_TRAINS)  # HEQS Hi-Rail Truck runs on Normal Rail
+        # Vactrain engines are NEVER safe starters (need VACT rail)
+        train_pool_start = []
+        for v in train_pool:
+            if v in _vanilla_safe:
+                train_pool_start.append(v)
+            elif v.startswith("IH: ") and v in _ih_safe:
+                train_pool_start.append(v)
+            elif v.startswith("HEQS: ") and v in _heqs_safe:
+                train_pool_start.append(v)
+            # VAC: engines, monorail, maglev, electric — all excluded
+        if not train_pool_start:
+            # Fallback: if somehow empty, allow all trains
+            train_pool_start = train_pool
+
+        # Aircraft: only small-airport-compatible planes (Small Airport
+        # is always available).  Large jets need "Airport: Large" unlock.
+        _small_safe = set(SMALL_AIRCRAFT)
+        if mil_enabled:
+            _small_safe |= SMALL_AIRCRAFT_MIL
+        if ap25_enabled:
+            _small_safe |= SMALL_AIRCRAFT_AP25
+        aircraft_pool_start = [v for v in aircraft_pool if v in _small_safe]
+        if not aircraft_pool_start:
+            aircraft_pool_start = aircraft_pool
+
+        # Road vehicles: exclude those that carry processed cargo
+        rv_pool_start = [v for v in rv_pool
+                         if v not in UNSAFE_STARTER_ROAD_VEHICLES]
+        if not rv_pool_start:
+            rv_pool_start = rv_pool
+
+        # Ships: only passenger ferries / versatile early ships
+        if shark_enabled:
+            ship_pool_start = [v for v in ship_pool
+                               if v in SAFE_STARTER_SHARK]
+        else:
+            ship_pool_start = [v for v in ship_pool
+                               if v in SAFE_STARTER_SHIPS]
+        if not ship_pool_start:
+            ship_pool_start = ship_pool
+
+        # Use filtered pools for starting vehicle selection only.
+        # The original *_pool variables are kept for item creation.
+        type_pools_start = {
+            "train":        train_pool_start,
+            "road_vehicle": rv_pool_start,
+            "aircraft":     aircraft_pool_start,
+            "ship":         ship_pool_start,
+        }
+
         count = max(1, self.options.starting_vehicle_count.value)
 
         if start_type == 0:
-            # any: combine all type pools
+            # any: combine all safe-starter pools
             chosen_type = "any"
             all_starters: List[str] = []
-            for pool in type_pools.values():
+            for pool in type_pools_start.values():
                 all_starters.extend(pool)
         else:
             chosen_type = type_names[start_type]
-            all_starters = list(type_pools[chosen_type])
+            all_starters = list(type_pools_start[chosen_type])
 
         # Deduplicate, shuffle
         seen: set = set()
@@ -672,7 +755,7 @@ class OpenTTDWorld(World):
                 if sv in TRAIN_TO_RAILTYPE:
                     rt = TRAIN_TO_RAILTYPE[sv]
                 elif sv.startswith("IH: "):
-                    rt = 0  # All IH engines use Normal Rail
+                    rt = 0  # Safe starters are always Normal Rail IH engines
                 else:
                     continue  # Not a train — skip
 
@@ -709,6 +792,21 @@ class OpenTTDWorld(World):
                 self.random.shuffle(road_dirs)
                 self.multiworld.push_precollected(self.create_item(road_dirs[0]))
 
+        # ── Airport guarantee ──────────────────────────────────────────
+        # If airport unlocks are enabled and a starting aircraft is NOT
+        # small-airport-compatible, precollect "Airport: Large" so the
+        # player can actually use it.  (Normally the safe-starter filter
+        # prevents this, but the fallback path may still pick a large jet.)
+        if self.options.enable_airport_unlocks.value:
+            _all_ac = set(ALL_AIRCRAFT) | set(MILITARY_ITEMS_AIRCRAFT) | set(AIRCRAFTPACK_AIRCRAFT)
+            _all_small = set(SMALL_AIRCRAFT) | SMALL_AIRCRAFT_MIL | SMALL_AIRCRAFT_AP25
+            has_large_aircraft = any(
+                sv in _all_ac and sv not in _all_small
+                for sv in starting_vehicles
+            )
+            if has_large_aircraft:
+                self.multiworld.push_precollected(self.create_item("Airport: Large"))
+
         # ── Reserve slots for traps and utility ──────────────────────────
         # Traps: up to 15% of total pool (minimum 0)
         # ── Trap pool — exact count from YAML option ─────────────────────
@@ -733,9 +831,15 @@ class OpenTTDWorld(World):
         # Infrastructure unlock items — added to pool when their toggles are enabled.
         infra_items: List[str] = []
         if self.options.enable_rail_direction_unlocks.value:
-            infra_items += list(ALL_TRACK_DIRECTION_ITEMS)
+            infra_items += list(ALL_TRACK_DIRECTION_ITEMS)  # 24 vanilla
+            if ih_enabled:
+                infra_items += list(NARROW_GAUGE_TRACK_ITEMS)   # +6 NG
+                infra_items += list(METRO_TRACK_ITEMS)           # +6 Metro
+            if vac_enabled:
+                infra_items += list(VACTUBE_TRACK_ITEMS)         # +6 VacTube
         if self.options.enable_road_direction_unlocks.value:
-            infra_items += list(ROAD_DIRECTION_ITEMS)
+            infra_items += list(ROAD_DIRECTION_ITEMS)    # 2 roads
+            infra_items += list(TRAM_DIRECTION_ITEMS)     # 2 trams
         if self.options.enable_signal_unlocks.value:
             infra_items += list(SIGNAL_ITEMS)
         if self.options.enable_bridge_unlocks.value:
@@ -928,7 +1032,7 @@ class OpenTTDWorld(World):
         if trap_utility_items:
             non_shop_locs: list = []
             for rname in ("mission_easy", "mission_medium", "mission_hard",
-                          "mission_extreme", "ruin", "demigod"):
+                          "mission_extreme", "ruin", "demigod", "star"):
                 region = self.multiworld.get_region(rname, self.player)
                 non_shop_locs.extend(loc for loc in region.locations if not loc.item)
 
@@ -941,19 +1045,30 @@ class OpenTTDWorld(World):
                     loc.place_locked_item(item)
 
         # ── Step 2: Distribute progression items by fixed percentages ─────
-        # Determine active pools and their share
-        _, _, ruin_count, demigod_count = self._compute_pool_size()
+        # Each pool gets a fixed % of progression items.
+        # Missions are split per difficulty tier for granular control.
+        _, _, ruin_count, demigod_count, star_count = self._compute_pool_size()
         ruins_on = ruin_count > 0
         demigods_on = demigod_count > 0
+        stars_on = star_count > 0
 
-        if ruins_on and demigods_on:
-            pct = {"mission": 0.40, "shop": 0.40, "ruin": 0.10, "demigod": 0.10}
-        elif ruins_on:
-            pct = {"mission": 0.45, "shop": 0.45, "ruin": 0.10, "demigod": 0.0}
-        elif demigods_on:
-            pct = {"mission": 0.45, "shop": 0.45, "ruin": 0.0, "demigod": 0.10}
+        # Fixed percentages per pool:
+        #   Easy 10%, Medium 5%, Hard 5%, Extreme 5% = 25% missions total
+        #   Ruins 10%, Demigods 10% = 20% side pools (when all active)
+        #   Stars and Shop split the remainder equally
+        pct_easy    = 0.10
+        pct_medium  = 0.05
+        pct_hard    = 0.05
+        pct_extreme = 0.05
+        pct_ruin    = 0.10 if ruins_on else 0.0
+        pct_demigod = 0.10 if demigods_on else 0.0
+        remaining   = 1.0 - pct_easy - pct_medium - pct_hard - pct_extreme - pct_ruin - pct_demigod
+        if stars_on:
+            pct_star = remaining / 2
+            pct_shop = remaining / 2
         else:
-            pct = {"mission": 0.50, "shop": 0.50, "ruin": 0.0, "demigod": 0.0}
+            pct_star = 0.0
+            pct_shop = remaining
 
         # Extract all OWN progression items from the pool
         prog_items = [item for item in self.multiworld.itempool
@@ -964,33 +1079,46 @@ class OpenTTDWorld(World):
 
         # Calculate target counts per pool
         total_prog = len(prog_items)
-        mission_target = round(total_prog * pct["mission"])
-        shop_target    = round(total_prog * pct["shop"])
-        ruin_target    = round(total_prog * pct["ruin"])
-        demigod_target = max(0, total_prog - mission_target - shop_target - ruin_target)
-        # Collect unfilled locations per pool
-        # Missions: ordered easy → medium → hard → extreme (progression fills easy first)
-        mission_locs: list = []
-        for rname in ("mission_easy", "mission_medium", "mission_hard", "mission_extreme"):
-            region = self.multiworld.get_region(rname, self.player)
-            mission_locs.extend(loc for loc in region.locations if not loc.item)
+        easy_target    = round(total_prog * pct_easy)
+        medium_target  = round(total_prog * pct_medium)
+        hard_target    = round(total_prog * pct_hard)
+        extreme_target = round(total_prog * pct_extreme)
+        shop_target    = round(total_prog * pct_shop)
+        ruin_target    = round(total_prog * pct_ruin)
+        star_target    = round(total_prog * pct_star)
+        demigod_target = max(0, total_prog - easy_target - medium_target - hard_target
+                             - extreme_target - shop_target - ruin_target - star_target)
 
-        shop_region = self.multiworld.get_region("shop", self.player)
-        shop_locs = [loc for loc in shop_region.locations if not loc.item]
+        # Collect unfilled locations per pool (each tier separately)
+        easy_locs = [loc for loc in self.multiworld.get_region("mission_easy", self.player).locations if not loc.item]
+        self.random.shuffle(easy_locs)
+        medium_locs = [loc for loc in self.multiworld.get_region("mission_medium", self.player).locations if not loc.item]
+        self.random.shuffle(medium_locs)
+        hard_locs = [loc for loc in self.multiworld.get_region("mission_hard", self.player).locations if not loc.item]
+        self.random.shuffle(hard_locs)
+        extreme_locs = [loc for loc in self.multiworld.get_region("mission_extreme", self.player).locations if not loc.item]
+        self.random.shuffle(extreme_locs)
+
+        shop_locs = [loc for loc in self.multiworld.get_region("shop", self.player).locations if not loc.item]
         self.random.shuffle(shop_locs)
 
-        ruin_region = self.multiworld.get_region("ruin", self.player)
-        ruin_locs = [loc for loc in ruin_region.locations if not loc.item]
+        ruin_locs = [loc for loc in self.multiworld.get_region("ruin", self.player).locations if not loc.item]
         self.random.shuffle(ruin_locs)
 
-        demigod_region = self.multiworld.get_region("demigod", self.player)
-        demigod_locs = [loc for loc in demigod_region.locations if not loc.item]
+        demigod_locs = [loc for loc in self.multiworld.get_region("demigod", self.player).locations if not loc.item]
         self.random.shuffle(demigod_locs)
+
+        star_locs = [loc for loc in self.multiworld.get_region("star", self.player).locations if not loc.item]
+        self.random.shuffle(star_locs)
 
         # Place progression items into each pool; overflow to next pool
         pools = [
-            (mission_target, mission_locs),
+            (easy_target,    easy_locs),
+            (medium_target,  medium_locs),
+            (hard_target,    hard_locs),
+            (extreme_target, extreme_locs),
             (shop_target,    shop_locs),
+            (star_target,    star_locs),
             (ruin_target,    ruin_locs),
             (demigod_target, demigod_locs),
         ]
@@ -1047,7 +1175,7 @@ class OpenTTDWorld(World):
             preset = WIN_PRESETS[diff]
         (win_cv, win_pop, win_veh, win_cargo, win_profit, win_missions) = preset
 
-        computed_mc, computed_shop, _computed_ruin, computed_dg = self._compute_pool_size()
+        computed_mc, computed_shop, _computed_ruin, computed_dg, _computed_star = self._compute_pool_size()
 
         # Build item_id_to_name so the C++ client can resolve item IDs to names
         item_id_to_name = {str(data.code): name for name, data in ITEM_TABLE.items()}
@@ -1159,6 +1287,10 @@ class OpenTTDWorld(World):
             "ruin_cargo_types_min":          self.options.ruin_cargo_types_min.value,
             "ruin_cargo_types_max":          max(self.options.ruin_cargo_types_min.value, self.options.ruin_cargo_types_max.value),
             "ruin_locations":                [f"Ruin_{i:03d}" for i in range(1, self.options.ruin_pool_size.value + 1)],
+            # ── Stars ──────────────────────────────────────────────
+            "enable_stars":                  bool(self.options.enable_stars.value),
+            "star_pool_size":                self._compute_pool_size()[4],
+            "star_locations":                [f"Star_{i:03d}" for i in range(1, self._compute_pool_size()[4] + 1)],
             # ── DeathLink ──────────────────────────────────────────
             "death_link":                 bool(self.options.death_link.value),
             # ── Funny Stuff ──────────────────────────────────────────
@@ -1213,7 +1345,7 @@ class OpenTTDWorld(World):
         price_min, price_max = self.SHOP_PRICE_RANGES[tier]
 
         rng = self.random
-        _mc, computed_shop, _ruin, _dg = self._compute_pool_size()
+        _mc, computed_shop, _ruin, _dg, _star = self._compute_pool_size()
         shop_total = computed_shop
         # Generate all prices randomly, then sort ascending so the shop
         # naturally shows affordable items first and expensive ones last.

@@ -28,6 +28,7 @@ set(BASESET_OTHER_SOURCE_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/openmsx-0.4.2.tar
         ${CMAKE_CURRENT_SOURCE_DIR}/archipelago_icons.grf
         ${CMAKE_CURRENT_SOURCE_DIR}/archipelago_ruins.grf
+        ${CMAKE_CURRENT_SOURCE_DIR}/archipelago_stars.grf
 )
 
 # Done by the subdirectories, if nforenum / grfcodec is installed

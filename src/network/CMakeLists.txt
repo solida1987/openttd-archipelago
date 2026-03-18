@@ -6,10 +6,6 @@ add_files(
     network_admin.cpp
     network_admin.h
     network_base.h
-    network_bridge.cpp
-    network_bridge.h
-    network_bridge_client.cpp
-    network_bridge_client.h
     network_chat_gui.cpp
     network_client.cpp
     network_client.h

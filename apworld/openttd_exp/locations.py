@@ -28,6 +28,7 @@ SHOP_ID_BASE    = 6_108_000
 VICTORY_ID      = 6_110_000
 RUIN_ID_BASE    = 6_112_000
 DEMIGOD_ID_BASE = 6_114_000
+STAR_ID_BASE    = 6_116_000
 
 # Cargo types split by climate so mission generator can pick
 # only cargos that actually exist on the chosen map landscape.
@@ -110,7 +111,7 @@ FIRS_CARGO_BY_ECONOMY = {
 #  - No two missions of the same type+unit may have amounts closer than 5×
 #    e.g. "Have X vehicles": 3 → next must be ≥15, then ≥75
 #  - No exact duplicates (same type + same amount)
-#  - "Buy a vehicle from the shop" is capped at 1 per difficulty level
+#  - "Buy any item from the shop" is capped at 1 per difficulty level
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -237,7 +238,7 @@ PREDEFINED_MISSION_POOLS: Dict[str, List] = {
         ("Transport {amount} units of {cargo}",              40_000,  "units",             "transport cargo"),
         ("Transport {amount} units of {cargo}",              60_000,  "units",             "transport cargo"),
         # shop purchase (1 only)
-        ("Buy a vehicle from the shop",                      1,       "purchase",          "purchase"),
+        ("Buy any item from the shop",                        1,       "purchase",          "purchase"),
     ],
 
     # ── MEDIUM ───────────────────────────────────────────────────────────────
@@ -604,7 +605,8 @@ class OpenTTDLocationData(NamedTuple):
 
 def _build_location_table(mission_count: int = 100, shop_item_count: int = 100,
                           ruin_count: int = 0,
-                          demigod_count: int = 0) -> Dict[str, OpenTTDLocationData]:
+                          demigod_count: int = 0,
+                          star_count: int = 0) -> Dict[str, OpenTTDLocationData]:
     """Build location table with FIXED per-difficulty ID blocks.
 
     All locations are DEFAULT.  Progression distribution is handled
@@ -662,15 +664,21 @@ def _build_location_table(mission_count: int = 100, shop_item_count: int = 100,
         assert i <= 1000, f"Too many demigod slots ({i}); block only holds 1000"
         table[name] = OpenTTDLocationData(DEMIGOD_ID_BASE + (i - 1), "demigod")
 
+    for i in range(1, star_count + 1):
+        name = f"Star_{i:03d}"
+        assert i <= 2000, f"Too many star slots ({i}); block only holds 2000"
+        table[name] = OpenTTDLocationData(STAR_ID_BASE + (i - 1), "star")
+
     table["Goal_Victory"] = OpenTTDLocationData(VICTORY_ID, "goal", LocationProgressType.PRIORITY)
 
     return table
 
 
-LOCATION_TABLE: Dict[str, OpenTTDLocationData] = _build_location_table(demigod_count=10)
+LOCATION_TABLE: Dict[str, OpenTTDLocationData] = _build_location_table(demigod_count=10, star_count=1000)
 
 
 def get_location_table(mission_count: int, shop_item_count: int,
                        ruin_count: int = 0,
-                       demigod_count: int = 0) -> Dict[str, OpenTTDLocationData]:
-    return _build_location_table(mission_count, shop_item_count, ruin_count, demigod_count)
+                       demigod_count: int = 0,
+                       star_count: int = 0) -> Dict[str, OpenTTDLocationData]:
+    return _build_location_table(mission_count, shop_item_count, ruin_count, demigod_count, star_count)

@@ -744,6 +744,7 @@ enum WindowClass : uint16_t {
 	WC_ARCHIPELAGO_RUIN,    ///< Archipelago Ruin detail window (industry-like).
 	WC_ARCHIPELAGO_RUINS_TRACKER, ///< Archipelago Ruins Tracker window.
 	WC_ARCHIPELAGO_INDEX,   ///< Archipelago vehicle index / encyclopedia.
+	WC_ARCHIPELAGO_STAR_TRACKER, ///< Archipelago Star Tracker window.
 	WC_AP_START_CHOICE,     ///< Archipelago 3-choice start dialog (Single/Host/Load).
 	WC_AP_JOIN_MULTIPLAYER, ///< Archipelago Join Multiplayer dialog.
 	WC_AP_COLBY_DECISION,  ///< Archipelago Colby Event decision popup (arrest/escape/sacrifice).

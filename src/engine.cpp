@@ -1287,7 +1287,10 @@ bool IsEngineBuildable(EngineID engine, VehicleType type, CompanyID company)
 		if (!e->company_avail.Test(company)) return false;
 	}
 
-	if (!e->IsEnabled()) return false;
+	/* Archipelago: AP-unlocked engines bypass the IsEnabled() check.
+	 * NewGRF engines may have climates not set for the current landscape,
+	 * but if AP explicitly unlocked them, they must be buildable. */
+	if (!e->IsEnabled() && !AP_IsEngineUnlocked(engine.base())) return false;
 
 	if (type == VEH_TRAIN && company != OWNER_DEITY) {
 		/* Check if the rail type is available to this company */

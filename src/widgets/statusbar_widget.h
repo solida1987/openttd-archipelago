@@ -28,6 +28,7 @@ enum StatusbarWidgets : WidgetID {
 	WID_S_AP_BTN_SHOP,
 	WID_S_AP_BTN_GUIDE,
 	WID_S_AP_BTN_INDEX,
+	WID_S_AP_BTN_STARS,
 };
 
 #endif /* WIDGETS_STATUSBAR_WIDGET_H */

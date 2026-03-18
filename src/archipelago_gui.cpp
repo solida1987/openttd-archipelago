@@ -32,7 +32,6 @@
 #include "misc_cmd.h"
 #include "network/network.h"
 #include "network/network_func.h"
-#include "network/network_bridge_client.h"
 #include "network/core/config.h"
 #include "string_func.h"
 #include "error.h"
@@ -81,6 +80,8 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_widgets = {
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_CLOSEBOX, COLOUR_GREY),
 		NWidget(WWT_CAPTION, COLOUR_GREY), SetStringTip(STR_ARCHIPELAGO_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, COLOUR_GREY),
+		NWidget(WWT_STICKYBOX, COLOUR_GREY),
 	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_GREY),
 		NWidget(NWID_VERTICAL), SetPIP(4, 4, 4), SetPadding(6),
@@ -395,6 +396,8 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = 
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_CLOSEBOX, COLOUR_DARK_GREEN),
 		NWidget(WWT_CAPTION, COLOUR_DARK_GREEN), SetStringTip(STR_ARCHIPELAGO_STATUS_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, COLOUR_DARK_GREEN),
+		NWidget(WWT_STICKYBOX, COLOUR_DARK_GREEN),
 	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_DARK_GREEN),
 		NWidget(NWID_VERTICAL), SetPIP(2, 2, 2), SetPadding(4),
@@ -413,21 +416,10 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = 
 				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPST_BTN_SETTINGS),  SetStringTip(STR_ARCHIPELAGO_BTN_SETTINGS),  SetMinimalSize(80, 14),
 			EndContainer(),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPST_BTN_SHOP),      SetStringTip(STR_ARCHIPELAGO_BTN_SHOP),      SetMinimalSize(120, 14), SetFill(1, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WAPST_BTN_GUIDE),     SetStringTip(STR_ARCHIPELAGO_BTN_GUIDE),     SetMinimalSize(60, 14),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPST_BTN_INDEX),     SetStringTip(STR_ARCHIPELAGO_BTN_INDEX),     SetMinimalSize(60, 14),
-			EndContainer(),
-			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPST_BTN_COLBY),     SetStringTip(STR_ARCHIPELAGO_BTN_COLBY),     SetMinimalSize(80, 14), SetFill(1, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_RED,    WAPST_BTN_DEMIGOD),   SetStringTip(STR_ARCHIPELAGO_BTN_DEMIGOD),   SetMinimalSize(80, 14), SetFill(1, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_BROWN,  WAPST_BTN_RUINS),     SetStringTip(STR_ARCHIPELAGO_BTN_RUINS),     SetMinimalSize(80, 14), SetFill(1, 0),
-			EndContainer(),
-			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
 				NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_NEWS_LABEL), SetMinimalSize(50, 14), SetStringTip(STR_ARCHIPELAGO_NEWS_LABEL),
 				NWidget(WWT_TEXTBTN, COLOUR_GREY, WAPST_NEWS_OFF),  SetStringTip(STR_ARCHIPELAGO_NEWS_OFF),  SetMinimalSize(40, 14),
 				NWidget(WWT_TEXTBTN, COLOUR_GREY, WAPST_NEWS_SELF), SetStringTip(STR_ARCHIPELAGO_NEWS_SELF), SetMinimalSize(40, 14),
 				NWidget(WWT_TEXTBTN, COLOUR_GREY, WAPST_NEWS_ALL),  SetStringTip(STR_ARCHIPELAGO_NEWS_ALL),  SetMinimalSize(40, 14),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WAPST_BTN_DAYNIGHT), SetStringTip(STR_ARCHIPELAGO_BTN_DAYNIGHT_ON), SetMinimalSize(60, 14),
 			EndContainer(),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
 				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPST_BTN_OPEN_MP), SetStringTip(STR_AP_OPEN_MP_BTN), SetMinimalSize(200, 16), SetFill(1, 0),
@@ -564,24 +556,10 @@ struct ArchipelagoStatusWindow : public Window {
 		this->SetWidgetDisabledState(WAPST_BTN_SHOP,     !AP_IsConnected());
 		/* Colby button: enabled when event is configured (shows countdown in step 0,
 		 * full event UI once active). Disabled when no event is configured at all. */
-		bool colby_configured = AP_IsConnected() && AP_IsColbyConfigured();
-		this->SetWidgetDisabledState(WAPST_BTN_COLBY, !colby_configured);
-
-		/* Demigod button: enabled when system is active */
-		bool demigod_configured = AP_IsConnected() && AP_IsDemigodEnabled();
-		this->SetWidgetDisabledState(WAPST_BTN_DEMIGOD, !demigod_configured);
-
-		/* Ruins button: enabled when connected and ruins exist */
-		this->SetWidgetDisabledState(WAPST_BTN_RUINS, !AP_IsConnected());
-
 		/* Highlight active news filter button */
 		this->SetWidgetLoweredState(WAPST_NEWS_OFF,  _ap_news_filter == 0);
 		this->SetWidgetLoweredState(WAPST_NEWS_SELF, _ap_news_filter == 1);
 		this->SetWidgetLoweredState(WAPST_NEWS_ALL,  _ap_news_filter == 2);
-
-		/* Day/Night toggle label */
-		this->GetWidget<NWidgetCore>(WAPST_BTN_DAYNIGHT)->SetString(
-		    AP_IsDayNightDisabled() ? STR_ARCHIPELAGO_BTN_DAYNIGHT_OFF : STR_ARCHIPELAGO_BTN_DAYNIGHT_ON);
 
 		/* Open to Multiplayer: hide when already a server, disable when not in normal game,
 		 * or when multiplayer_mode is not enabled in AP slot_data */
@@ -609,31 +587,9 @@ struct ArchipelagoStatusWindow : public Window {
 			case WAPST_BTN_SETTINGS:
 				ShowArchipelagoConnectWindow();
 				break;
-			case WAPST_BTN_SHOP:
-				ShowArchipelagoShopWindow();
-				break;
-			case WAPST_BTN_GUIDE:
-				ShowArchipelagoGuideWindow();
-				break;
-			case WAPST_BTN_INDEX:
-				ShowArchipelagoIndexWindow();
-				break;
-			case WAPST_BTN_COLBY:
-				ShowArchipelagoColbyWindow();
-				break;
-			case WAPST_BTN_DEMIGOD:
-				ShowArchipelagoDemigodWindow();
-				break;
-			case WAPST_BTN_RUINS:
-				ShowArchipelagoRuinsTrackerWindow();
-				break;
 			case WAPST_NEWS_OFF:  _ap_news_filter = 0; this->SetDirty(); break;
 			case WAPST_NEWS_SELF: _ap_news_filter = 1; this->SetDirty(); break;
 			case WAPST_NEWS_ALL:  _ap_news_filter = 2; this->SetDirty(); break;
-			case WAPST_BTN_DAYNIGHT:
-				AP_ToggleDayNight();
-				this->SetDirty();
-				break;
 			case WAPST_BTN_OPEN_MP:
 				AP_OpenToMultiplayer();
 				this->SetDirty();
@@ -771,17 +727,20 @@ enum APMissionsWidgets : WidgetID {
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_missions_widgets = {
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
-		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_ARCHIPELAGO_MISSIONS_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS), SetFill(1, 0), SetResize(1, 0),
+		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_ARCHIPELAGO_MISSIONS_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, COLOUR_BROWN),
+		NWidget(WWT_DEFSIZEBOX, COLOUR_BROWN),
+		NWidget(WWT_STICKYBOX, COLOUR_BROWN),
 	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_BROWN), SetResize(1, 1),
 		/* Single filter row — All / Easy / Medium / Hard / Extreme / Tasks */
 		NWidget(NWID_HORIZONTAL), SetPIP(2, 2, 2), SetPadding(2),
-			NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPM_FILTER_ALL),     SetStringTip(STR_ARCHIPELAGO_FILTER_ALL),     SetMinimalSize(44, 14),
-			NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPM_FILTER_EASY),    SetStringTip(STR_ARCHIPELAGO_FILTER_EASY),    SetMinimalSize(44, 14),
-			NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPM_FILTER_MEDIUM),  SetStringTip(STR_ARCHIPELAGO_FILTER_MEDIUM),  SetMinimalSize(44, 14),
-			NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPM_FILTER_HARD),    SetStringTip(STR_ARCHIPELAGO_FILTER_HARD),    SetMinimalSize(44, 14),
-			NWidget(WWT_PUSHTXTBTN, COLOUR_RED,    WAPM_FILTER_EXTREME), SetStringTip(STR_ARCHIPELAGO_FILTER_EXTREME), SetMinimalSize(44, 14),
-			NWidget(WWT_PUSHTXTBTN, COLOUR_BROWN,  WAPM_FILTER_TASKS),   SetStringTip(STR_ARCHIPELAGO_TAB_TASKS),      SetMinimalSize(44, 14),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPM_FILTER_ALL),     SetStringTip(STR_ARCHIPELAGO_FILTER_ALL),     SetMinimalSize(44, 14), SetFill(1, 0), SetResize(1, 0),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPM_FILTER_EASY),    SetStringTip(STR_ARCHIPELAGO_FILTER_EASY),    SetMinimalSize(44, 14), SetFill(1, 0), SetResize(1, 0),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPM_FILTER_MEDIUM),  SetStringTip(STR_ARCHIPELAGO_FILTER_MEDIUM),  SetMinimalSize(44, 14), SetFill(1, 0), SetResize(1, 0),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPM_FILTER_HARD),    SetStringTip(STR_ARCHIPELAGO_FILTER_HARD),    SetMinimalSize(44, 14), SetFill(1, 0), SetResize(1, 0),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_RED,    WAPM_FILTER_EXTREME), SetStringTip(STR_ARCHIPELAGO_FILTER_EXTREME), SetMinimalSize(44, 14), SetFill(1, 0), SetResize(1, 0),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WAPM_FILTER_TASKS),   SetStringTip(STR_ARCHIPELAGO_TAB_TASKS),      SetMinimalSize(44, 14), SetFill(1, 0), SetResize(1, 0),
 		EndContainer(),
 		/* Mission list + vertical scrollbar */
 		NWidget(NWID_HORIZONTAL),
@@ -1346,7 +1305,10 @@ enum APShopWidgets : WidgetID {
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_shop_widgets = {
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_CLOSEBOX, COLOUR_CREAM),
-		NWidget(WWT_CAPTION, COLOUR_CREAM), SetStringTip(STR_ARCHIPELAGO_SHOP_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS), SetFill(1, 0), SetResize(1, 0),
+		NWidget(WWT_CAPTION, COLOUR_CREAM), SetStringTip(STR_ARCHIPELAGO_SHOP_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, COLOUR_CREAM),
+		NWidget(WWT_DEFSIZEBOX, COLOUR_CREAM),
+		NWidget(WWT_STICKYBOX, COLOUR_CREAM),
 	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_CREAM), SetResize(1, 1),
 		NWidget(NWID_HORIZONTAL),
@@ -1354,8 +1316,8 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_shop_widgets = {
 			NWidget(NWID_VSCROLLBAR, COLOUR_CREAM, WAPSH_SCROLLBAR),
 		EndContainer(),
 		NWidget(NWID_HORIZONTAL), SetPIP(4, 4, 4), SetPadding(4),
-			NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPSH_BTN_BUY),   SetStringTip(STR_ARCHIPELAGO_SHOP_BUY,   STR_EMPTY), SetMinimalSize(120, 16), SetFill(1, 0),
-			NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,  WAPSH_BTN_CLOSE), SetStringTip(STR_ARCHIPELAGO_BTN_CLOSE, STR_EMPTY), SetMinimalSize(80,  16),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPSH_BTN_BUY),   SetStringTip(STR_ARCHIPELAGO_SHOP_BUY,   STR_EMPTY), SetMinimalSize(120, 16), SetFill(1, 0), SetResize(1, 0),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,  WAPSH_BTN_CLOSE), SetStringTip(STR_ARCHIPELAGO_BTN_CLOSE, STR_EMPTY), SetMinimalSize(80,  16), SetResize(1, 0),
 		EndContainer(),
 		/* Horizontal scrollbar + resize box */
 		NWidget(NWID_HORIZONTAL),
@@ -1620,19 +1582,25 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_guide_widgets = {
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_CLOSEBOX, COLOUR_DARK_BLUE),
 		NWidget(WWT_CAPTION, COLOUR_DARK_BLUE, WAPGD_CAPTION), SetStringTip(STR_ARCHIPELAGO_GUIDE_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, COLOUR_DARK_BLUE),
+		NWidget(WWT_DEFSIZEBOX, COLOUR_DARK_BLUE),
+		NWidget(WWT_STICKYBOX, COLOUR_DARK_BLUE),
 	EndContainer(),
 	/* Tab buttons */
 	NWidget(NWID_HORIZONTAL),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPGD_TAB_COMMANDS), SetStringTip(STR_ARCHIPELAGO_GUIDE_TAB_COMMANDS), SetMinimalSize(110, 16), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPGD_TAB_HOTKEYS),  SetStringTip(STR_ARCHIPELAGO_GUIDE_TAB_HOTKEYS),  SetMinimalSize(110, 16), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPGD_TAB_TIPS),     SetStringTip(STR_ARCHIPELAGO_GUIDE_TAB_TIPS),     SetMinimalSize(110, 16), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPGD_TAB_COMMANDS), SetStringTip(STR_ARCHIPELAGO_GUIDE_TAB_COMMANDS), SetMinimalSize(110, 16), SetFill(1, 0), SetResize(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPGD_TAB_HOTKEYS),  SetStringTip(STR_ARCHIPELAGO_GUIDE_TAB_HOTKEYS),  SetMinimalSize(110, 16), SetFill(1, 0), SetResize(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPGD_TAB_TIPS),     SetStringTip(STR_ARCHIPELAGO_GUIDE_TAB_TIPS),     SetMinimalSize(110, 16), SetFill(1, 0), SetResize(1, 0),
 	EndContainer(),
 	/* Content panel + scrollbar */
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_PANEL, COLOUR_DARK_BLUE, WAPGD_PANEL), SetMinimalSize(330, 300), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPGD_SCROLLBAR), EndContainer(),
 		NWidget(NWID_VSCROLLBAR, COLOUR_DARK_BLUE, WAPGD_SCROLLBAR),
 	EndContainer(),
-	NWidget(WWT_RESIZEBOX, COLOUR_DARK_BLUE),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_DARK_BLUE), SetResize(1, 0), SetFill(1, 0), EndContainer(),
+		NWidget(WWT_RESIZEBOX, COLOUR_DARK_BLUE),
+	EndContainer(),
 };
 
 struct ArchipelagoGuideWindow : Window {
@@ -1879,12 +1847,18 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_ruins_tracker_wid
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
 		NWidget(WWT_CAPTION, COLOUR_BROWN, WAPRT_CAPTION), SetStringTip(STR_ARCHIPELAGO_RUINS_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, COLOUR_BROWN),
+		NWidget(WWT_DEFSIZEBOX, COLOUR_BROWN),
+		NWidget(WWT_STICKYBOX, COLOUR_BROWN),
 	EndContainer(),
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_PANEL, COLOUR_BROWN, WAPRT_PANEL), SetMinimalSize(380, 300), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPRT_SCROLLBAR), EndContainer(),
 		NWidget(NWID_VSCROLLBAR, COLOUR_BROWN, WAPRT_SCROLLBAR),
 	EndContainer(),
-	NWidget(WWT_RESIZEBOX, COLOUR_BROWN),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_BROWN), SetResize(1, 0), SetFill(1, 0), EndContainer(),
+		NWidget(WWT_RESIZEBOX, COLOUR_BROWN),
+	EndContainer(),
 };
 
 struct ArchipelagoRuinsTrackerWindow : Window {
@@ -2063,6 +2037,190 @@ void ShowArchipelagoRuinsTrackerWindow()
 
 
 /* =========================================================================
+ * STAR TRACKER WINDOW — reveal and track star locations
+ * ========================================================================= */
+
+enum ArchipelagoStarTrackerWidgets : WidgetID {
+	WAPST_ST_CAPTION,
+	WAPST_ST_PANEL,
+	WAPST_ST_SCROLLBAR,
+	WAPST_ST_BTN_REVEAL,
+};
+
+static constexpr std::initializer_list<NWidgetPart> _nested_ap_star_tracker_widgets = {
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_DARK_GREEN),
+		NWidget(WWT_CAPTION, COLOUR_DARK_GREEN, WAPST_ST_CAPTION), SetStringTip(STR_ARCHIPELAGO_STAR_TRACKER_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, COLOUR_DARK_GREEN),
+		NWidget(WWT_DEFSIZEBOX, COLOUR_DARK_GREEN),
+		NWidget(WWT_STICKYBOX, COLOUR_DARK_GREEN),
+	EndContainer(),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_DARK_GREEN, WAPST_ST_PANEL), SetMinimalSize(380, 200), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPST_ST_SCROLLBAR), EndContainer(),
+		NWidget(NWID_VSCROLLBAR, COLOUR_DARK_GREEN, WAPST_ST_SCROLLBAR),
+	EndContainer(),
+	NWidget(NWID_HORIZONTAL), SetPIP(4, 4, 4),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPST_ST_BTN_REVEAL), SetStringTip(STR_ARCHIPELAGO_STAR_REVEAL_BTN), SetMinimalSize(360, 16), SetFill(1, 0), SetResize(1, 0),
+	EndContainer(),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_DARK_GREEN), SetResize(1, 0), SetFill(1, 0), EndContainer(),
+		NWidget(WWT_RESIZEBOX, COLOUR_DARK_GREEN),
+	EndContainer(),
+};
+
+struct ArchipelagoStarTrackerWindow : Window {
+	std::vector<APStarView> stars;
+	Scrollbar *vscroll = nullptr;
+	int refresh_timer = 0;
+
+	ArchipelagoStarTrackerWindow(WindowDesc &desc, WindowNumber wn) : Window(desc)
+	{
+		this->InitNested(wn);
+		this->vscroll = this->GetScrollbar(WAPST_ST_SCROLLBAR);
+		this->_RebuildList();
+	}
+
+	void _RebuildList()
+	{
+		this->stars = AP_GetRevealedStarViews();
+		if (this->vscroll) {
+			int line_h = GetCharacterHeight(FS_NORMAL) + 2;
+			this->vscroll->SetCount((int)this->stars.size() * line_h + line_h * 3);
+			const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPST_ST_PANEL);
+			int panel_h = panel ? panel->current_y : 200;
+			this->vscroll->SetCapacity(panel_h);
+		}
+	}
+
+	void OnPaint() override
+	{
+		int revealed = AP_GetStarsRevealed();
+		int pool = AP_GetStarPoolSize();
+		int collected = AP_GetStarsCollected();
+		int remaining = pool - collected;
+		bool can_reveal = (remaining > revealed);
+
+		this->SetWidgetDisabledState(WAPST_ST_BTN_REVEAL, !can_reveal);
+
+		this->DrawWidgets();
+	}
+
+	void DrawWidget(const Rect &r, WidgetID widget) const override
+	{
+		if (widget != WAPST_ST_PANEL) return;
+
+		int line_h = GetCharacterHeight(FS_NORMAL) + 2;
+		int xl = r.left + 6;
+		int xr = r.right - 6;
+		int scroll_pos = this->vscroll ? this->vscroll->GetPosition() : 0;
+
+		/* Header info */
+		int collected = AP_GetStarsCollected();
+		int pool = AP_GetStarPoolSize();
+		int revealed = AP_GetStarsRevealed();
+
+		std::string header = fmt::format("Stars: {}/{} collected | {} locations revealed", collected, pool, revealed);
+		DrawString(xl, xr, r.top + 3, header, TC_GOLD);
+
+		/* Cost line */
+		int remaining = pool - collected;
+		bool can_reveal = (remaining > revealed);
+		if (can_reveal) {
+			int64_t cost = AP_GetStarRevealCost();
+			std::string cost_line = fmt::format("Next reveal cost: {}", GetString(STR_JUST_CURRENCY_LONG, cost));
+			DrawString(xl, xr, r.top + 3 + line_h, cost_line, TC_WHITE);
+		} else {
+			DrawString(xl, xr, r.top + 3 + line_h, "All stars revealed or collected.", TC_GREY);
+		}
+
+		if (this->stars.empty()) {
+			DrawString(xl, xr, r.top + 3 + line_h * 2, "Pay to reveal star locations on the map.", TC_GREY);
+			return;
+		}
+
+		/* Draw revealed star entries */
+		int entry_y = r.top + 3 + line_h * 3 - scroll_pos;
+		for (int i = 0; i < (int)this->stars.size(); i++) {
+			if (entry_y > r.bottom) break;
+			if (entry_y + line_h < r.top) { entry_y += line_h; continue; }
+
+			const auto &sv = this->stars[i];
+			std::string line = fmt::format("  {} {}", "\xE2\x98\x85", sv.location_name);
+			DrawString(xl, xr, entry_y, line, TC_YELLOW);
+			entry_y += line_h;
+		}
+	}
+
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override
+	{
+		if (widget == WAPST_ST_BTN_REVEAL) {
+			if (AP_RevealNextStar()) {
+				this->_RebuildList();
+				this->SetDirty();
+			}
+			return;
+		}
+
+		if (widget != WAPST_ST_PANEL) return;
+
+		/* Click on a revealed star -> scroll to it on the map */
+		int line_h = GetCharacterHeight(FS_NORMAL) + 2;
+		const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPST_ST_PANEL);
+		int scroll_pos = this->vscroll ? this->vscroll->GetPosition() : 0;
+		int pixel_y = (pt.y - panel->pos_y - 3) + scroll_pos;
+
+		/* First 3 lines are header, entries start at line 3 */
+		int entry_idx = (pixel_y - line_h * 3) / line_h;
+		if (entry_idx < 0 || entry_idx >= (int)this->stars.size()) return;
+
+		const auto &sv = this->stars[entry_idx];
+		if (sv.tile != UINT32_MAX) {
+			ScrollMainWindowToTile(TileIndex{sv.tile});
+		}
+	}
+
+	void OnGameTick() override
+	{
+		if (++this->refresh_timer >= 74) {
+			this->refresh_timer = 0;
+			this->_RebuildList();
+			this->SetDirty();
+		}
+	}
+
+	void OnResize() override
+	{
+		if (this->vscroll) {
+			const NWidgetBase *panel = this->GetWidget<NWidgetBase>(WAPST_ST_PANEL);
+			int panel_h = panel ? panel->current_y : 200;
+			this->vscroll->SetCapacity(panel_h);
+		}
+	}
+
+	void OnScrollbarScroll([[maybe_unused]] WidgetID widget) override { this->SetDirty(); }
+
+	void OnInvalidateData([[maybe_unused]] int data = 0, [[maybe_unused]] bool gui_scope = true) override
+	{
+		if (gui_scope) {
+			this->_RebuildList();
+			this->SetDirty();
+		}
+	}
+};
+
+static WindowDesc _ap_star_tracker_desc(
+	WDP_AUTO, {"ap_star_tracker"}, 400, 280,
+	WC_ARCHIPELAGO_STAR_TRACKER, WC_NONE, {},
+	_nested_ap_star_tracker_widgets
+);
+
+void ShowArchipelagoStarTrackerWindow()
+{
+	AllocateWindowDescFront<ArchipelagoStarTrackerWindow>(_ap_star_tracker_desc, 0);
+}
+
+
+/* =========================================================================
  * VEHICLE INDEX WINDOW
  * Categorised vehicle encyclopedia with live stats from the Engine pool.
  * ========================================================================= */
@@ -2090,21 +2248,27 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_index_widgets = {
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_CLOSEBOX, COLOUR_DARK_BLUE),
 		NWidget(WWT_CAPTION, COLOUR_DARK_BLUE, WAPIX_CAPTION), SetStringTip(STR_ARCHIPELAGO_INDEX_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, COLOUR_DARK_BLUE),
+		NWidget(WWT_DEFSIZEBOX, COLOUR_DARK_BLUE),
+		NWidget(WWT_STICKYBOX, COLOUR_DARK_BLUE),
 	EndContainer(),
 	/* Tab buttons */
 	NWidget(NWID_HORIZONTAL),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_TRAINS),   SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_TRAINS),   SetMinimalSize(80, 16), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_ROAD),     SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_ROAD),     SetMinimalSize(100, 16), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_AIRCRAFT),  SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_AIRCRAFT), SetMinimalSize(80, 16), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_SHIPS),    SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_SHIPS),    SetMinimalSize(60, 16), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_WAGONS),   SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_WAGONS),   SetMinimalSize(80, 16), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_TRAINS),   SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_TRAINS),   SetMinimalSize(80, 16), SetFill(1, 0), SetResize(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_ROAD),     SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_ROAD),     SetMinimalSize(100, 16), SetFill(1, 0), SetResize(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_AIRCRAFT),  SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_AIRCRAFT), SetMinimalSize(80, 16), SetFill(1, 0), SetResize(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_SHIPS),    SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_SHIPS),    SetMinimalSize(60, 16), SetFill(1, 0), SetResize(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_DARK_BLUE, WAPIX_TAB_WAGONS),   SetStringTip(STR_ARCHIPELAGO_INDEX_TAB_WAGONS),   SetMinimalSize(80, 16), SetFill(1, 0), SetResize(1, 0),
 	EndContainer(),
 	/* Content panel + scrollbar */
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_PANEL, COLOUR_DARK_BLUE, WAPIX_PANEL), SetMinimalSize(460, 360), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPIX_SCROLLBAR), EndContainer(),
 		NWidget(NWID_VSCROLLBAR, COLOUR_DARK_BLUE, WAPIX_SCROLLBAR),
 	EndContainer(),
-	NWidget(WWT_RESIZEBOX, COLOUR_DARK_BLUE),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_DARK_BLUE), SetResize(1, 0), SetFill(1, 0), EndContainer(),
+		NWidget(WWT_RESIZEBOX, COLOUR_DARK_BLUE),
+	EndContainer(),
 };
 
 struct IndexEntry {
@@ -2359,13 +2523,19 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_colby_widgets = {
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
 		NWidget(WWT_CAPTION, COLOUR_BROWN, WAPCB_CAPTION), SetStringTip(STR_ARCHIPELAGO_COLBY_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, COLOUR_BROWN),
+		NWidget(WWT_DEFSIZEBOX, COLOUR_BROWN),
+		NWidget(WWT_STICKYBOX, COLOUR_BROWN),
 	EndContainer(),
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_PANEL, COLOUR_BROWN, WAPCB_PANEL), SetMinimalSize(320, 100), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPCB_SCROLLBAR), EndContainer(),
 		NWidget(NWID_VSCROLLBAR, COLOUR_BROWN, WAPCB_SCROLLBAR),
 	EndContainer(),
-	NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPCB_BTN_REOPEN), SetStringTip(STR_AP_COLBY_BTN_REOPEN), SetMinimalSize(320, 14), SetFill(1, 0),
-	NWidget(WWT_RESIZEBOX, COLOUR_BROWN),
+	NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPCB_BTN_REOPEN), SetStringTip(STR_AP_COLBY_BTN_REOPEN), SetMinimalSize(320, 14), SetFill(1, 0), SetResize(1, 0),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_BROWN), SetResize(1, 0), SetFill(1, 0), EndContainer(),
+		NWidget(WWT_RESIZEBOX, COLOUR_BROWN),
+	EndContainer(),
 };
 
 struct ArchipelagoColbyWindow : public Window {
@@ -2708,16 +2878,23 @@ enum APDemigodWidgets : WidgetID {
 
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_demigod_widgets = {
 	NWidget(NWID_HORIZONTAL),
-		NWidget(WWT_CLOSEBOX, COLOUR_RED),
-		NWidget(WWT_CAPTION, COLOUR_RED, WAPDG_CAPTION), SetStringTip(STR_ARCHIPELAGO_DEMIGOD_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_CLOSEBOX, COLOUR_DARK_GREEN),
+		NWidget(WWT_CAPTION, COLOUR_DARK_GREEN, WAPDG_CAPTION), SetStringTip(STR_ARCHIPELAGO_DEMIGOD_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, COLOUR_DARK_GREEN),
+		NWidget(WWT_DEFSIZEBOX, COLOUR_DARK_GREEN),
+		NWidget(WWT_STICKYBOX, COLOUR_DARK_GREEN),
 	EndContainer(),
 	NWidget(NWID_HORIZONTAL),
-		NWidget(WWT_PANEL, COLOUR_RED, WAPDG_PANEL), SetMinimalSize(340, 120), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPDG_SCROLLBAR), EndContainer(),
-		NWidget(NWID_VSCROLLBAR, COLOUR_RED, WAPDG_SCROLLBAR),
+		NWidget(WWT_PANEL, COLOUR_DARK_GREEN, WAPDG_PANEL), SetMinimalSize(340, 120), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPDG_SCROLLBAR), EndContainer(),
+		NWidget(NWID_VSCROLLBAR, COLOUR_DARK_GREEN, WAPDG_SCROLLBAR),
 	EndContainer(),
 	NWidget(NWID_HORIZONTAL), SetPIP(4, 4, 4),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPDG_BTN_TRIBUTE), SetStringTip(STR_ARCHIPELAGO_DEMIGOD_PAY_TRIBUTE), SetMinimalSize(200, 16), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,  WAPDG_BTN_CLOSE),   SetStringTip(STR_ARCHIPELAGO_DEMIGOD_CLOSE),      SetMinimalSize(80, 16),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPDG_BTN_TRIBUTE), SetStringTip(STR_ARCHIPELAGO_DEMIGOD_PAY_TRIBUTE), SetMinimalSize(200, 16), SetFill(1, 0), SetResize(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,  WAPDG_BTN_CLOSE),   SetStringTip(STR_ARCHIPELAGO_DEMIGOD_CLOSE),      SetMinimalSize(80, 16), SetResize(1, 0),
+	EndContainer(),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_DARK_GREEN), SetResize(1, 0), SetFill(1, 0), EndContainer(),
+		NWidget(WWT_RESIZEBOX, COLOUR_DARK_GREEN),
 	EndContainer(),
 };
 
@@ -2867,10 +3044,16 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_ruin_widgets = {
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
 		NWidget(WWT_CAPTION, COLOUR_BROWN, WAPRN_CAPTION), SetStringTip(STR_ARCHIPELAGO_RUIN_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, COLOUR_BROWN),
+		NWidget(WWT_STICKYBOX, COLOUR_BROWN),
 	EndContainer(),
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_PANEL, COLOUR_BROWN, WAPRN_PANEL), SetMinimalSize(300, 140), SetResize(1, 1), SetFill(1, 1), SetScrollbar(WAPRN_SCROLLBAR), EndContainer(),
 		NWidget(NWID_VSCROLLBAR, COLOUR_BROWN, WAPRN_SCROLLBAR),
+	EndContainer(),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_PANEL, COLOUR_BROWN), SetResize(1, 0), SetFill(1, 0), EndContainer(),
+		NWidget(WWT_RESIZEBOX, COLOUR_BROWN),
 	EndContainer(),
 };
 
@@ -3205,6 +3388,8 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_join_widgets = {
 	NWidget(NWID_HORIZONTAL),
 		NWidget(WWT_CLOSEBOX, COLOUR_ORANGE),
 		NWidget(WWT_CAPTION, COLOUR_ORANGE), SetStringTip(STR_AP_JOIN_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, COLOUR_ORANGE),
+		NWidget(WWT_STICKYBOX, COLOUR_ORANGE),
 	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_ORANGE),
 		NWidget(NWID_VERTICAL), SetPIP(8, 4, 8), SetPadding(8),

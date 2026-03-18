@@ -1,352 +1,352 @@
 #!/usr/bin/env python3
 """Generate isometric ruin sprites for OpenTTD Archipelago mod.
 
-Each sprite is a 64x40 8-bit indexed PNG using the OpenTTD DOS palette.
-Index 0 = transparent. We draw simple but recognisable ruin shapes.
+Each sprite is a 64x80 8-bit indexed PNG using the OpenTTD DOS palette.
+Index 0 = transparent.  Only VERTICAL structures are drawn — the ground
+is handled by GROUNDSPRITE_NORMAL in the spritelayout.
 
 Output: sprites.png  (sprite sheet with all ruins side-by-side)
 """
 
 from PIL import Image, ImageDraw
-import struct, math, os
+import math, os, random
 
-# ---------- OpenTTD DOS palette (indices 0-255) ----------
-# Extracted from src/table/palettes.h  — only the first ~215 matter.
-_PAL_RAW = [
-    (  0,  0,  0,  0),  # 0: transparent
-    ( 16, 16, 16),( 32, 32, 32),( 48, 48, 48),( 65, 64, 65),( 82, 80, 82),( 98,101, 98),(115,117,115),  # 1-7 grey
-    (131,133,131),(148,149,148),(168,168,168),(184,184,184),(200,200,200),(216,216,216),(232,232,232),(252,252,252),  # 8-15
-    ( 52, 60, 72),( 68, 76, 92),( 88, 96,112),(108,116,132),(132,140,152),(156,160,172),(176,184,196),(204,208,220),  # 16-23 blue-grey
-    ( 48, 44,  4),( 64, 60, 12),( 80, 76, 20),( 96, 92, 28),(120,120, 64),(148,148,100),(176,176,132),(204,204,168),  # 24-31 olive
-    ( 72, 44,  4),( 88, 60, 20),(104, 80, 44),(124,104, 72),(152,132, 92),(184,160,120),(212,188,148),(244,220,176),  # 32-39 tan/brown
-    ( 64,  0,  4),( 88,  4, 16),(112, 16, 32),(136, 32, 52),(160, 56, 76),(188, 84,108),(204,104,124),(220,132,144),  # 40-47 pink/red
-    (236,156,164),(252,188,192),(252,212,  0),(252,232, 60),(252,248,128),( 76, 40,  0),( 96, 60,  8),(116, 88, 28),  # 48-55
-    (136,116, 56),(156,136, 80),(176,156,108),(196,180,136),( 68, 24,  0),( 96, 44,  4),(128, 68,  8),(156, 96, 16),  # 56-63
-    (184,120, 24),(212,156, 32),(232,184, 16),(252,212,  0),(252,248,128),(252,252,192),( 32,  4,  0),( 64, 20,  8),  # 64-71
-    ( 84, 28, 16),(108, 44, 28),(128, 56, 40),(148, 72, 56),(168, 92, 76),(184,108, 88),(196,128,108),(212,148,128),  # 72-79
-    (  8, 52,  0),( 16, 64,  0),( 32, 80,  4),( 48, 96,  4),( 64,112, 12),( 84,132, 20),(104,148, 28),(128,168, 44),  # 80-87 green
-    ( 28, 52, 24),( 44, 68, 32),( 60, 88, 48),( 80,104, 60),(104,124, 76),(128,148, 92),(152,176,108),(180,204,124),  # 88-95
-    ( 16, 52, 24),( 32, 72, 44),( 56, 96, 72),( 76,116, 88),( 96,136,108),(120,164,136),(152,192,168),(184,220,200),  # 96-103
-    ( 32, 24,  0),( 56, 28,  0),( 72, 40,  4),( 88, 52, 12),(104, 64, 24),(124, 84, 44),(140,108, 64),(160,128, 88),  # 104-111 dark brown
-    ( 76, 40, 16),( 96, 52, 24),(116, 68, 40),(136, 84, 56),(164, 96, 64),(184,112, 80),(204,128, 96),(212,148,112),  # 112-119 brown
-    (224,168,128),(236,188,148),( 80, 28,  4),(100, 40, 20),(120, 56, 40),(140, 76, 64),(160,100, 96),(184,136,136),  # 120-127
-    ( 36, 40, 68),( 48, 52, 84),( 64, 64,100),( 80, 80,116),(100,100,136),(132,132,164),(172,172,192),(212,212,224),  # 128-135 steel blue
-    ( 40, 20,112),( 64, 44,144),( 88, 64,172),(104, 76,196),(120, 88,224),(140,104,252),(160,136,252),(188,168,252),  # 136-143 purple
-    (  0, 24,108),(  0, 36,132),(  0, 52,160),(  0, 72,184),(  0, 96,212),( 24,120,220),( 56,144,232),( 88,168,240),  # 144-151 blue
-    (128,196,252),(188,224,252),( 16, 64, 96),( 24, 80,108),( 40, 96,120),( 52,112,132),( 80,140,160),(116,172,192),  # 152-159
-    (156,204,220),(204,240,252),(172, 52, 52),(212, 52, 52),(252, 52, 52),(252,100, 88),(252,144,124),(252,184,160),  # 160-167 red
-    (252,216,200),(252,244,236),( 72, 20,112),( 92, 44,140),(112, 68,168),(140,100,196),(168,136,224),(204,180,252),  # 168-175
-    (204,180,252),(232,208,252),( 60,  0,  0),( 92,  0,  0),(128,  0,  0),(160,  0,  0),(196,  0,  0),(224,  0,  0),  # 176-183 dark red
-    (252,  0,  0),(252, 80,  0),(252,108,  0),(252,136,  0),(252,164,  0),(252,192,  0),(252,220,  0),(252,252,  0),  # 184-191 orange/yellow
-    (204,136,  8),(228,144,  4),(252,156,  0),(252,176, 48),(252,196,100),(252,216,152),(  8, 24, 88),( 12, 36,104),  # 192-199
-    ( 20, 52,124),( 28, 68,140),( 40, 92,164),( 56,120,188),( 72,152,216),(100,172,224),( 92,156, 52),(108,176, 64),  # 200-207
-    (124,200, 76),(144,224, 92),(224,244,252),(204,240,252),(180,220,236),(132,188,216),( 88,152,172),  # 208-214
-]
+# ---------- OpenTTD DOS palette (extracted from nml) ----------
+def _get_dos_palette():
+    """Get the exact DOS palette from the nml package."""
+    from nml.palette import raw_palette_data
+    return list(raw_palette_data[0])  # index 0 = DOS palette
 
-# --- Useful palette indices ---
+# --- Useful palette indices (DOS palette) ---
 TRANSPARENT = 0
-DARK_GREY   = 1   # (16,16,16)
-MED_GREY    = 4   # (65,64,65)
-LIGHT_GREY  = 6   # (98,101,98)
-LIGHTER_GREY= 9   # (148,149,148)
-WHITE_GREY  = 11  # (184,184,184)
-DARK_BROWN  = 104 # (32,24,0)
-MED_BROWN   = 106 # (72,40,4)
-BROWN       = 107 # (88,52,12)
-LIGHT_BROWN = 108 # (104,64,24)
-TAN         = 110 # (140,108,64)
-LIGHT_TAN   = 111 # (160,128,88)
-SAND        = 35  # (152,132,92)
-DARK_RED    = 178 # (60,0,0)
-RED         = 162 # (172,52,52)
-ORANGE      = 185 # (252,80,0)
-OLIVE_DARK  = 24  # (48,44,4)
-OLIVE       = 25  # (64,60,12)
-BARE_BROWN  = 32  # (72,44,4)
-BARE_BROWN2 = 33  # (88,60,20)
-BARE_TAN    = 34  # (104,80,44)
-GREEN_DARK  = 80  # (8,52,0)
-GREEN       = 82  # (32,80,4)
+DARK_GREY   = 1
+MED_GREY    = 4
+LIGHT_GREY  = 6
+LIGHTER_GREY= 9
+WHITE_GREY  = 11
+WHITE       = 15
+DARK_BROWN  = 104
+MED_BROWN   = 106
+BROWN       = 107
+LIGHT_BROWN = 108
+TAN         = 110
+LIGHT_TAN   = 111
+SAND        = 35
+DARK_RED    = 178
+RED         = 162
+LIGHT_RED   = 163
+ORANGE      = 185
+YELLOW      = 191
+OLIVE_DARK  = 24
+OLIVE       = 25
+BARE_BROWN  = 32
+BARE_BROWN2 = 33
+BARE_TAN    = 34
+GREEN_DARK  = 80
+GREEN       = 82
+GREEN_MED   = 84
+GREEN_LIGHT = 86
+STEEL_DARK  = 128
+STEEL       = 130
+STEEL_LIGHT = 132
 
-# Sprite dimensions: 64 wide, 40 tall (standard OpenTTD isometric tile)
-W, H = 64, 40
-NUM_SPRITES = 6
+# Sprite dimensions
+W, H = 64, 80
+NUM_SPRITES = 7  # 6 main ruins + 1 shared debris for non-center tiles
+
+# Ground plane reference: where the isometric tile surface sits
+# The north corner of the tile diamond is at approximately (31, 49)
+# The tile center (visually) is at approximately (31, 64)
+# Building sprites are anchored so yoffs=-49 puts the tile surface at y=49 in sprite
+TILE_SURFACE_Y = 49  # where the top of the ground tile is in our sprite
+
 
 def build_palette():
-    """Build a proper 256-colour PIL palette from _PAL_RAW."""
-    pal = []
-    for i, c in enumerate(_PAL_RAW):
-        if len(c) == 4:
-            pal.extend(c[:3])  # skip alpha for palette definition
-        else:
-            pal.extend(c)
-    # Pad remaining entries to 256 with magenta (unused pink)
-    while len(pal) < 256 * 3:
-        pal.extend([212, 0, 212])
-    return pal
+    return _get_dos_palette()
 
-def in_diamond(x, y, cx=31, cy=15, hw=31, hh=15):
-    """Check if (x,y) is inside an isometric diamond centred at (cx,cy)."""
-    dx = abs(x - cx)
-    dy = abs(y - cy)
-    return (dx / hw + dy / hh) <= 1.0
 
-def draw_ground(pixels, ox, ground_color=BARE_BROWN2):
-    """Fill the isometric diamond with a ground colour."""
-    for y in range(H):
-        for x in range(W):
-            if in_diamond(x, y):
-                pixels[ox + x, y] = ground_color
+def set_px(pixels, ox, x, y, color):
+    """Set a pixel, bounds-checked."""
+    ax = ox + x
+    if 0 <= x < W and 0 <= y < H:
+        pixels[ax, y] = color
 
-def draw_rubble_stones(pixels, ox, seed=42):
-    """Draw scattered stone/rubble blocks on the ground."""
-    import random
-    rng = random.Random(seed)
 
-    # Dark ground base
-    draw_ground(pixels, ox, BARE_BROWN)
+def draw_rect(pixels, ox, x, y, w, h, color):
+    """Draw a filled rectangle. y is the BOTTOM, drawing upward."""
+    for dy in range(h):
+        for dx in range(w):
+            set_px(pixels, ox, x + dx, y - dy, color)
 
-    # Scatter some lighter ground patches
-    for _ in range(40):
-        sx = rng.randint(8, W - 9)
-        sy = rng.randint(4, H - 5)
-        if in_diamond(sx, sy, hw=28, hh=13):
-            pixels[ox + sx, sy] = BARE_BROWN2
 
-    # Draw rubble stones (small rectangles)
-    stones = [
-        (20, 12, 4, 3, MED_GREY),
-        (35, 18, 5, 3, LIGHT_GREY),
-        (15, 20, 3, 2, MED_GREY),
-        (42, 14, 4, 3, LIGHTER_GREY),
-        (28, 22, 5, 2, MED_GREY),
-        (22, 8,  3, 2, LIGHT_GREY),
-        (38, 25, 4, 2, MED_GREY),
-        (12, 15, 3, 3, LIGHTER_GREY),
-        (48, 20, 3, 2, MED_GREY),
-        (30, 10, 4, 2, LIGHT_GREY),
-        (25, 28, 3, 2, MED_GREY),
-        (18, 25, 4, 2, LIGHTER_GREY),
-    ]
-    for sx, sy, sw, sh, col in stones:
-        for dy in range(sh):
-            for dx in range(sw):
-                px, py = sx + dx, sy + dy
-                if 0 <= px < W and 0 <= py < H and in_diamond(px, py, hw=29, hh=14):
-                    pixels[ox + px, py] = col
-                    # Add shadow below
-                    if dy == sh - 1 and py + 1 < H and in_diamond(px, py + 1, hw=29, hh=14):
-                        pixels[ox + px, py + 1] = DARK_GREY
+def draw_rect_shaded(pixels, ox, x, y, w, h, face_col, left_col, right_col, top_col):
+    """Draw a shaded rectangular block (isometric-ish). y = bottom, draws upward."""
+    for dy in range(h):
+        for dx in range(w):
+            if dy == h - 1:
+                col = top_col
+            elif dx == 0:
+                col = left_col
+            elif dx == w - 1:
+                col = right_col
+            else:
+                col = face_col
+            set_px(pixels, ox, x + dx, y - dy, col)
 
-def draw_broken_wall(pixels, ox, seed=123):
-    """Draw a partial broken wall structure."""
-    import random
-    rng = random.Random(seed)
 
-    draw_ground(pixels, ox, BARE_BROWN2)
+def draw_pillar(pixels, ox, cx, base_y, width, height, face, edge, top):
+    """Draw a vertical pillar centered at cx."""
+    x = cx - width // 2
+    draw_rect_shaded(pixels, ox, x, base_y, width, height, face, edge, edge, top)
 
-    # Left wall section (going from bottom-left toward center)
-    wall_color = LIGHTER_GREY
-    wall_dark = MED_GREY
-    wall_shadow = DARK_GREY
 
-    # Draw an L-shaped broken wall remnant
-    # Bottom wall segment
-    for x in range(14, 36):
-        for y_off in range(0, 4):
-            y = 26 - y_off
-            if in_diamond(x, y, hw=28, hh=13):
-                pixels[ox + x, y] = wall_color if y_off < 3 else wall_dark
-    # Top edge highlight
-    for x in range(14, 36):
-        y = 22
-        if in_diamond(x, y, hw=28, hh=13):
-            pixels[ox + x, y] = WHITE_GREY
+def draw_wall(pixels, ox, x, base_y, w, h, face, edge, top, jagged_seed=None):
+    """Draw a wall with optional jagged top."""
+    draw_rect_shaded(pixels, ox, x, base_y, w, h, face, edge, edge, top)
+    if jagged_seed is not None:
+        rng = random.Random(jagged_seed)
+        for dx in range(w):
+            cut = rng.randint(1, 5)
+            for c in range(cut):
+                set_px(pixels, ox, x + dx, base_y - h + 1 + c, TRANSPARENT)
 
-    # Left wall going up (partial - broken)
-    for y in range(10, 26):
-        for x_off in range(0, 3):
-            x = 14 + x_off
-            if in_diamond(x, y, hw=28, hh=13):
-                pixels[ox + x, y] = wall_color if x_off < 2 else wall_dark
 
-    # Jagged top on left wall (broken edge)
-    broken_heights = [10, 9, 11, 10, 12]
-    for i, bh in enumerate(broken_heights):
-        x = 14 + i % 3
-        if bh < 13 and in_diamond(x, bh, hw=28, hh=13):
-            pixels[ox + x, bh] = wall_dark
+# ================================================================
+# RUIN 1: Rubble Pile — heap of stone blocks
+# ================================================================
+def draw_rubble(pixels, ox):
+    base = TILE_SURFACE_Y + 4  # slightly below tile surface for grounding
 
-    # Rubble at base
-    for _ in range(8):
-        sx = rng.randint(16, 40)
-        sy = rng.randint(27, 32)
-        if in_diamond(sx, sy, hw=28, hh=13):
-            pixels[ox + sx, sy] = MED_GREY
+    # Large stacked stone blocks
+    draw_rect_shaded(pixels, ox, 20, base, 12, 20, LIGHTER_GREY, MED_GREY, STEEL_DARK, WHITE_GREY)
+    draw_rect_shaded(pixels, ox, 30, base, 14, 28, LIGHT_GREY, STEEL_DARK, MED_GREY, WHITE_GREY)
+    draw_rect_shaded(pixels, ox, 24, base - 5, 8, 12, WHITE_GREY, LIGHTER_GREY, MED_GREY, WHITE)
+    draw_rect_shaded(pixels, ox, 38, base - 2, 8, 16, LIGHTER_GREY, MED_GREY, STEEL_DARK, WHITE_GREY)
+    draw_rect_shaded(pixels, ox, 33, base - 14, 10, 10, WHITE_GREY, LIGHTER_GREY, MED_GREY, WHITE)
+    draw_rect_shaded(pixels, ox, 15, base + 2, 6, 10, MED_GREY, STEEL_DARK, DARK_GREY, LIGHTER_GREY)
+    draw_rect_shaded(pixels, ox, 44, base, 5, 8, LIGHTER_GREY, MED_GREY, STEEL_DARK, WHITE_GREY)
 
-def draw_crater(pixels, ox):
-    """Draw an impact crater."""
-    draw_ground(pixels, ox, BARE_BROWN2)
 
-    cx, cy = 31, 18  # center of crater
-    outer_r = 10
-    inner_r = 6
+# ================================================================
+# RUIN 2: Broken Wall — tall wall with gap
+# ================================================================
+def draw_broken_wall(pixels, ox):
+    base = TILE_SURFACE_Y + 6
 
-    for y in range(H):
-        for x in range(W):
-            if not in_diamond(x, y, hw=28, hh=13):
-                continue
-            # Distance from center (squished for isometric)
-            dx = (x - cx)
-            dy = (y - cy) * 2  # stretch Y for isometric
-            dist = math.sqrt(dx*dx + dy*dy)
+    # Left wall — tall
+    draw_wall(pixels, ox, 16, base, 7, 42, LIGHTER_GREY, STEEL_DARK, WHITE_GREY, jagged_seed=101)
+    # Right wall — shorter
+    draw_wall(pixels, ox, 38, base, 6, 30, LIGHTER_GREY, STEEL_DARK, WHITE_GREY, jagged_seed=102)
+    # Low connecting wall on left side
+    draw_rect_shaded(pixels, ox, 23, base, 8, 12, LIGHT_GREY, STEEL_DARK, MED_GREY, LIGHTER_GREY)
+    # Rubble in the gap
+    draw_rect_shaded(pixels, ox, 31, base + 2, 7, 8, MED_GREY, DARK_GREY, STEEL_DARK, LIGHTER_GREY)
 
-            if dist < inner_r:
-                # Inner crater - dark
-                pixels[ox + x, y] = DARK_BROWN
-            elif dist < inner_r + 2:
-                # Crater rim shadow
-                pixels[ox + x, y] = MED_BROWN
-            elif dist < outer_r:
-                # Raised rim
-                if y < cy:
-                    pixels[ox + x, y] = LIGHT_TAN  # lit side
+
+# ================================================================
+# RUIN 3: Crumbling Tower — cylindrical tower remnant
+# ================================================================
+def draw_tower(pixels, ox):
+    base = TILE_SURFACE_Y + 5
+    tower_cx = 31
+    tower_height = 48
+    base_radius = 10
+    top_radius = 7
+
+    for dy in range(tower_height):
+        y = base - dy
+        if y < 0:
+            break
+        t = dy / tower_height
+        r = base_radius + (top_radius - base_radius) * t
+        for dx in range(-int(r) - 1, int(r) + 2):
+            x = tower_cx + dx
+            dist = abs(dx) / r if r > 0 else 1
+            if dist <= 1.0:
+                if dist > 0.82:
+                    col = STEEL_DARK
+                elif dist > 0.6:
+                    col = MED_GREY
+                elif dx < 0:
+                    col = LIGHTER_GREY
                 else:
-                    pixels[ox + x, y] = BROWN  # shadow side
+                    col = LIGHT_GREY
+                set_px(pixels, ox, x, y, col)
 
-def draw_foundation_ruins(pixels, ox):
-    """Draw abandoned building foundations (concrete outline)."""
-    draw_ground(pixels, ox, BARE_BROWN2)
+    # Jagged broken top
+    rng = random.Random(55)
+    for dx in range(-int(top_radius), int(top_radius) + 1):
+        cut = rng.randint(1, 8)
+        x = tower_cx + dx
+        for c in range(cut):
+            set_px(pixels, ox, x, base - tower_height + 1 + c, TRANSPARENT)
 
-    # Draw a rectangular foundation outline
-    fx, fy = 12, 8   # top-left of foundation
-    fw, fh = 38, 22  # width, height
+    # Top highlight ring
+    for dx in range(-int(top_radius) + 1, int(top_radius)):
+        set_px(pixels, ox, tower_cx + dx, base - tower_height + 9, WHITE_GREY)
 
-    for x in range(fx, fx + fw):
-        for y in range(fy, fy + fh):
-            if not in_diamond(x, y, hw=28, hh=13):
-                continue
-            # Foundation border (2px wide)
-            on_border = (x < fx + 2 or x >= fx + fw - 2 or y < fy + 2 or y >= fy + fh - 2)
-            if on_border:
-                pixels[ox + x, y] = LIGHTER_GREY
-            elif (x == fx + 2 or y == fy + 2):
-                pixels[ox + x, y] = MED_GREY  # inner edge shadow
+    # Small rubble at base
+    draw_rect_shaded(pixels, ox, 19, base + 3, 5, 5, MED_GREY, DARK_GREY, STEEL_DARK, LIGHTER_GREY)
+    draw_rect_shaded(pixels, ox, 40, base + 2, 4, 4, MED_GREY, DARK_GREY, STEEL_DARK, LIGHTER_GREY)
 
-    # Some broken sections (gaps in the wall)
-    for x in range(24, 30):
-        for y in range(fy, fy + 2):
-            if in_diamond(x, y, hw=28, hh=13):
-                pixels[ox + x, y] = BARE_BROWN2
 
-    # Rubble inside
-    rubble_spots = [(20, 16), (30, 20), (35, 14), (25, 24), (18, 22)]
-    for rx, ry in rubble_spots:
-        if in_diamond(rx, ry, hw=28, hh=13):
-            pixels[ox + rx, ry] = MED_GREY
-            if rx + 1 < W:
-                pixels[ox + rx + 1, ry] = LIGHT_GREY
+# ================================================================
+# RUIN 4: Foundation with Pillars — tall columns
+# ================================================================
+def draw_foundation(pixels, ox):
+    base = TILE_SURFACE_Y + 5
 
-def draw_scorched_earth(pixels, ox, seed=77):
-    """Draw scorched/burnt ground with charred remains."""
-    import random
-    rng = random.Random(seed)
+    # Four tall pillars
+    draw_pillar(pixels, ox, 20, base, 5, 38, LIGHTER_GREY, STEEL_DARK, WHITE_GREY)
+    draw_pillar(pixels, ox, 43, base, 5, 32, LIGHTER_GREY, STEEL_DARK, WHITE_GREY)
+    draw_pillar(pixels, ox, 20, base + 10, 5, 24, LIGHT_GREY, MED_GREY, WHITE_GREY)
+    draw_pillar(pixels, ox, 43, base + 10, 5, 30, LIGHT_GREY, MED_GREY, WHITE_GREY)
 
-    # Very dark ground base
-    draw_ground(pixels, ox, DARK_BROWN)
+    # Broken beam across top two pillars
+    draw_rect_shaded(pixels, ox, 22, base - 32, 19, 3, BROWN, DARK_BROWN, MED_BROWN, LIGHT_BROWN)
 
-    # Scattered dark patches (char marks)
-    for _ in range(50):
-        sx = rng.randint(6, W - 7)
-        sy = rng.randint(3, H - 4)
-        if in_diamond(sx, sy, hw=27, hh=12):
-            pixels[ox + sx, sy] = DARK_GREY
+    # Low wall between bottom pillars
+    draw_rect_shaded(pixels, ox, 22, base + 8, 19, 8, MED_GREY, STEEL_DARK, DARK_GREY, LIGHTER_GREY)
 
-    # Some orange/red embers
-    embers = [(22, 15), (35, 20), (28, 12), (40, 18), (18, 22), (32, 25)]
+
+# ================================================================
+# RUIN 5: Scorched Earth — burnt timber + flames
+# ================================================================
+def draw_scorched(pixels, ox):
+    base = TILE_SURFACE_Y + 5
+
+    # Tall charred timber posts
+    posts = [(18, 0, 4, 40), (28, -2, 3, 30), (36, 0, 4, 45), (46, 2, 3, 22)]
+    for px, yoff, pw, ph in posts:
+        y = base + yoff
+        draw_rect_shaded(pixels, ox, px, y, pw, ph, DARK_GREY, 1, MED_GREY, MED_GREY)
+        # Charred top
+        for dx in range(pw):
+            set_px(pixels, ox, px + dx, y - ph + 1, 1)
+            set_px(pixels, ox, px + dx, y - ph + 2, DARK_GREY)
+
+    # Orange/red ember glow at base
+    embers = [(18, base + 2), (36, base + 2), (28, base)]
     for ex, ey in embers:
-        if in_diamond(ex, ey, hw=27, hh=12):
-            pixels[ox + ex, ey] = ORANGE
-            # Glow around ember
-            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+        for dx in range(-2, 5):
+            for dy in range(-2, 2):
                 nx, ny = ex + dx, ey + dy
-                if in_diamond(nx, ny, hw=27, hh=12):
-                    pixels[ox + nx, ny] = RED if rng.random() > 0.5 else DARK_RED
+                d = abs(dx - 1) + abs(dy)
+                if d < 2:
+                    set_px(pixels, ox, nx, ny, YELLOW)
+                elif d < 3:
+                    set_px(pixels, ox, nx, ny, ORANGE)
+                elif d < 4:
+                    set_px(pixels, ox, nx, ny, RED)
 
-    # Charred wooden beams
-    for x in range(20, 42):
-        y = 17
-        if in_diamond(x, y, hw=27, hh=12):
-            pixels[ox + x, y] = DARK_GREY
-    for x in range(15, 28):
-        y = 23
-        if in_diamond(x, y, hw=27, hh=12):
-            pixels[ox + x, y] = DARK_GREY
+    # Smoke wisps above posts
+    rng = random.Random(77)
+    for px, yoff, pw, ph in posts:
+        for i in range(5):
+            sx = px + pw // 2 + rng.randint(-3, 3)
+            sy = base + yoff - ph - 3 - i * 3
+            set_px(pixels, ox, sx, sy, LIGHTER_GREY)
+            if rng.random() > 0.5:
+                set_px(pixels, ox, sx + 1, sy, LIGHT_GREY)
 
-def draw_overgrown_ruins(pixels, ox, seed=99):
-    """Draw ruins being reclaimed by nature — stone with green patches."""
-    import random
-    rng = random.Random(seed)
 
-    # Mix of bare ground and grass
-    for y in range(H):
-        for x in range(W):
-            if in_diamond(x, y):
-                pixels[ox + x, y] = GREEN_DARK if rng.random() > 0.4 else BARE_BROWN2
+# ================================================================
+# RUIN 6: Overgrown Ruins — stone arch with vines
+# ================================================================
+def draw_overgrown(pixels, ox):
+    base = TILE_SURFACE_Y + 5
 
-    # Some green grass patches
-    for _ in range(25):
-        sx = rng.randint(6, W - 7)
-        sy = rng.randint(3, H - 4)
-        if in_diamond(sx, sy, hw=28, hh=13):
-            pixels[ox + sx, sy] = GREEN
+    # Two tall stone pillars
+    draw_pillar(pixels, ox, 19, base, 6, 42, LIGHTER_GREY, STEEL_DARK, WHITE_GREY)
+    draw_pillar(pixels, ox, 39, base, 6, 40, LIGHTER_GREY, STEEL_DARK, WHITE_GREY)
 
-    # Stone wall remnants poking through
-    walls = [
-        (18, 10, 3, 8),   # left pillar
-        (40, 12, 3, 7),   # right pillar
-        (18, 10, 25, 2),  # connecting top wall
+    # Stone arch connecting at top
+    arch_top = base - 38
+    for x in range(22, 39):
+        curve = int(3 * math.sin((x - 22) / 17.0 * math.pi))
+        for t in range(4):
+            y = arch_top + curve + t
+            col = LIGHTER_GREY if t < 2 else MED_GREY if t < 3 else STEEL_DARK
+            set_px(pixels, ox, x, y, col)
+
+    # Hanging vines from arch
+    rng = random.Random(99)
+    vine_positions = [24, 27, 30, 33, 36]
+    for vx in vine_positions:
+        vine_len = rng.randint(8, 20)
+        start_y = arch_top + 5
+        for dy in range(vine_len):
+            y = start_y + dy
+            x = vx + (1 if dy % 4 == 0 else (-1 if dy % 4 == 2 else 0))
+            col = GREEN if rng.random() > 0.3 else GREEN_MED
+            set_px(pixels, ox, x, y, col)
+            if rng.random() > 0.7:  # leaf cluster
+                set_px(pixels, ox, x - 1, y, GREEN_DARK)
+                set_px(pixels, ox, x + 1, y, GREEN_LIGHT)
+
+    # Moss patches on pillars
+    for pcx in [19, 39]:
+        for _ in range(10):
+            mx = pcx - 3 + rng.randint(0, 5)
+            my = rng.randint(base - 35, base - 5)
+            if 0 <= ox + mx < ox + W and 0 <= my < H:
+                if pixels[ox + mx, my] != TRANSPARENT:
+                    set_px(pixels, ox, mx, my, GREEN_DARK)
+
+    # Low wall between pillars at base
+    draw_rect_shaded(pixels, ox, 22, base + 2, 17, 6, MED_GREY, STEEL_DARK, DARK_GREY, LIGHTER_GREY)
+
+
+# ================================================================
+# SPRITE 7: Scattered debris — shared sprite for non-center tiles
+# ================================================================
+def draw_debris(pixels, ox):
+    """Small scattered rubble pieces for the 8 surrounding tiles of a 3x3 ruin."""
+    base = TILE_SURFACE_Y + 4
+    rng = random.Random(333)
+
+    # Several small stone blocks scattered around
+    debris_blocks = [
+        (12, base + 3, 5, 6, LIGHTER_GREY, MED_GREY),
+        (24, base + 1, 6, 8, LIGHT_GREY, STEEL_DARK),
+        (36, base + 2, 5, 5, MED_GREY, DARK_GREY),
+        (44, base + 4, 4, 4, LIGHTER_GREY, STEEL_DARK),
+        (18, base - 1, 4, 5, WHITE_GREY, MED_GREY),
+        (40, base, 3, 6, LIGHT_GREY, DARK_GREY),
+        (30, base + 3, 7, 4, MED_GREY, STEEL_DARK),
     ]
-    for wx, wy, ww, wh in walls:
-        for dy in range(wh):
-            for dx in range(ww):
-                px, py = wx + dx, wy + dy
-                if 0 <= px < W and 0 <= py < H and in_diamond(px, py, hw=28, hh=13):
-                    pixels[ox + px, py] = LIGHTER_GREY if dy == 0 else MED_GREY
+    for bx, by, bw, bh, face, edge in debris_blocks:
+        draw_rect_shaded(pixels, ox, bx, by, bw, bh, face, edge, edge, WHITE_GREY)
 
-    # Vines/moss on walls (green spots on grey)
-    for _ in range(8):
-        vx = rng.randint(18, 43)
-        vy = rng.randint(10, 20)
-        if 0 <= vx < W and 0 <= vy < H and pixels[ox + vx, vy] in (LIGHTER_GREY, MED_GREY):
-            pixels[ox + vx, vy] = GREEN
+    # Tiny scattered stone pixels
+    for _ in range(20):
+        sx = rng.randint(8, 54)
+        sy = rng.randint(base - 2, base + 8)
+        col = rng.choice([LIGHTER_GREY, MED_GREY, LIGHT_GREY, STEEL_DARK])
+        set_px(pixels, ox, sx, sy, col)
+        set_px(pixels, ox, sx + 1, sy, col)
 
 
 def main():
     out_dir = os.path.dirname(os.path.abspath(__file__))
-
-    # Create sprite sheet: NUM_SPRITES side by side, each 64x40
     sheet_w = W * NUM_SPRITES
     sheet_h = H
     img = Image.new('P', (sheet_w, sheet_h), TRANSPARENT)
     img.putpalette(build_palette())
-
     pixels = img.load()
 
-    # Generate each sprite
-    draw_rubble_stones(pixels, 0 * W)      # Ruin 1: Rubble pile
-    draw_broken_wall(pixels, 1 * W)         # Ruin 2: Broken wall
-    draw_crater(pixels, 2 * W)              # Ruin 3: Crater
-    draw_foundation_ruins(pixels, 3 * W)    # Ruin 4: Foundation
-    draw_scorched_earth(pixels, 4 * W)      # Ruin 5: Scorched earth
-    draw_overgrown_ruins(pixels, 5 * W)     # Ruin 6: Overgrown ruins
+    draw_rubble(pixels, 0 * W)
+    draw_broken_wall(pixels, 1 * W)
+    draw_tower(pixels, 2 * W)
+    draw_foundation(pixels, 3 * W)
+    draw_scorched(pixels, 4 * W)
+    draw_overgrown(pixels, 5 * W)
+    draw_debris(pixels, 6 * W)
 
-    # Save sprite sheet
     out_path = os.path.join(out_dir, "sprites.png")
     img.save(out_path)
     print(f"Saved sprite sheet: {out_path} ({sheet_w}x{sheet_h})")
 
-    # Also save individual sprites for preview
     for i in range(NUM_SPRITES):
         individual = img.crop((i * W, 0, (i + 1) * W, H))
         individual.save(os.path.join(out_dir, f"ruin_{i+1}.png"))

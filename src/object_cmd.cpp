@@ -43,6 +43,10 @@ extern bool AP_GetRuinCargoAcceptance(uint32_t tile_index, CargoArray &acceptanc
 extern bool AP_IsRuinTile(uint32_t tile_index);
 extern void ShowArchipelagoRuinWindow(uint32_t tile_index);
 
+/* Archipelago star functions — defined in archipelago_manager.cpp */
+extern bool AP_IsStarTile(uint32_t tile_index);
+extern bool AP_CollectStar(uint32_t tile_index);
+
 #include "table/strings.h"
 #include "table/object_land.h"
 
@@ -740,6 +744,12 @@ static TrackStatus GetTileTrackStatus_Object(TileIndex, TransportType, uint, Dia
 
 static bool ClickTile_Object(TileIndex tile)
 {
+	/* Archipelago: clicking a star collects it */
+	if (AP_IsStarTile(tile.base())) {
+		AP_CollectStar(tile.base());
+		return true;
+	}
+
 	/* Archipelago: clicking a ruin opens its detail window */
 	if (AP_IsRuinTile(tile.base())) {
 		ShowArchipelagoRuinWindow(tile.base());

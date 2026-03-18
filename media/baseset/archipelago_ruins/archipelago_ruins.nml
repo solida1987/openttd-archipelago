@@ -18,7 +18,7 @@ grf {
  * Drawn as BUILDING sprites (above terrain) so they are clearly visible. */
 
 template tmpl_building(x) {
-    [x, 0, 64, 40, -31, -9, "sprites.png"]
+    [x, 0, 64, 80, -31, -49, "sprites.png"]
 }
 
 /* ---- Spritesets (one sprite each — no animation) ---- */
@@ -29,11 +29,11 @@ spriteset(ss_crater)       { tmpl_building(128) }
 spriteset(ss_foundation)   { tmpl_building(192) }
 spriteset(ss_scorched)     { tmpl_building(256) }
 spriteset(ss_overgrown)    { tmpl_building(320) }
+spriteset(ss_debris)       { tmpl_building(384) }
 
 /* ---- Sprite layouts ---- */
-/* For 3x3 objects: the ruin sprite is drawn as a building on the center tile
- * (relative_pos 1,1). Normal ground underneath, ruin graphic on top.
- * All other tiles use the normal ground sprite only. */
+/* For 3x3 objects: the main ruin sprite on the center tile, scattered
+ * debris on all surrounding tiles so the ruin fills the 3x3 area. */
 
 spritelayout layout_rubble      { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_rubble;      } }
 spritelayout layout_broken_wall { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_broken_wall; } }
@@ -42,19 +42,20 @@ spritelayout layout_foundation  { ground { sprite: GROUNDSPRITE_NORMAL; } buildi
 spritelayout layout_scorched    { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_scorched;    } }
 spritelayout layout_overgrown   { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_overgrown;   } }
 
-/* Empty ground layout for non-center tiles */
-spritelayout layout_empty       { ground { sprite: GROUNDSPRITE_NORMAL; } }
+/* Debris layout for non-center tiles — scattered rubble around the main ruin */
+spritelayout layout_debris      { ground { sprite: GROUNDSPRITE_NORMAL; } building { sprite: ss_debris;      } }
 
 /* ---- Switches: pick layout based on tile position within the 3x3 ---- */
-/* relative_pos returns (x << 4 | y) for multi-tile objects.
- * Center tile of a 3x3 is x=1, y=1 → 0x11 = 17 decimal. */
+/* relative_pos (var 0x40) returns offset_y << 8 | offset_x (8-bit fields).
+ * Center tile of a 3x3 is x=1, y=1 → 0x0101 = 257 decimal.
+ * All other tiles show scattered debris. */
 
-switch(FEAT_OBJECTS, SELF, sw_rubble,      relative_pos) { 0x11: layout_rubble;      layout_empty; }
-switch(FEAT_OBJECTS, SELF, sw_broken_wall,  relative_pos) { 0x11: layout_broken_wall; layout_empty; }
-switch(FEAT_OBJECTS, SELF, sw_crater,       relative_pos) { 0x11: layout_crater;      layout_empty; }
-switch(FEAT_OBJECTS, SELF, sw_foundation,   relative_pos) { 0x11: layout_foundation;  layout_empty; }
-switch(FEAT_OBJECTS, SELF, sw_scorched,     relative_pos) { 0x11: layout_scorched;    layout_empty; }
-switch(FEAT_OBJECTS, SELF, sw_overgrown,    relative_pos) { 0x11: layout_overgrown;   layout_empty; }
+switch(FEAT_OBJECTS, SELF, sw_rubble,      relative_pos) { 0x0101: layout_rubble;      layout_debris; }
+switch(FEAT_OBJECTS, SELF, sw_broken_wall,  relative_pos) { 0x0101: layout_broken_wall; layout_debris; }
+switch(FEAT_OBJECTS, SELF, sw_crater,       relative_pos) { 0x0101: layout_crater;      layout_debris; }
+switch(FEAT_OBJECTS, SELF, sw_foundation,   relative_pos) { 0x0101: layout_foundation;  layout_debris; }
+switch(FEAT_OBJECTS, SELF, sw_scorched,     relative_pos) { 0x0101: layout_scorched;    layout_debris; }
+switch(FEAT_OBJECTS, SELF, sw_overgrown,    relative_pos) { 0x0101: layout_overgrown;   layout_debris; }
 
 /* ---- Object definitions (3x3) ---- */
 

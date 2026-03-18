@@ -172,7 +172,10 @@ void         AP_SetNamedEntityStr(const std::string &s);
 std::string  AP_GetSentShopStr();
 void         AP_SetSentShopStr(const std::string &s);
 uint8_t      AP_GetLockedTrackDirs(uint8_t railtype);
+uint8_t      AP_GetLockedTrackDirsRaw(uint8_t ap_index);
 void         AP_SetLockedTrackDirs(uint8_t railtype, uint8_t mask);
+uint8_t      AP_GetLockedTramDirs();
+void         AP_SetLockedTramDirs(uint8_t mask);
 // back-compat shims (deprecated)
 uint8_t      AP_GetLockedRailDirs();
 void         AP_SetLockedRailDirs(uint8_t mask);
@@ -204,6 +207,8 @@ int          AP_GetTaskChecksCompletedSaved();
 void         AP_SetTaskChecksCompleted(int v);
 std::string  AP_GetRuinsStr();
 void         AP_SetRuinsStr(const std::string &s);
+std::string  AP_GetStarsStr();
+void         AP_SetStarsStr(const std::string &s);
 std::string  AP_GetNamePoolStr();
 void         AP_SetNamePoolStr(const std::string &s);
 void         AP_GetDemigodState(std::string *defeated, int *active_idx, int *company,
@@ -250,10 +255,13 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "shop_sent",   AP_GetSentShopStr());
         KVSet(_ap_sl_blob, "goal_sent",   IStr(AP_GetGoalSent()));
         KVSet(_ap_sl_blob, "items_recv",  IStr(AP_GetItemsReceivedCount()));
-        KVSet(_ap_sl_blob, "rail_dir_locks_0", IStr((int)AP_GetLockedTrackDirs(0)));
-        KVSet(_ap_sl_blob, "rail_dir_locks_1", IStr((int)AP_GetLockedTrackDirs(1)));
-        KVSet(_ap_sl_blob, "rail_dir_locks_2", IStr((int)AP_GetLockedTrackDirs(2)));
-        KVSet(_ap_sl_blob, "rail_dir_locks_3", IStr((int)AP_GetLockedTrackDirs(3)));
+        KVSet(_ap_sl_blob, "rail_dir_locks_0", IStr((int)AP_GetLockedTrackDirsRaw(0)));
+        KVSet(_ap_sl_blob, "rail_dir_locks_1", IStr((int)AP_GetLockedTrackDirsRaw(1)));
+        KVSet(_ap_sl_blob, "rail_dir_locks_2", IStr((int)AP_GetLockedTrackDirsRaw(2)));
+        KVSet(_ap_sl_blob, "rail_dir_locks_3", IStr((int)AP_GetLockedTrackDirsRaw(3)));
+        KVSet(_ap_sl_blob, "rail_dir_locks_4", IStr((int)AP_GetLockedTrackDirsRaw(4)));  /* Narrow Gauge */
+        KVSet(_ap_sl_blob, "rail_dir_locks_5", IStr((int)AP_GetLockedTrackDirsRaw(5)));  /* Metro */
+        KVSet(_ap_sl_blob, "rail_dir_locks_6", IStr((int)AP_GetLockedTrackDirsRaw(6)));  /* Vacuum Tube */
 
         constexpr int NC = 64;
         uint64_t cargo[NC] = {};
@@ -292,6 +300,7 @@ struct APSTChunkHandler : ChunkHandler {
 
         /* Infrastructure lock states */
         KVSet(_ap_sl_blob, "road_dir_locks",  IStr((int)AP_GetLockedRoadDirs()));
+        KVSet(_ap_sl_blob, "tram_dir_locks",  IStr((int)AP_GetLockedTramDirs()));
         KVSet(_ap_sl_blob, "signal_locks",    IStr((int)AP_GetLockedSignals()));
         KVSet(_ap_sl_blob, "bridge_locks",    IStr((int)AP_GetLockedBridges()));
         KVSet(_ap_sl_blob, "tunnel_locks",    IStr(AP_GetLockedTunnels()));
@@ -307,6 +316,9 @@ struct APSTChunkHandler : ChunkHandler {
 
         /* Ruins */
         KVSet(_ap_sl_blob, "ruins",       AP_GetRuinsStr());
+
+        /* Stars */
+        KVSet(_ap_sl_blob, "stars",       AP_GetStarsStr());
 
         /* Vehicle name pool */
         KVSet(_ap_sl_blob, "name_pool",   AP_GetNamePoolStr());
@@ -388,7 +400,7 @@ struct APSTChunkHandler : ChunkHandler {
              * apply old global value to Normal Rail only (safe migration). */
             {
                 std::string old_key = KVGet(_ap_sl_blob, "rail_dir_locks", "");
-                for (int rt = 0; rt < 4; rt++) {
+                for (int rt = 0; rt < 7; rt++) {
                     std::string key = fmt::format("rail_dir_locks_{}", rt);
                     std::string val = KVGet(_ap_sl_blob, key, "");
                     if (!val.empty()) {
@@ -402,6 +414,7 @@ struct APSTChunkHandler : ChunkHandler {
 
             /* Infrastructure lock states */
             AP_SetLockedRoadDirs((uint8_t)getint("road_dir_locks"));
+            AP_SetLockedTramDirs((uint8_t)getint("tram_dir_locks"));
             AP_SetLockedSignals((uint8_t)getint("signal_locks"));
             AP_SetLockedBridges((uint16_t)ParseU16(KVGet(_ap_sl_blob, "bridge_locks", "0")));
             AP_SetLockedTunnels(KVGet(_ap_sl_blob, "tunnel_locks", "0") == "1");
@@ -444,6 +457,9 @@ struct APSTChunkHandler : ChunkHandler {
 
             /* Ruins */
             AP_SetRuinsStr(KVGet(_ap_sl_blob, "ruins"));
+
+            /* Stars */
+            AP_SetStarsStr(KVGet(_ap_sl_blob, "stars"));
 
             /* Vehicle name pool */
             AP_SetNamePoolStr(KVGet(_ap_sl_blob, "name_pool"));

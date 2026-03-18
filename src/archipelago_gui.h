@@ -24,12 +24,13 @@ void ShowArchipelagoColbyWindow();
 void ShowArchipelagoDemigodWindow();
 void ShowArchipelagoRuinWindow(uint32_t tile_index);
 void ShowArchipelagoRuinsTrackerWindow();
+void ShowArchipelagoStarTrackerWindow();
 void AP_ShowConsole(const std::string &msg);
 
 extern std::string _ap_last_host;
 extern uint16_t    _ap_last_port;
 
-/** True when AP is controlled by an external Bridge (multiplayer mode). */
+/** Legacy: always false. Bridge mode was removed — AP runs in-game only. */
 extern bool _ap_bridge_mode;
 extern std::string _ap_last_slot;
 extern std::string _ap_last_pass;

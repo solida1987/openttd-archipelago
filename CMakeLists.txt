@@ -122,6 +122,10 @@ find_package(LibLZMA)
 find_package(LZO)
 find_package(PNG)
 
+if(NOT WIN32 AND NOT EMSCRIPTEN)
+    find_package(OpenSSL)
+endif()
+
 if(WIN32 OR EMSCRIPTEN)
     # Windows uses WinHttp for HTTP requests.
     # Emscripten uses Javascript for HTTP requests.
@@ -317,6 +321,9 @@ link_package(LZO)
 
 if(NOT WIN32 AND NOT EMSCRIPTEN)
     link_package(CURL ENCOURAGED)
+    if(OPENSSL_FOUND)
+        target_link_libraries(openttd_lib OpenSSL::SSL OpenSSL::Crypto)
+    endif()
     target_link_libraries(openttd_lib ${CMAKE_DL_LIBS})
 endif()
 
