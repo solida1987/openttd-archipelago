@@ -44,6 +44,7 @@
 #include "network/network_func.h"
 #include "network/network_gui.h"
 #include "network/network_base.h"
+#include "archipelago.h"
 
 #include "table/sprites.h"
 #include "table/strings.h"
@@ -392,11 +393,13 @@ struct MainWindow : Window
 					if (cio == nullptr) break;
 
 					ShowNetworkChatQueryWindow(NetworkClientPreferTeamChat(cio) ? DESTTYPE_TEAM : DESTTYPE_BROADCAST, cio->client_playas.base());
+				} else if (AP_IsActive()) {
+					ShowNetworkChatQueryWindow(DESTTYPE_BROADCAST, 0);
 				}
 				break;
 
 			case GHK_CHAT_ALL: // send text message to all clients
-				if (_networking) ShowNetworkChatQueryWindow(DESTTYPE_BROADCAST, 0);
+				if (_networking || AP_IsActive()) ShowNetworkChatQueryWindow(DESTTYPE_BROADCAST, 0);
 				break;
 
 			case GHK_CHAT_COMPANY: // send text to all team mates

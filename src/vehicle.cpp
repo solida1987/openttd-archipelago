@@ -984,8 +984,7 @@ void CallVehicleTicks()
 			case VEH_ROAD:
 			case VEH_AIRCRAFT:
 			case VEH_SHIP: {
-				Vehicle *front = v->First();
-
+				/* Cargo aging — still per-unit (each wagon ages independently) */
 				if (v->vcache.cached_cargo_age_period != 0) {
 					v->cargo_age_counter = std::min(v->cargo_age_counter, v->vcache.cached_cargo_age_period);
 					if (--v->cargo_age_counter == 0) {
@@ -993,6 +992,17 @@ void CallVehicleTicks()
 						v->cargo_age_counter = v->vcache.cached_cargo_age_period;
 					}
 				}
+
+				/* Early filter: only engines/front vehicles need sound processing.
+				 * Wagons, articulated parts, and non-front units skip all sound logic. */
+				switch (v->type) {
+					case VEH_TRAIN:    if (!Train::From(v)->IsEngine()) continue; break;
+					case VEH_ROAD:     if (!RoadVehicle::From(v)->IsFrontEngine()) continue; break;
+					case VEH_AIRCRAFT: if (!Aircraft::From(v)->IsNormalAircraft()) continue; break;
+					default: break;
+				}
+
+				Vehicle *front = v->First();
 
 				/* Do not play any sound when crashed */
 				if (front->vehstatus.Test(VehState::Crashed)) continue;
@@ -1005,24 +1015,6 @@ void CallVehicleTicks()
 
 				/* Update motion counter for animation purposes. */
 				v->motion_counter += front->cur_speed;
-
-				/* Check vehicle type specifics */
-				switch (v->type) {
-					case VEH_TRAIN:
-						if (!Train::From(v)->IsEngine()) continue;
-						break;
-
-					case VEH_ROAD:
-						if (!RoadVehicle::From(v)->IsFrontEngine()) continue;
-						break;
-
-					case VEH_AIRCRAFT:
-						if (!Aircraft::From(v)->IsNormalAircraft()) continue;
-						break;
-
-					default:
-						break;
-				}
 
 				/* Play a running sound if the motion counter passes 256 (Do we not skip sounds?) */
 				if (GB(v->motion_counter, 0, 8) < front->cur_speed) PlayVehicleSound(v, VSE_RUNNING);

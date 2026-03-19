@@ -516,7 +516,7 @@ bool AP_IsRoadDirLocked(uint8_t axis);        ///< axis: 0=X (NE-SW), 1=Y (NW-SE
 bool AP_IsTramDirLocked(uint8_t axis);        ///< axis: 0=X (NE-SW), 1=Y (NW-SE)
 bool AP_IsSignalLocked(uint8_t sigtype);       ///< sigtype: 0-5 (SignalType enum)
 bool AP_IsBridgeLocked(uint8_t bridge_type);   ///< bridge_type: 0-12
-bool AP_IsBridgeLocked();                      ///< true if ANY bridge type is locked
+bool AP_IsBridgeLocked();                      ///< true if ALL bridge types are locked (toolbar)
 bool AP_IsTunnelLocked();
 bool AP_IsAirportLocked(uint8_t airport_type); ///< airport_type: 0-8, AT_SMALL always returns false
 bool AP_IsTreeLocked(uint8_t tree_type);       ///< tree_type: raw TreeType value
@@ -524,6 +524,13 @@ bool AP_IsTerraformRaiseLocked();
 bool AP_IsTerraformLowerLocked();
 bool AP_IsTownActionLocked(uint8_t action_idx); ///< action_idx: 0-7 (TownAction enum)
 bool AP_IsTownActionLocked();                   ///< true if ANY town action is locked
+
+/** Play timer (real-time seconds, pauses when game paused, freezes on victory). */
+bool     AP_GetGoalSent();
+void     AP_SetGoalSent(bool v);
+uint32_t AP_GetPlayTimer();
+void     AP_SetPlayTimer(uint32_t v);
+void     AP_AddPlayTimerMs(uint32_t ms);
 
 /** Industry protection: industries linked to active missions cannot close. */
 bool AP_IsIndustryProtected(uint16_t industry_id);

@@ -35,7 +35,7 @@ All vehicles are locked at game start and randomized into the multiworld item po
 
 ### Play (Windows, standalone)
 
-1. Download `openttd-archipelago-v1.3.0-win64.zip` from [Releases](../../releases/latest)
+1. Download `openttd-archipelago-v1.4.1-win64.zip` from [Releases](../../releases/latest)
 2. Extract anywhere — OpenGFX, OpenSFX, and OpenMSX are included. No separate OpenTTD install needed
 3. Copy `openttd.apworld` into your Archipelago `custom_worlds/` directory:
    - Default path: `C:\ProgramData\Archipelago\custom_worlds\`
@@ -44,7 +44,7 @@ All vehicles are locked at game start and randomized into the multiworld item po
 
 ### Play (Linux, standalone)
 
-1. Download `openttd-archipelago-v1.3.0-linux-amd64.tar.gz` from [Releases](../../releases/latest)
+1. Download `openttd-archipelago-v1.4.1-linux-amd64.tar.gz` from [Releases](../../releases/latest)
 2. Extract anywhere — all assets are included
 3. Copy `apworld/openttd/` to your Archipelago `custom_worlds/` directory
 4. Run `./openttd` (or `./server.sh` for dedicated server)
@@ -142,7 +142,7 @@ cmake --build build --config Release
 
 # 4. Package a standalone ZIP
 .\build_and_package.bat
-# Output: dist\openttd-archipelago-v1.3.0-win64.zip
+# Output: dist\openttd-archipelago-v1.4.1-win64.zip
 ```
 
 ---

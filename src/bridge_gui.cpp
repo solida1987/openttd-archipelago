@@ -13,6 +13,7 @@
 #include "rail.h"
 #include "road.h"
 #include "strings_func.h"
+#include "archipelago.h"
 #include "window_func.h"
 #include "sound_func.h"
 #include "gfx_func.h"
@@ -42,6 +43,7 @@ struct BuildBridgeData {
 	BridgeType index;
 	const BridgeSpec *spec;
 	Money cost;
+	bool ap_locked; ///< true if this bridge type is locked by Archipelago
 };
 
 typedef GUIList<BuildBridgeData> GUIBridgeList; ///< List of bridges, used in #BuildBridgeWindow.
@@ -239,7 +241,12 @@ public:
 				for (auto it = first; it != last; ++it) {
 					const BridgeSpec *b = it->spec;
 					DrawSpriteIgnorePadding(b->sprite, b->pal, tr.WithWidth(this->icon_width, rtl), SA_HOR_CENTER | SA_BOTTOM);
-					DrawStringMultiLineWithClipping(tr.Indent(this->icon_width + WidgetDimensions::scaled.hsep_normal, rtl), GetBridgeSelectString(*it));
+					if (it->ap_locked) {
+						std::string locked_str = "[LOCKED] " + GetBridgeSelectString(*it);
+						DrawStringMultiLineWithClipping(tr.Indent(this->icon_width + WidgetDimensions::scaled.hsep_normal, rtl), locked_str, TC_FROMSTRING);
+					} else {
+						DrawStringMultiLineWithClipping(tr.Indent(this->icon_width + WidgetDimensions::scaled.hsep_normal, rtl), GetBridgeSelectString(*it));
+					}
 					tr = tr.Translate(0, this->resize.step_height);
 				}
 				break;
@@ -250,7 +257,7 @@ public:
 	EventState OnKeyPress([[maybe_unused]] char32_t key, uint16_t keycode) override
 	{
 		const uint8_t i = keycode - '1';
-		if (i < 9 && i < this->bridges.size()) {
+		if (i < 9 && i < this->bridges.size() && !this->bridges[i].ap_locked) {
 			/* Build the requested bridge */
 			this->BuildBridge(this->bridges[i].index);
 			this->Close();
@@ -265,7 +272,7 @@ public:
 			default: break;
 			case WID_BBS_BRIDGE_LIST: {
 				auto it = this->vscroll->GetScrolledItemFromWidget(this->bridges, pt.y, this, WID_BBS_BRIDGE_LIST);
-				if (it != this->bridges.end()) {
+				if (it != this->bridges.end() && !it->ap_locked) {
 					this->BuildBridge(it->index);
 					this->Close();
 				}
@@ -372,7 +379,7 @@ void ShowBuildBridgeWindow(TileIndex start, TileIndex end, TransportType transpo
 		case TRANSPORT_RAIL: last_bridge_type = _last_railbridge_type; break;
 		default: break; // water ways and air routes don't have bridge types
 	}
-	if (_ctrl_pressed && CheckBridgeAvailability(last_bridge_type, bridge_len).Succeeded()) {
+	if (_ctrl_pressed && CheckBridgeAvailability(last_bridge_type, bridge_len).Succeeded() && !(AP_IsActive() && AP_IsBridgeLocked(last_bridge_type))) {
 		Command<CMD_BUILD_BRIDGE>::Post(STR_ERROR_CAN_T_BUILD_BRIDGE_HERE, CcBuildBridge, end, start, transport_type, last_bridge_type, road_rail_type);
 		return;
 	}
@@ -415,6 +422,7 @@ void ShowBuildBridgeWindow(TileIndex start, TileIndex end, TransportType transpo
 		CommandCost type_check;
 		/* loop for all bridgetypes */
 		for (BridgeType brd_type = 0; brd_type != MAX_BRIDGES; brd_type++) {
+			bool locked = AP_IsActive() && AP_IsBridgeLocked(brd_type);
 			type_check = CheckBridgeAvailability(brd_type, bridge_len);
 			if (type_check.Succeeded()) {
 				/* bridge is accepted, add to list */
@@ -424,7 +432,8 @@ void ShowBuildBridgeWindow(TileIndex start, TileIndex end, TransportType transpo
 				/* Add to terraforming & bulldozing costs the cost of the
 				 * bridge itself (not computed with DoCommandFlag::QueryCost) */
 				item.cost = ret.GetCost() + (((int64_t)tot_bridgedata_len * _price[PR_BUILD_BRIDGE] * item.spec->price) >> 8) + infra_cost;
-				any_available = true;
+				item.ap_locked = locked;
+				if (!locked) any_available = true;
 			}
 		}
 		/* give error cause if no bridges available here*/

@@ -37,6 +37,7 @@
 #include "timer/timer_game_calendar.h"
 
 #include "widgets/airport_widget.h"
+#include "archipelago.h"
 
 #include "table/strings.h"
 
@@ -393,10 +394,19 @@ public:
 				auto [first, last] = this->vscroll->GetVisibleRangeIterators(specs);
 				for (auto it = first; it != last; ++it) {
 					const AirportSpec *as = *it;
+					bool ap_locked = AP_IsActive() && AP_IsAirportLocked(as->GetIndex());
 					if (!as->IsAvailable()) {
 						GfxFillRect(row, PC_BLACK, FILLRECT_CHECKER);
 					}
-					DrawString(text, as->name, (static_cast<int>(as->index) == _selected_airport_index) ? TC_WHITE : TC_BLACK);
+					TextColour col;
+					if (ap_locked) {
+						col = TC_GREY;
+					} else if (static_cast<int>(as->index) == _selected_airport_index) {
+						col = TC_WHITE;
+					} else {
+						col = TC_BLACK;
+					}
+					DrawString(text, as->name, col);
 					row = row.Translate(0, this->line_height);
 					text = text.Translate(0, this->line_height);
 				}
@@ -505,6 +515,7 @@ public:
 				int32_t num_clicked = this->vscroll->GetScrolledRowFromWidget(pt.y, this, widget, 0, this->line_height);
 				if (num_clicked == INT32_MAX) break;
 				const AirportSpec *as = AirportClass::Get(_selected_airport_class)->GetSpec(num_clicked);
+				if (AP_IsActive() && AP_IsAirportLocked(as->GetIndex())) break;
 				if (as->IsAvailable()) this->SelectOtherAirport(num_clicked);
 				break;
 			}

@@ -322,8 +322,8 @@ CommandCost CmdBuildBridge(DoCommandFlags flags, TileIndex tile_end, TileIndex t
 		if (TileX(t) == 0 || TileY(t) == 0) return CommandCost(transport_type == TRANSPORT_WATER ? STR_ERROR_BRIDGE_THROUGH_MAP_BORDER : STR_ERROR_TOO_CLOSE_TO_EDGE_OF_MAP);
 	}
 
-	/* AP bridge lock: block building locked bridge types */
-	if (AP_IsActive() && AP_IsBridgeLocked(bridge_type)) {
+	/* AP bridge lock: block building locked bridge types (skip for QueryCost) */
+	if (AP_IsActive() && AP_IsBridgeLocked(bridge_type) && !flags.Test(DoCommandFlag::QueryCost)) {
 		return CommandCost(STR_ERROR_ARCHIPELAGO_BRIDGE_LOCKED);
 	}
 

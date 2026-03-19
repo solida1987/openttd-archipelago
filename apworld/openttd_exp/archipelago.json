@@ -1,6 +1,6 @@
 {
     "game": "OpenTTD-Exp",
-    "world_version": "1.4.0",
+    "world_version": "1.4.1",
     "authors": ["OpenTTD AP Team"],
     "minimum_ap_version": "0.5.0",
     "compatible_version": 7,
