@@ -1,6 +1,6 @@
 """
 OpenTTD Archipelago World (Experimental)
-Version: exp-5.0
+Version: exp-5.1
 Supports: OpenTTD 15.2
 
 A full Archipelago integration for OpenTTD.
@@ -1004,47 +1004,18 @@ class OpenTTDWorld(World):
 
 
     def pre_fill(self) -> None:
-        """Manually distribute ALL progression, trap, and utility items.
+        """Manually distribute ALL progression.
 
-        Fill order:
-          1. Traps + utility → missions / ruins / demigods (NEVER shop)
-          2. Progression items → distributed by fixed percentages:
              - Missions 40% (filled easy→medium→hard→extreme)
              - Shop 40%
              - Ruins 10%  (if enabled, else redistributed)
              - Demigods 10% (if enabled, else redistributed)
-          3. AP fill handles remaining useful/filler → all locations freely
 
         This guarantees:
-          - Traps NEVER appear in the shop
           - Progression is evenly split across pools
           - Easy missions get progression first (early finds)
         """
-        # ── Step 1: Lock traps + utility into non-shop locations ──────────
-        trap_utility_names = frozenset(TRAP_ITEMS) | frozenset(UTILITY_ITEMS)
 
-        trap_utility_items = [item for item in self.multiworld.itempool
-                               if item.player == self.player
-                               and item.name in trap_utility_names]
-        for item in trap_utility_items:
-            self.multiworld.itempool.remove(item)
-
-        if trap_utility_items:
-            non_shop_locs: list = []
-            for rname in ("mission_easy", "mission_medium", "mission_hard",
-                          "mission_extreme", "ruin", "demigod", "star"):
-                region = self.multiworld.get_region(rname, self.player)
-                non_shop_locs.extend(loc for loc in region.locations if not loc.item)
-
-            self.multiworld.random.shuffle(non_shop_locs)
-            self.multiworld.random.shuffle(trap_utility_items)
-
-            for item in trap_utility_items:
-                if non_shop_locs:
-                    loc = non_shop_locs.pop()
-                    loc.place_locked_item(item)
-
-        # ── Step 2: Distribute progression items by fixed percentages ─────
         # Each pool gets a fixed % of progression items.
         # Missions are split per difficulty tier for granular control.
         _, _, ruin_count, demigod_count, star_count = self._compute_pool_size()

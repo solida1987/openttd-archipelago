@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING, Dict, Callable
 from BaseClasses import MultiWorld, CollectionState
+from worlds.generic.Rules import add_item_rule
 from .items import (
     ALL_VEHICLES, IRON_HORSE_ENGINES,
     MILITARY_ITEMS_AIRCRAFT, SHARK_SHIPS, HOVER_VEHICLES,
@@ -12,6 +13,7 @@ from .items import (
     NARROW_GAUGE_TRACK_ITEMS, METRO_TRACK_ITEMS, VACTUBE_TRACK_ITEMS,
     # Tram direction items
     TRAM_DIRECTION_ITEMS,
+    TRAP_ITEMS, UTILITY_ITEMS
 )
 
 if TYPE_CHECKING:
@@ -398,9 +400,13 @@ def set_rules(world: "OpenTTDWorld") -> None:
 
     # ------------------------------------------------------------------
     # Shop: require cargo capability — player needs to earn money
+    # We don't want our own traps or utilities in shops either, since they're both
+    # "never buy" / "always buy", respectively, that makes them uninteresting here.
     # ------------------------------------------------------------------
+    TRAP_UTILITY_NAMES = frozenset(TRAP_ITEMS) | frozenset(UTILITY_ITEMS)
     for loc in multiworld.get_region("shop", player).locations:
         loc.access_rule = lambda state: eff_has_cargo_capability(state, player)
+        add_item_rule(loc, lambda item: item.player != player or item.name not in TRAP_UTILITY_NAMES)
 
     # ------------------------------------------------------------------
     # Ruins: require cargo capability — ruins need cargo deliveries
