@@ -375,6 +375,7 @@ enum APStatusWidgets : WidgetID {
 	WAPST_WIN_CARGO, ///< Cargo Delivered progress line
 	WAPST_WIN_PROF,  ///< Monthly Profit progress line
 	WAPST_WIN_MISS,  ///< Missions Completed progress line
+	WAPST_TIMER,     ///< Real-time play timer
 	WAPST_BTN_RECONNECT,
 	WAPST_BTN_MISSIONS,
 	WAPST_BTN_SETTINGS,
@@ -410,6 +411,7 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = 
 			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_WIN_CARGO), SetMinimalSize(340, 11), SetFill(1, 0), SetStringTip(STR_EMPTY),
 			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_WIN_PROF),  SetMinimalSize(340, 11), SetFill(1, 0), SetStringTip(STR_EMPTY),
 			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_WIN_MISS),  SetMinimalSize(340, 11), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_TIMER),    SetMinimalSize(340, 11), SetFill(1, 0), SetStringTip(STR_EMPTY),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
 				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPST_BTN_RECONNECT), SetStringTip(STR_ARCHIPELAGO_BTN_RECONNECT), SetMinimalSize(80, 14),
 				NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WAPST_BTN_MISSIONS),  SetStringTip(STR_ARCHIPELAGO_BTN_MISSIONS),  SetMinimalSize(80, 14),
@@ -506,6 +508,8 @@ struct ArchipelagoStatusWindow : public Window {
 		DrawString(r.left, r.right, r.top, line, col);
 	}
 
+	uint timer_redraw_acc = 0; ///< ms accumulator for once-per-second timer redraw
+
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override {
 		/* In bridge mode, just check the dirty flag */
 		if (_ap_bridge_mode) {
@@ -513,14 +517,32 @@ struct ArchipelagoStatusWindow : public Window {
 			if (d) this->SetDirty();
 			return;
 		}
-		if (_ap_client == nullptr) return;
-		APState s = _ap_client->GetState();
-		bool    h = _ap_client->HasSlotData();
-		bool    d = _ap_status_dirty.exchange(false);
-		if (s != last_state || h != last_has_sd || d) {
-			last_state = s; last_has_sd = h;
-			this->SetDirty();
+
+		/* Play timer: tick while game is not paused and goal not sent */
+		if (_game_mode == GM_NORMAL && !_pause_mode.Any() && !AP_GetGoalSent()) {
+			AP_AddPlayTimerMs(delta_ms);
 		}
+
+		/* Redraw once per second for the timer, or when state changes */
+		bool need_redraw = false;
+		timer_redraw_acc += delta_ms;
+		if (timer_redraw_acc >= 1000) {
+			timer_redraw_acc -= 1000;
+			need_redraw = true;
+		}
+
+		if (_ap_client != nullptr) {
+			APState s = _ap_client->GetState();
+			bool    h = _ap_client->HasSlotData();
+			if (s != last_state || h != last_has_sd) {
+				last_state = s; last_has_sd = h;
+				need_redraw = true;
+			}
+		}
+		bool d = _ap_status_dirty.exchange(false);
+		if (d) need_redraw = true;
+
+		if (need_redraw) this->SetDirty();
 	}
 
 	void DrawWidget(const Rect &r, WidgetID widget) const override {
@@ -544,6 +566,18 @@ struct ArchipelagoStatusWindow : public Window {
 					DrawWinLine(r, widget);
 				}
 				break;
+
+			case WAPST_TIMER: {
+				uint32_t secs = AP_GetPlayTimer();
+				uint32_t h = secs / 3600;
+				uint32_t m = (secs % 3600) / 60;
+				uint32_t s = secs % 60;
+				bool frozen = AP_GetGoalSent();
+				std::string label = frozen ? "Time (FINAL)" : "Time";
+				std::string line = fmt::format("{}  {:02d}:{:02d}:{:02d}", label, h, m, s);
+				DrawString(r.left, r.right, r.top, line, frozen ? TC_LIGHT_BLUE : TC_GOLD);
+				break;
+			}
 		}
 	}
 

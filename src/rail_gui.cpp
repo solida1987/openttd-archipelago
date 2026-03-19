@@ -494,25 +494,6 @@ struct BuildRailToolbarWindow : Window {
 		 *   BUILD_EW  → VPM_FIX_HORIZONTAL → HT_DIR_HU(2)/HL(3) → TRACK_UPPER / TRACK_LOWER
 		 *   BUILD_Y   → VPM_FIX_X          → HT_DIR_Y(1)        → TRACK_Y  (NW-SE)
 		 */
-		if (can_build && AP_IsActive()) {
-			uint8_t rt = (uint8_t)this->railtype;
-			uint8_t mask = AP_GetLockedTrackDirs(rt);
-			if (mask != 0) {
-				/* NS button → TRACK_LEFT (bit 4) + TRACK_RIGHT (bit 5) — disable if both locked */
-				if ((mask & (1u << 4)) && (mask & (1u << 5))) this->SetWidgetDisabledState(WID_RAT_BUILD_NS, true);
-				/* X button → TRACK_X (bit 0, NE-SW) */
-				if (mask & (1u << 0)) this->SetWidgetDisabledState(WID_RAT_BUILD_X, true);
-				/* EW button → TRACK_UPPER (bit 2) + TRACK_LOWER (bit 3) — disable if both locked */
-				if ((mask & (1u << 2)) && (mask & (1u << 3))) this->SetWidgetDisabledState(WID_RAT_BUILD_EW, true);
-				/* Y button → TRACK_Y (bit 1, NW-SE) */
-				if (mask & (1u << 1)) this->SetWidgetDisabledState(WID_RAT_BUILD_Y, true);
-				/* Autorail — disable only if ALL 6 directions are locked */
-				if (mask == 0x3F) this->SetWidgetDisabledState(WID_RAT_AUTORAIL, true);
-			}
-			/* AP tunnel / bridge locks */
-			if (AP_IsTunnelLocked()) this->SetWidgetDisabledState(WID_RAT_BUILD_TUNNEL, true);
-			if (AP_IsBridgeLocked()) this->SetWidgetDisabledState(WID_RAT_BUILD_BRIDGE, true);
-		}
 	}
 
 	bool OnTooltip([[maybe_unused]] Point pt, WidgetID widget, TooltipCloseCondition close_cond) override
@@ -538,6 +519,23 @@ struct BuildRailToolbarWindow : Window {
 		this->GetWidget<NWidgetCore>(WID_RAT_BUILD_DEPOT)->SetSprite(rti->gui_sprites.build_depot);
 		this->GetWidget<NWidgetCore>(WID_RAT_CONVERT_RAIL)->SetSprite(rti->gui_sprites.convert_rail);
 		this->GetWidget<NWidgetCore>(WID_RAT_BUILD_TUNNEL)->SetSprite(rti->gui_sprites.build_tunnel);
+	}
+
+	void OnPaint() override
+	{
+		/* AP infrastructure locks: update every repaint so unlocks take effect immediately */
+		if (CanBuildVehicleInfrastructure(VEH_TRAIN) && AP_IsActive()) {
+			uint8_t rt = (uint8_t)this->railtype;
+			uint8_t mask = AP_GetLockedTrackDirs(rt);
+			this->SetWidgetDisabledState(WID_RAT_BUILD_NS, (mask & (1u << 4)) && (mask & (1u << 5)));
+			this->SetWidgetDisabledState(WID_RAT_BUILD_X, (mask & (1u << 0)) != 0);
+			this->SetWidgetDisabledState(WID_RAT_BUILD_EW, (mask & (1u << 2)) && (mask & (1u << 3)));
+			this->SetWidgetDisabledState(WID_RAT_BUILD_Y, (mask & (1u << 1)) != 0);
+			this->SetWidgetDisabledState(WID_RAT_AUTORAIL, mask == 0x3F);
+			this->SetWidgetDisabledState(WID_RAT_BUILD_TUNNEL, AP_IsTunnelLocked());
+			this->SetWidgetDisabledState(WID_RAT_BUILD_BRIDGE, AP_IsBridgeLocked());
+		}
+		this->DrawWidgets();
 	}
 
 	/**

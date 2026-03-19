@@ -2645,6 +2645,7 @@ static void AP_DemigodSpawn()
 
 	/* Create AI company */
 	Command<CMD_COMPANY_CTRL>::Post(CCA_NEW_AI, CompanyID::Invalid(), CRR_NONE, INVALID_CLIENT_ID);
+	MarkWholeScreenDirty(); /* immediate redraw after AI company creation */
 
 	_ap_demigod_active_idx = pick;
 	_ap_demigod_pending_name = true; /* will set name on next tick */
@@ -2718,6 +2719,18 @@ static void AP_DemigodTick()
 			if ((int)_ap_demigod_defeated.size() < (int)_ap_demigod_defs.size()) {
 				AP_DemigodScheduleNext();
 			}
+		}
+	}
+
+	/* Periodic full redraw while demigod AI is active.
+	 * AI building actions only invalidate individual tiles, leaving
+	 * stale fragments in the viewport cache when the player isn't
+	 * scrolling.  A full redraw every ~1 s fixes the visual glitch. */
+	if (_ap_demigod_active_idx >= 0 && !_ap_demigod_pending_name) {
+		static int _demigod_redraw_counter = 0;
+		if (++_demigod_redraw_counter >= 74) {
+			_demigod_redraw_counter = 0;
+			MarkWholeScreenDirty();
 		}
 	}
 
@@ -3389,15 +3402,15 @@ static void AP_OnSlotData(const APSlotData &sd)
 	_ap_ih_wagons_built  = false; /* rebuild IH wagon queue for new session */
 	_ap_ih_wagon_unlocks = sd.enable_wagon_unlocks; /* cache for early-access functions */
 	_ap_cargo_map_built  = false; /* rebuild cargo map for new session */
-	_ap_track_dirs_inited = false; /* allow session init to re-evaluate lock state */
-	_ap_road_dirs_inited  = false;
-	_ap_signals_inited    = false;
-	_ap_bridges_inited    = false;
-	_ap_tunnels_inited    = false;
-	_ap_airports_inited   = false;
-	_ap_trees_inited      = false;
-	_ap_terraform_inited  = false;
-	_ap_town_actions_inited = false;
+	/* Infrastructure lock _inited flags: track dirs has an 'any_loaded'
+	 * guard so resetting is safe. All others (roads, signals, bridges,
+	 * tunnels, airports, trees, terraform, town_actions) use a simple
+	 * `== 0` check which cannot distinguish "never initialised" from
+	 * "all unlocked via items". Do NOT reset their _inited flags on
+	 * reconnect — the init code would re-lock everything that was
+	 * already unlocked. Item replay handles re-unlock automatically. */
+	_ap_track_dirs_inited = false; /* safe: has any_loaded guard */
+	/* All other _inited flags are intentionally NOT reset here. */
 	_ap_status_dirty.store(true);
 
 	/* ── MP Join path: apply NewGRFs from slot_data, then connect ── */
@@ -5016,7 +5029,7 @@ bool AP_IsBridgeLocked(uint8_t bridge_type)
 	return (_ap_locked_bridges & (1u << bridge_type)) != 0;
 }
 
-bool AP_IsBridgeLocked() { return _ap_locked_bridges != 0; }
+bool AP_IsBridgeLocked() { return _ap_locked_bridges == 0x1FFFu; }
 uint16_t AP_GetLockedBridges() { return _ap_locked_bridges; }
 void     AP_SetLockedBridges(uint16_t mask) { _ap_locked_bridges = mask; }
 
@@ -6069,6 +6082,19 @@ int  AP_GetShopDayCounter()  { return _ap_shop_day_counter; }
 void AP_SetShopDayCounter(int v) { _ap_shop_day_counter = v; }
 bool AP_GetGoalSent()        { return _ap_goal_sent; }
 void AP_SetGoalSent(bool v)  { _ap_goal_sent = v; }
+
+/* Play timer (real-time seconds, frozen on victory) */
+static uint32_t _ap_play_timer_secs = 0;
+static uint32_t _ap_play_timer_ms_acc = 0; /* sub-second accumulator */
+uint32_t AP_GetPlayTimer()            { return _ap_play_timer_secs; }
+void     AP_SetPlayTimer(uint32_t v)  { _ap_play_timer_secs = v; _ap_play_timer_ms_acc = 0; }
+void     AP_AddPlayTimerMs(uint32_t ms) {
+	_ap_play_timer_ms_acc += ms;
+	while (_ap_play_timer_ms_acc >= 1000) {
+		_ap_play_timer_ms_acc -= 1000;
+		_ap_play_timer_secs++;
+	}
+}
 int64_t AP_GetItemsReceivedCount()         { return _ap_items_received_count; }
 
 int AP_GetCheckedLocationCount()
@@ -7586,6 +7612,10 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 
 			/* ── Bridge locks ────────────────────────────────────────────── */
 			if (_ap_pending_sd.enable_bridge_unlocks && !_ap_bridges_inited) {
+				/* On reconnect, item replay will re-unlock bridges. Only set
+				 * the initial lock mask if no items have been replayed yet
+				 * (i.e. all bits are still zero = fresh start). If some bits
+				 * are already clear from a previous unlock, skip re-locking. */
 				if (_ap_locked_bridges == 0) _ap_locked_bridges = 0x1FFFu; /* bits 0-12 */
 				_ap_bridges_inited = true;
 				Debug(misc, 1, "[AP] Bridge locks init: 0x{:04X}", (unsigned)_ap_locked_bridges);

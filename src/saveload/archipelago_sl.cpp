@@ -159,6 +159,8 @@ int          AP_GetShopDayCounter();
 void         AP_SetShopDayCounter(int v);
 bool         AP_GetGoalSent();
 void         AP_SetGoalSent(bool v);
+uint32_t     AP_GetPlayTimer();
+void         AP_SetPlayTimer(uint32_t v);
 int64_t      AP_GetItemsReceivedCount();
 void         AP_SetItemsReceivedCount(int64_t v);
 void         AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out);
@@ -254,6 +256,7 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "shop_days",   IStr(AP_GetShopDayCounter()));
         KVSet(_ap_sl_blob, "shop_sent",   AP_GetSentShopStr());
         KVSet(_ap_sl_blob, "goal_sent",   IStr(AP_GetGoalSent()));
+        KVSet(_ap_sl_blob, "play_timer",  IStr((int64_t)AP_GetPlayTimer()));
         KVSet(_ap_sl_blob, "items_recv",  IStr(AP_GetItemsReceivedCount()));
         KVSet(_ap_sl_blob, "rail_dir_locks_0", IStr((int)AP_GetLockedTrackDirsRaw(0)));
         KVSet(_ap_sl_blob, "rail_dir_locks_1", IStr((int)AP_GetLockedTrackDirsRaw(1)));
@@ -394,6 +397,7 @@ struct APSTChunkHandler : ChunkHandler {
             AP_SetShopDayCounter(getint("shop_days"));
             AP_SetSentShopStr(KVGet(_ap_sl_blob, "shop_sent"));
             AP_SetGoalSent(KVGet(_ap_sl_blob, "goal_sent", "0") == "1");
+            AP_SetPlayTimer((uint32_t)ParseI64(KVGet(_ap_sl_blob, "play_timer", "0")));
             AP_SetItemsReceivedCount(ParseI64(KVGet(_ap_sl_blob, "items_recv", "0")));
             /* Track direction locks: read per-railtype bytes (new format).
              * Fallback: if new keys absent but old 'rail_dir_locks' present,

@@ -414,21 +414,6 @@ struct BuildRoadToolbarWindow : Window {
 			}
 		}
 
-		/* AP road/tram direction locks: grey out locked direction buttons */
-		if (AP_IsActive()) {
-			if (RoadTypeIsRoad(this->roadtype)) {
-				if (AP_IsRoadDirLocked(0)) this->SetWidgetDisabledState(WID_ROT_ROAD_X, true);
-				if (AP_IsRoadDirLocked(1)) this->SetWidgetDisabledState(WID_ROT_ROAD_Y, true);
-				if (AP_IsRoadDirLocked(0) && AP_IsRoadDirLocked(1)) this->SetWidgetDisabledState(WID_ROT_AUTOROAD, true);
-			} else {
-				/* Tram toolbar */
-				if (AP_IsTramDirLocked(0)) this->SetWidgetDisabledState(WID_ROT_ROAD_X, true);
-				if (AP_IsTramDirLocked(1)) this->SetWidgetDisabledState(WID_ROT_ROAD_Y, true);
-				if (AP_IsTramDirLocked(0) && AP_IsTramDirLocked(1)) this->SetWidgetDisabledState(WID_ROT_AUTOROAD, true);
-			}
-			if (AP_IsTunnelLocked()) this->SetWidgetDisabledState(WID_ROT_BUILD_TUNNEL, true);
-			if (AP_IsBridgeLocked()) this->SetWidgetDisabledState(WID_ROT_BUILD_BRIDGE, true);
-		}
 	}
 
 	void OnInit() override
@@ -443,6 +428,25 @@ struct BuildRoadToolbarWindow : Window {
 		}
 		this->GetWidget<NWidgetCore>(WID_ROT_CONVERT_ROAD)->SetSprite(rti->gui_sprites.convert_road);
 		this->GetWidget<NWidgetCore>(WID_ROT_BUILD_TUNNEL)->SetSprite(rti->gui_sprites.build_tunnel);
+	}
+
+	void OnPaint() override
+	{
+		/* AP infrastructure locks: update every repaint so unlocks take effect immediately */
+		if (AP_IsActive()) {
+			if (RoadTypeIsRoad(this->roadtype)) {
+				this->SetWidgetDisabledState(WID_ROT_ROAD_X, AP_IsRoadDirLocked(0));
+				this->SetWidgetDisabledState(WID_ROT_ROAD_Y, AP_IsRoadDirLocked(1));
+				this->SetWidgetDisabledState(WID_ROT_AUTOROAD, AP_IsRoadDirLocked(0) && AP_IsRoadDirLocked(1));
+			} else {
+				this->SetWidgetDisabledState(WID_ROT_ROAD_X, AP_IsTramDirLocked(0));
+				this->SetWidgetDisabledState(WID_ROT_ROAD_Y, AP_IsTramDirLocked(1));
+				this->SetWidgetDisabledState(WID_ROT_AUTOROAD, AP_IsTramDirLocked(0) && AP_IsTramDirLocked(1));
+			}
+			this->SetWidgetDisabledState(WID_ROT_BUILD_TUNNEL, AP_IsTunnelLocked());
+			this->SetWidgetDisabledState(WID_ROT_BUILD_BRIDGE, AP_IsBridgeLocked());
+		}
+		this->DrawWidgets();
 	}
 
 	/**

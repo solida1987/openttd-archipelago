@@ -100,7 +100,7 @@ void CDECL NetworkAddChatMessage(TextColour colour, uint duration, const std::st
 /** Initialize all font-dependent chat box sizes. */
 void NetworkReInitChatBoxSize()
 {
-	_chatmsg_box.y       = 3 * GetCharacterHeight(FS_NORMAL);
+	_chatmsg_box.y       = 6 * GetCharacterHeight(FS_NORMAL);
 	_chatmsg_box.height  = MAX_CHAT_MESSAGES * (GetCharacterHeight(FS_NORMAL) + ScaleGUITrad(NETWORK_CHAT_LINE_SPACING)) + ScaleGUITrad(4);
 }
 
@@ -253,6 +253,11 @@ void NetworkDrawChatMessage()
 static void SendChat(std::string_view buf, DestType type, int dest)
 {
 	if (buf.empty()) return;
+	if (!_networking) {
+		/* Singleplayer: just show the message locally in the chat log */
+		NetworkTextMessage(NETWORK_ACTION_CHAT, TC_WHITE, false, "", buf);
+		return;
+	}
 	if (!_network_server) {
 		MyClient::SendChat((NetworkAction)(NETWORK_ACTION_CHAT + type), type, dest, buf, 0);
 	} else {
