@@ -154,6 +154,7 @@ cmake --build build --config Release
 | Mac not supported | Medium | macOS is not tested. Wine may work but is unsupported |
 | Multiplayer requires dedicated server setup | Low | Only needed for cooperative multiplayer mode |
 | FIRS cargo combinations | Low | Some mission templates may produce unexpected cargo targets with FIRS enabled |
+| Only supports English (UK) | Low | Using other languages will prevent some items from unlocking correctly |
 
 ---
 
