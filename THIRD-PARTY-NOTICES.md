@@ -114,5 +114,5 @@ supports every one of those sets — it simply no longer hands you copies of the
 
 ## AI Usage Disclosure
 
-Parts of this project were written with AI assistance. The design decisions, the
-testing and the responsibility for what ships are the maintainer's.
+See the **AI Usage Disclosure** section of [`README.md`](./README.md). It is
+kept in one place so the two cannot drift apart.
