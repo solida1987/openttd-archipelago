@@ -42,15 +42,17 @@ All vehicles are locked at game start and randomized into the multiworld item po
 4. If your seed uses extra vehicle sets, install them first — they are **not**
    included: see [NEWGRF_SETUP.md](./NEWGRF_SETUP.md)
 5. Generate a multiworld using your YAML (see [YAML Setup](#yaml-setup))
-5. Launch `openttd.exe`, click **Archipelago** in the main menu, enter your connection details
+6. Launch `openttd.exe`, click **Archipelago** in the main menu, enter your connection details
 
 ### Play (Linux, standalone)
 
 1. Download `openttd-archipelago-v1.4.1-linux-amd64.tar.gz` from [Releases](../../releases/latest)
 2. Extract anywhere — all assets are included
 3. Copy `apworld/openttd/` to your Archipelago `custom_worlds/` directory
-4. Run `./openttd` (or `./server.sh` for dedicated server)
-5. Connect via the in-game Archipelago menu
+4. If your seed uses extra vehicle sets, install them first — they are **not**
+   included: see [NEWGRF_SETUP.md](./NEWGRF_SETUP.md)
+5. Run `./openttd` (or `./server.sh` for dedicated server)
+6. Connect via the in-game Archipelago menu
 
 ### Multiplayer (cooperative)
 

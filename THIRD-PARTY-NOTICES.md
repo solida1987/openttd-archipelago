@@ -101,7 +101,11 @@ passes on the binary to offer the source — the `.nml` and `.pnml` files — an
 offered nothing. Three carry no licence statement at all, so we could not have
 known what was permitted even if we had wanted to.
 
-**They have been removed, from the download and from this repository's history.**
+**They have been removed** — from the download, and rewritten out of every
+commit in this repository. No branch or tag reaches them. GitHub keeps
+unreachable objects for a while before collecting them, so an old commit hash
+somebody wrote down may still answer until it does; nothing links to those
+hashes any more, and there is nothing further we can do to hurry it along.
 
 Install the ones a seed needs through OpenTTD's own **Check Online Content**,
 which fetches them from the authors' distribution service and keeps them
