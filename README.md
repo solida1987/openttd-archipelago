@@ -39,7 +39,9 @@ All vehicles are locked at game start and randomized into the multiworld item po
 2. Extract anywhere — OpenGFX, OpenSFX, and OpenMSX are included. No separate OpenTTD install needed
 3. Copy `openttd.apworld` into your Archipelago `custom_worlds/` directory:
    - Default path: `C:\ProgramData\Archipelago\custom_worlds\`
-4. Generate a multiworld using your YAML (see [YAML Setup](#yaml-setup))
+4. If your seed uses extra vehicle sets, install them first — they are **not**
+   included: see [NEWGRF_SETUP.md](./NEWGRF_SETUP.md)
+5. Generate a multiworld using your YAML (see [YAML Setup](#yaml-setup))
 5. Launch `openttd.exe`, click **Archipelago** in the main menu, enter your connection details
 
 ### Play (Linux, standalone)
@@ -159,11 +161,70 @@ cmake --build build --config Release
 
 ## License
 
-This project is a fork of [OpenTTD](https://github.com/OpenTTD/OpenTTD) and is licensed under the **GNU General Public License v2** — the same license as OpenTTD.
+This project is a fork of [OpenTTD](https://github.com/OpenTTD/OpenTTD) and is
+licensed under the **GNU General Public License v2** — the same licence as
+OpenTTD. OpenTTD is copyright © the OpenTTD contributors.
 
 The APWorld (`openttd.apworld`) is licensed under **MIT**.
 
-OpenTTD is copyright © the OpenTTD contributors. See [COPYING.md](COPYING.md) for the full GPL v2 text.
+`COPYING.md` says the licence "applies to OpenTTD with the exception of some 3rd
+party modules — see our readme for details". The section below is that detail,
+reproduced verbatim from upstream OpenTTD's own README so the reference leads
+somewhere. It was missing from earlier releases of this fork, which left
+`COPYING.md` pointing at a document that did not contain what it promised.
+
+### OpenTTD's third-party modules
+OpenTTD is licensed under the GNU General Public License version 2.0.
+For the complete license text, see the file '[COPYING.md](./COPYING.md)'.
+This license applies to all files in this distribution, except as noted below.
+
+The squirrel implementation in `src/3rdparty/squirrel` is licensed under the Zlib license.
+See `src/3rdparty/squirrel/COPYRIGHT` for the complete license text.
+
+The md5 implementation in `src/3rdparty/md5` is licensed under the Zlib license.
+See the comments in the source files in `src/3rdparty/md5` for the complete license text.
+
+The fmt implementation in `src/3rdparty/fmt` is licensed under the MIT license.
+See `src/3rdparty/fmt/LICENSE.rst` for the complete license text.
+
+The nlohmann json implementation in `src/3rdparty/nlohmann` is licensed under the MIT license.
+See `src/3rdparty/nlohmann/LICENSE.MIT` for the complete license text.
+
+The OpenGL API in `src/3rdparty/opengl` is licensed under the MIT license.
+See `src/3rdparty/opengl/khrplatform.h` for the complete license text.
+
+The catch2 implementation in `src/3rdparty/catch2` is licensed under the Boost Software License, Version 1.0.
+See `src/3rdparty/catch2/LICENSE.txt` for the complete license text.
+
+The icu scriptrun implementation in `src/3rdparty/icu` is licensed under the Unicode license.
+See `src/3rdparty/icu/LICENSE` for the complete license text.
+
+The monocypher implementation in `src/3rdparty/monocypher` is licensed under the 2-clause BSD and CC-0 license.
+See `src/3rdparty/monocypher/LICENSE.md` for the complete license text.
+
+The OpenTTD Social Integration API in `src/3rdparty/openttd_social_integration_api` is licensed under the MIT license.
+See `src/3rdparty/openttd_social_integration_api/LICENSE` for the complete license text.
+
+The atomic datatype support detection in `cmake/3rdparty/llvm/CheckAtomic.cmake` is licensed under the Apache 2.0 license.
+See `cmake/3rdparty/llvm/LICENSE.txt` for the complete license text.
+### This fork's own files
+
+The Archipelago integration — `src/archipelago*.{cpp,h}`, the apworld under
+`apworld/`, and the two NewGRFs in `media/baseset/` (`archipelago_ruins.grf`
+and `archipelago_stars.grf`) — is ours, under the same GPL v2 as the rest.
+
+### Bundled free assets
+
+OpenGFX, OpenSFX, OpenMSX and SimpleAI travel with the download. They are free
+replacements for the original Transport Tycoon Deluxe data, and OpenTTD cannot
+run without a graphics set. Each is credited with its licence in
+[THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md).
+
+### What is NOT bundled
+
+No third-party vehicle or industry sets. Earlier releases shipped eight of them;
+they have been removed. See [NEWGRF_SETUP.md](./NEWGRF_SETUP.md) for how to
+install the ones a seed needs.
 
 ---
 
@@ -171,9 +232,14 @@ OpenTTD is copyright © the OpenTTD contributors. See [COPYING.md](COPYING.md) f
 
 - **OpenTTD** — the base game, [openttd.org](https://www.openttd.org)
 - **Archipelago** — the multiworld randomizer framework, [archipelago.gg](https://archipelago.gg)
-- **Iron Horse** — train set by andythenorth, licensed GPL v2
-- **FIRS Industries** — industry set by andythenorth, licensed GPL v2
-- **HEQS** — heavy equipment set by andythenorth, licensed GPL v2
-- **Military Items** — aircraft set, licensed GPL v2
-- **SHARK Ships** — ship set, licensed GPL v2
+- **OpenGFX, OpenSFX, OpenMSX** — the free graphics, sound and music sets that
+  ship with this download, by the OpenTTD community
+- **SimpleAI** by Brumi — the computer players, GPL v2
+
+Supported but **not** included — install them yourself through Check Online
+Content, see [NEWGRF_SETUP.md](./NEWGRF_SETUP.md):
+
+- **Iron Horse**, **FIRS Industries**, **HEQS** — by andythenorth
+- **Military Items** — by adpro
+- **SHARK Ships**, **Vactrain Set**, **Aircraftpack 2025**, **Hover Vehicles**
 - Archipelago integration developed by [solida1987](https://github.com/solida1987)

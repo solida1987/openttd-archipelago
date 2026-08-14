@@ -205,7 +205,11 @@ git add cmake\InstallAndPackage.cmake
 
 :: Assets
 git add baseset\archipelago_icons.grf
-git add newgrf\iron_horse.grf
+:: Ingen NewGRF-haandtering her mere. Scriptet plejede at commite
+:: iron_horse.grf og "git rm --cached" de syv andre, saa git saa rent ud
+:: mens pakningen tog dem alle med. Vores egne to ligger i
+:: media\baseset\ og kopieres derfra; fremmede saet hentes af spilleren
+:: gennem Check Online Content. Se NEWGRF_SETUP.md.
 git add newgrf\archipelago_ruins.grf
 git add media\baseset\CMakeLists.txt
 git add media\baseset\archipelago_icons.grf
@@ -244,13 +248,6 @@ git rm --cached Server.bat > nul 2>&1
 git rm --cached wiki_page.txt > nul 2>&1
 git rm --cached FEATURE_BACKLOG.md > nul 2>&1
 :: NewGRF binaries that are NOT source (only keep iron_horse + archipelago_ruins)
-git rm --cached newgrf\Aircraft2025.grf > nul 2>&1
-git rm --cached newgrf\firs.grf > nul 2>&1
-git rm --cached newgrf\heqs.grf > nul 2>&1
-git rm --cached newgrf\hoverv.grf > nul 2>&1
-git rm --cached newgrf\military-items.grf > nul 2>&1
-git rm --cached newgrf\shark.grf > nul 2>&1
-git rm --cached newgrf\vactrain_1.0.1.grf > nul 2>&1
 echo       OK.
 
 :: ── STEP 4: Commit ──────────────────────────────────────────

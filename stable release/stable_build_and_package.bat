@@ -287,12 +287,15 @@ if exist "%OPENMSX_TAR%" (
 )
 
 :: ── NewGRF ──────────────────────────────────────────────────
-if exist "%PROJECT_DIR%\newgrf" (
-    xcopy /E /I /Q "%PROJECT_DIR%\newgrf" "%OUT%\newgrf" > nul
-    echo   [OK]      newgrf\
-) else (
-    mkdir "%OUT%\newgrf"
-    echo   [ADVARSEL] newgrf\ ikke fundet - oprettet tom mappe.
+:: KUN vores egne, ved navn. Her stod "xcopy /E" over hele mappen, og det
+:: er praecis derfor otte fremmede vognsaet endte i hver eneste udgivelse:
+:: git sporede dem ikke, men pakningen tog mappen som den laa paa disken.
+mkdir "%OUT%\newgrf" 2>nul
+for %%G in (archipelago_ruins.grf archipelago_stars.grf) do (
+    if exist "%PROJECT_DIR%\newgrf\%%G" (
+        copy /Y "%PROJECT_DIR%\newgrf\%%G" "%OUT%\newgrf\%%G" > nul
+        echo   [OK]      newgrf\%%G
+    )
 )
 
 :: archipelago_ruins.grf i newgrf\
