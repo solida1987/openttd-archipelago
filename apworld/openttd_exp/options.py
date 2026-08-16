@@ -930,8 +930,9 @@ class VehicleBreakdowns(Choice):
 class EnableIronHorse(Toggle):
     """Enable Iron Horse train set (GPL v2, by andythenorth).
     When enabled, ~100 additional British-inspired locomotives are added to
-    the item pool. The GRF is bundled with the patch and loaded automatically
-    at new game start — no manual installation required.
+    the item pool. You install the set yourself through OpenTTD's Check Online
+    Content; it is not bundled. Enabling this without the set installed
+    produces a seed that cannot be finished, so the game checks on connect.
     Iron Horse vehicles work on Temperate, Arctic and Tropical maps.
     They are NOT available on Toyland maps."""
     display_name = "Enable Iron Horse"

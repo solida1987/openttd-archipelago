@@ -242,8 +242,11 @@ add_files(
     ini.cpp
     ini_load.cpp
     ini_type.h
+    ap_pipe.cpp
+    ap_pipe.h
     archipelago.cpp
     archipelago.h
+    archipelago_pipe.cpp
     archipelago_gui.cpp
     archipelago_gui.h
     archipelago_manager.cpp

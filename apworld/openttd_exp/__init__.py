@@ -937,6 +937,26 @@ class OpenTTDWorld(World):
         firs_enabled = bool(self.options.enable_firs.value) and not is_toyland
         self._slot_data["enable_firs"] = 1 if firs_enabled else 0
 
+        # Which sets this seed was actually generated against, so the
+        # game can refuse to start rather than hand out items for
+        # vehicles the player does not have. GRFID, not name: names are
+        # translated and files get renamed.
+        _grf_requirements = [
+            ("enable_iron_horse", "43411223", "Iron Horse", 8948),
+            ("enable_firs", "f1250009", "FIRS", 7366),
+            ("enable_shark_ships", "4a44bbb1", "SHARK", 1720),
+            ("enable_heqs", "41501202", "HEQS", 5199),
+            ("enable_military_items", "41440101", "Military items", 12),
+            ("enable_vactrain", "444a5901", "Vactrain Set", 80),
+            ("enable_aircraftpack", "4c480101", "Aircraftpack 2025", 6),
+            ("enable_hover_vehicles", "485a0101", "Hover Vehicles", 0),
+        ]
+        self._slot_data["required_newgrf"] = [
+            {"grfid": grfid, "name": name, "min_version": minver}
+            for key, grfid, name, minver in _grf_requirements
+            if self._slot_data.get(key)
+        ]
+
         # ── Wagon Unlock Toggle ────────────────────────────────────────────
         if not self.options.enable_wagon_unlocks.value:
             # Wagons disabled: remove all wagons from eligible pool; they're freely available

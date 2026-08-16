@@ -5,20 +5,9 @@
  * Foundation, version 2.
  */
 
-/**
- * @file archipelago_manager.cpp
- * Game-logic integration for the Archipelago randomizer.
- *
- * Engine unlock strategy:
- *   Vanilla OpenTTD releases vehicles to companies via NewVehicleAvailable()
- *   which is called from CalendarEnginesMonthlyLoop() when the current date
- *   passes an engine's intro_date.  In AP mode engine.cpp skips that call
- *   (AP_IsActive() returns true), so no engine ever becomes available through
- *   the normal date path.  Instead, when the AP server sends us an item we
- *   call EnableEngineForCompany() directly — the same internal function that
- *   NewVehicleAvailable() calls — which sets company_avail, updates railtypes,
- *   and refreshes all affected GUI windows.
- */
+/* @file archipelago_manager.cpp Game-logic for the Archipelago randomizer.
+ * Engines never unlock by date in AP mode (engine.cpp skips the loop);
+ * items call EnableEngineForCompany() directly. */
 
 #include "stdafx.h"
 #include <charconv>
@@ -4461,21 +4450,7 @@ void AP_ConsumeWorldStart()
 			}
 		}
 		if (mg->status != GCS_NOT_FOUND && mg->status != GCS_DISABLED) {
-			/* Parameters for military-items.grf (12 total):
-			 *   [0]  Enable custom airports:  1 = All
-			 *   [1]  Disable airport noise:   1 = yes
-			 *   [2]  Purchase cost mult:      4 = 1x
-			 *   [3]  Running cost mult:       4 = 1x
-			 *   [4]  Aircraft ranges:         0 = disabled
-			 *   [5]  Date restrictions:       0 = off
-			 *   [6]  Czechoslovak aircraft:   1 = All
-			 *   [7]  European aircraft:       1 = All
-			 *   [8]  Soviet/Russian aircraft: 1 = All
-			 *   [9]  US aircraft:             1 = All
-			 *   [10] Other nations aircraft:  1 = All
-			 *   [11] Disable default aircraft:0 = no
-			 * Params 6-10 default to 0 (None) if unset, which hides ALL
-			 * military aircraft and prevents Action 4 name assignment. */
+			/* military-items.grf parameters, in GRF order. */
 			const uint32_t mil_params[] = {1, 1, 4, 4, 0, 0, 1, 1, 1, 1, 1, 0};
 			mg->SetParams(mil_params);
 			AppendToGRFConfigList(_grfconfig_newgame, std::move(mg));
@@ -6047,23 +6022,8 @@ void AP_DeductShopPrice(const std::string &location_name)
 	AP_ChangeMoney(cid, -(Money)price);
 }
 
-/* -------------------------------------------------------------------------
- * REAL-TIME TIMER — 250ms
- *
- * Responsibilities:
- *   1. Pump the AP network client (Tick)
- *   2. First-tick session setup when we enter GM_NORMAL:
- *        - Build engine name map
- *        - Unlock the starting vehicle via EnableEngineForCompany
- *        - Flush any items that arrived before GM_NORMAL
- *        - Open the AP status window
- *   3. Win-condition polling every ~5 s
- *
- * NOTE: Engine locking is no longer done here.  engine.cpp blocks the
- * vanilla date-based introduction loop when AP_IsActive() is true.
- * Engines are locked by default (company_avail is empty until an engine's
- * intro_date would have fired), and we unlock them on demand.
- * ---------------------------------------------------------------------- */
+/* 250 ms timer: pump the client, first-tick session setup at GM_NORMAL,
+ * win-condition polling ~5 s. Engine locking lives in engine.cpp. */
 
 static uint32_t _ap_realtime_ticks = 0;
 
@@ -6860,23 +6820,9 @@ static void AP_AssignNamedEntities()
 	}
 }
 
-/**
- * Called monthly: accumulate named-entity progress and protect industries
- * from random closure while their mission is active.
- */
-/**
- * Called every 250 ms: accumulate named-entity progress for missions AND tasks,
- * and protect mission industries from random closure.
- *
- * Root-cause fix for task progress bug:
- *   Missions and tasks share the same CargoMonitorID key
- *   (company + cargo + town/industry).  GetDeliveryAmount() resets the
- *   counter to 0 on every call.  AP_UpdateNamedMissions() runs every 250 ms
- *   and drained mission monitors before the monthly AP_UpdateTasks() could
- *   read them — tasks always saw 0.
- *   Fix: accumulate BOTH mission and task progress in one pass so each
- *   monitor is only drained once per tick.
- */
+/* Every 250 ms: named-entity progress for missions AND tasks in ONE pass.
+ * GetDeliveryAmount() RESETS the shared monitor on read, so a second
+ * reader always sees 0. Also shields mission industries from closure. */
 static void AP_UpdateNamedMissions()
 {
 	CompanyID cid = _local_company;
@@ -7421,18 +7367,8 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* AP settings: vehicle/airport expiry already disabled above (before
 			 * BuildEngineMap).  No additional setting needed here. */
 
-			/* Strip the local company from every ENGINE that was auto-unlocked
-			 * by StartupOneEngine() at game start.
-			 * WAGONS are excluded by default — they are always freely available so the
-			 * player can use any locomotive they receive from AP.
-			 * BUT: if enable_wagon_unlocks is true, wagons are also locked and must
-			 * be unlocked via AP items.
-			 *
-			 * SELECTIVE LOCKING: if the APWorld sent a locked_vehicles list,
-			 * only lock engines whose English name is in that list.  Engines
-			 * NOT in the list (e.g. Iron Horse engines when enable_iron_horse=false)
-			 * remain available so the player can use them freely.
-			 * Legacy fallback: if no locked_vehicles list, lock everything (old behaviour). */
+			/* Strip the local company from engines unlocked by date before AP took
+			 * over -- a mid-session connect must not keep pre-unlocked vehicles. */
 			_ap_unlocked_engine_ids.clear();
 
 			const bool has_lock_list = !_ap_pending_sd.locked_vehicles.empty();
@@ -7807,15 +7743,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			}
 		}
 
-		/* ── Engine lock sweep: every ~5 s ─────────────────────────────── */
-		/* DISABLED in bridge mode: causes desync because the realtime timer
-		 * is NOT synchronised between server and client.  Direct state
-		 * modifications (company_avail, railtypes) at different ticks → crash.
-		 * In bridge mode this sweep is also unnecessary because:
-		 *   - AP_IsActive() blocks vanilla engine introduction
-		 *   - Initial locking happens in session-start (part of map state)
-		 *   - Unlocks go through CMD_ENGINE_CTRL::Post (network-distributed)
-		 *   - DoStartupNewCompany gives all railtypes in bridge mode */
+		/* Engine lock sweep (~5 s): relock anything the calendar slipped through. */
 		if (!_ap_bridge_mode &&
 		    _ap_realtime_ticks % 20 == 0 &&
 		    _ap_session_started &&

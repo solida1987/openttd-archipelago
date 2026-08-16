@@ -490,6 +490,11 @@ static std::vector<OptionData> CreateOptions()
 	options.push_back({ .type = ODF_NO_VALUE, .id = 'f', .shortname = 'f' });
 #endif
 
+	/* The Multiworld Launcher starts us with the name of the pipe it is
+	 * listening on. Long-form only: every short letter is taken, and a
+	 * launcher-only switch has no business competing for one. */
+	options.push_back({ .type = ODF_HAS_VALUE, .id = 'A', .longname = "-ap-pipe" });
+
 	return options;
 }
 
@@ -527,6 +532,11 @@ int openttd_main(std::span<std::string_view> arguments)
 	int i;
 	while ((i = mgo.GetOpt()) != -1) {
 		switch (i) {
+		case 'A': {
+			extern std::string _ap_pipe_name;
+			_ap_pipe_name = mgo.opt;
+			break;
+		}
 		case 'I': graphics_set = mgo.opt; break;
 		case 'S': sounds_set = mgo.opt; break;
 		case 'M': music_set = mgo.opt; break;

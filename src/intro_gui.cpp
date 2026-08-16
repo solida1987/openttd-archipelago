@@ -200,6 +200,20 @@ struct SelectGameWindow : public Window {
 		 * intro_gui::OnRealtimeTick runs every ~27ms regardless of game
 		 * mode, so this is the correct place to drive AP in GM_MENU.
 		 * --------------------------------------------------------------- */
+		/* Started by the Multiworld Launcher? Then the launcher already holds
+		 * the Archipelago session and told us its pipe name, so there is
+		 * nothing for the player to fill in. Attaching by hand would only be
+		 * a chance to get it wrong. Once, on the first tick. */
+		{
+			extern std::string _ap_pipe_name;
+			static bool ap_pipe_attach_done = false;
+			if (!ap_pipe_attach_done && !_ap_pipe_name.empty()) {
+				ap_pipe_attach_done = true;
+				if (_ap_client == nullptr) InitArchipelago();
+				if (_ap_client != nullptr) _ap_client->Connect("", 0, "", "", "OpenTTD", false);
+			}
+		}
+
 		if (_ap_client != nullptr) {
 			/* Register callbacks if not done yet, then drain the event queue */
 			EnsureHandlersRegistered();
