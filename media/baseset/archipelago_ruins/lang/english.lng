@@ -1,0 +1,13 @@
+##grflangid 0x01
+
+STR_GRF_NAME                :Archipelago Ruins
+STR_GRF_DESC                :Ruin objects for the Archipelago multiworld randomiser. These are placed on the map when ruin items are received.
+
+STR_CLASS_NAME              :Archipelago Ruins
+
+STR_RUIN_RUBBLE             :Rubble Pile
+STR_RUIN_BROKEN_WALL        :Broken Wall
+STR_RUIN_CRATER             :Impact Crater
+STR_RUIN_FOUNDATION         :Abandoned Foundation
+STR_RUIN_SCORCHED           :Scorched Earth
+STR_RUIN_OVERGROWN          :Overgrown Ruins

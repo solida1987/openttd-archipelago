@@ -1,0 +1,38 @@
+/.vs
+/build*
+CMakeSettings.json
+.ap_version
+docs/devnotes/*
+docs/gamedocs/*
+docs/source/*
+/out
+/vcpkg_installed
+
+# Local config / reference docs (not part of the project)
+/Reference/
+build_inc.bat
+__pycache__/
+*.pyc
+
+# Distribution / packaging
+/dist/
+
+# Local baseset tarballs (large binaries, bundled separately)
+/baseset/*.tar
+/media/baseset/*.tar
+
+# Internal / private files
+prompt.txt
+item_pool_setop.xlsx
+*.bak
+/backup/
+
+# Old / archived files
+/old/
+
+# NewGRF: kun vores egne to. Otte fremmede vognsaet slap ud i hver eneste
+# udgivelse indtil v1.4.1, fordi git ikke sporede dem og pakningen tog mappen
+# som den laa paa disken. Nu kan de heller ikke commites ved et uheld.
+newgrf/*.grf
+!newgrf/archipelago_ruins.grf
+!newgrf/archipelago_stars.grf
