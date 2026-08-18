@@ -151,20 +151,13 @@ of the official Archipelago Discord.
 
 ## AI Usage Disclosure
 
-AI-assisted tools are used throughout parts of this project as productivity tools.
-This includes, but is not limited to:
+Everything in this project was made by AI.
 
-* Artwork and other visual assets
-* Translation between Danish and English
-* Discord messages and community communication
-* Patch notes, documentation and release notes
-* Source-code comments and other explanatory text
-* General text editing, rewriting and formatting
+The code is AI.
+The documentation is AI.
+The artwork is AI.
+I am AI.
+My mother and father are also AI.
 
-AI tools may also be used as part of the overall development workflow. Regardless of what tools are used during development, I remain responsible for the project, its implementation, testing, releases and any code that is distributed.
+At this point, just assume everything is AI unless proven otherwise.
 
-My native language is Danish, so AI is particularly useful for quickly converting what I want to say into readable English instead of spending a large amount of development time translating and rewriting everything manually.
-
-AI-generated or AI-assisted visual assets may also be used where appropriate. I am not an artist, and these tools allow me to create artwork for areas of the project that would otherwise have little or no custom artwork.
-
-This disclosure is here so there is no ambiguity about the use of AI-assisted tools in the project.
