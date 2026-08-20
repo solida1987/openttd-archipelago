@@ -219,10 +219,17 @@ struct SelectGameWindow : public Window {
 			EnsureHandlersRegistered();
 			_ap_client->Tick();
 
-			/* If slot data arrived, show the 3-choice start dialog. */
+			/* Slot data arrived. Under the launcher there is nothing to
+			 * ask: load the seed's save if one exists, else generate.
+			 * The 3-choice dialog remains for hand-started games. */
 			if (AP_ShouldStartWorld() && !AP_IsWaitingForStartChoice()) {
-				AP_SetWaitingForStartChoice(true);
-				ShowAPStartChoiceWindow();
+				extern std::string _ap_pipe_name;
+				if (!_ap_pipe_name.empty()) {
+					AP_AutoStartOrLoad();
+				} else {
+					AP_SetWaitingForStartChoice(true);
+					ShowAPStartChoiceWindow();
+				}
 			}
 		}
 

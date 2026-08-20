@@ -441,6 +441,12 @@ void UninitArchipelago();
  */
 bool AP_IsActive();
 
+/* Per-seed savegame key: explicit from the launcher's SEED: line, or a
+ * stable hash of the slot_data text when none arrives. */
+void AP_SetSeedKey(const std::string &raw);
+void AP_SetSeedKeyFallback(const std::string &raw);
+bool AP_SeedExitSave();
+
 /** Forward a text/command string to the AP server (Say packet). */
 void AP_SendSay(const std::string &text);
 

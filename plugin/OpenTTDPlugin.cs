@@ -382,6 +382,7 @@ public sealed class OpenTTDPlugin : IGamePlugin
                 return;
             }
 
+            await pipe.SendSeedAsync(seed.SeedName);
             await pipe.SendSlotDataAsync(seed.SlotData);
             await pipe.SendLocationCountAsync(seed.Placements.Count);
             await pipe.SendCheckedAsync(
@@ -470,6 +471,10 @@ public sealed class OpenTTDPlugin : IGamePlugin
                 : "accepted, but no slot_data has arrived yet");
 
             _accepted = true;
+            // Before slot_data: the game decides start-vs-continue the moment
+            // slot_data lands, and the seed name is the savegame key.
+            if (_ap?.SeedName is { Length: > 0 } seedName)
+                await pipe.SendSeedAsync(seedName);
             if (_slotData.HasValue)
             {
                 await pipe.SendSlotDataAsync(_slotData.Value);

@@ -830,7 +830,8 @@ void HandleExitGameRequest()
 	if (_game_mode == GM_MENU || _game_mode == GM_BOOTSTRAP) { // do not ask to quit on the main screen
 		_exit_game = true;
 	} else if (_settings_client.gui.autosave_on_exit) {
-		DoExitSave();
+		extern bool AP_SeedExitSave();
+		if (!AP_SeedExitSave()) DoExitSave();
 		_survey.Transmit(NetworkSurveyHandler::Reason::EXIT, true);
 		_exit_game = true;
 	} else {

@@ -203,7 +203,17 @@ void ArchipelagoClient::HandleLine(const std::string &line)
 		return;
 	}
 
+	/* The multiworld's seed name -- the per-seed savegame key. Sent before
+	 * SLOTDATA so the key exists when the start decision is made. */
+	if (tag == "SEED") {
+		AP_SetSeedKey(body);
+		return;
+	}
+
 	if (tag == "SLOTDATA") {
+		/* An old launcher sends no SEED: line; the slot_data text is stable
+		 * per seed and serves as the key then. */
+		AP_SetSeedKeyFallback(body);
 		InboundEvent ev;
 		ev.type = InboundEvent::SLOT_DATA;
 		try {

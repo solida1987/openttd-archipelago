@@ -91,6 +91,8 @@ internal sealed class OpenTTDPipeServer : IAsyncDisposable
     public Task SendDeathLinkAsync(string cause)   => SendAsync("DEATHLINK:" + OneLine(cause));
     public Task SendPrintAsync(string text)        => SendAsync("PRINT:" + OneLine(text));
     public Task SendLocationCountAsync(int n)      => SendAsync($"LOCCOUNT:{n}");
+    /// The multiworld's seed name — the game keys its per-seed savegame on it.
+    public Task SendSeedAsync(string name)         => SendAsync("SEED:" + OneLine(name));
     public Task SendHintAsync(string location, string label)
         => SendAsync($"HINT:{location}:{OneLine(label)}");
 

@@ -4200,6 +4200,84 @@ bool AP_ShouldStartWorld()
 	return _ap_pending_world_start && _game_mode == GM_MENU;
 }
 
+/* ── The per-seed savegame key ─────────────────────────────────────────
+ * A seed's save must never load under another seed: the server's
+ * placements differ, and locally-finished missions would sit unsendable.
+ * The launcher sends the AP seed name; without it the slot_data text
+ * stands in (stable per seed, distinct between seeds). */
+static std::string _ap_seed_key;
+static bool        _ap_seed_key_explicit = false;
+
+static std::string SanitizeSeedKey(const std::string &raw)
+{
+	std::string out;
+	for (char c : raw) {
+		if (out.size() >= 48) break;
+		bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+		          (c >= '0' && c <= '9') || c == '-' || c == '_';
+		out.push_back(ok ? c : '_');
+	}
+	return out;
+}
+
+void AP_SetSeedKey(const std::string &raw)
+{
+	_ap_seed_key = SanitizeSeedKey(raw);
+	_ap_seed_key_explicit = true;
+}
+
+void AP_SetSeedKeyFallback(const std::string &raw)
+{
+	if (_ap_seed_key_explicit || !_ap_seed_key.empty()) return;
+	/* FNV-1a over the slot_data text. */
+	uint64_t h = 0xcbf29ce484222325ull;
+	for (unsigned char c : raw) { h ^= c; h *= 0x100000001b3ull; }
+	_ap_seed_key = fmt::format("sd_{:016x}", h);
+}
+
+static std::string SeedSaveName()
+{
+	return _ap_seed_key.empty() ? "" : "ap_seed_" + _ap_seed_key + ".sav";
+}
+
+/* The launcher flow: no question, no dialog. A save for this seed means
+ * "continue"; no save means "begin". The 3-choice window stays for games
+ * started outside the launcher. */
+void AP_AutoStartOrLoad()
+{
+	if (!_ap_pending_world_start) return;
+
+	std::string name = SeedSaveName();
+	std::string full = name.empty() ? "" : FioFindFullPath(SAVE_DIR, name);
+	if (!full.empty()) {
+		_ap_pending_world_start        = false;
+		_ap_world_started_this_session = true; /* suppress worldgen on later slot_data */
+		_file_to_saveload.SetMode(FIOS_TYPE_FILE, SLO_LOAD);
+		_file_to_saveload.name = full;
+		_switch_mode = SM_LOAD_GAME;
+		Debug(misc, 0, "[AP] Auto-continue: loading '{}'", name);
+		return;
+	}
+
+	AP_ConsumeWorldStart();
+	uint32_t seed = AP_GetWorldSeed();
+	_is_network_server = false;
+	Debug(misc, 0, "[AP] Auto-start: generating world (seed={})", seed);
+	StartNewGameWithoutGUI(seed);
+}
+
+/* True when the session's per-seed save was written; the caller skips the
+ * generic exit.sav then, so "continue" always finds the newest state. */
+bool AP_SeedExitSave()
+{
+	if (!_ap_session_started || _game_mode != GM_NORMAL) return false;
+	std::string name = SeedSaveName();
+	if (name.empty()) return false;
+	if (SaveOrLoad(name, SLO_SAVE, DFT_GAME_FILE, SAVE_DIR) != SL_OK) return false;
+	Debug(misc, 0, "[AP] Seed save written: '{}'", name);
+	return true;
+}
+
 void AP_ConsumeWorldStart()
 {
 	if (!_ap_pending_world_start) return;

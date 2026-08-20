@@ -3362,6 +3362,11 @@ void DoAutoOrNetsave(FiosNumberedSaveName &counter)
 	if (SaveOrLoad(filename, SLO_SAVE, DFT_GAME_FILE, AUTOSAVE_DIR) != SL_OK) {
 		ShowErrorMessage(GetEncodedString(STR_ERROR_AUTOSAVE_FAILED), {}, WL_ERROR);
 	}
+
+	/* The seed save is what auto-continue loads; keep it as fresh as the
+	 * autosave so a crash costs a month of play, not the session. */
+	extern bool AP_SeedExitSave();
+	AP_SeedExitSave();
 }
 
 
