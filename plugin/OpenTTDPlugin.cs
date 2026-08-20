@@ -95,6 +95,14 @@ public sealed class OpenTTDPlugin : IGamePlugin
     private JsonElement? _slotData;
     private ApConnectionState _apState = ApConnectionState.Disconnected;
 
+    // The GRF handshake happens once per pipe, but slot_data, the location
+    // table and the checked-list arrive whenever the AP session has them --
+    // often AFTER the handshake. These latches let whichever side is late
+    // push its part the moment it lands.
+    private volatile bool _accepted;
+    private bool _slotDataSent;
+    private readonly HashSet<long> _checkedIds = new();
+
     // --- Update / install ---
 
     private const string GitHubOwner = "solida1987";
@@ -252,6 +260,16 @@ public sealed class OpenTTDPlugin : IGamePlugin
         await StopAsync();
         _sessionCts = new CancellationTokenSource();
 
+        // Session state must not leak between launches: a standalone run
+        // leaves ITS seed's slot_data here, and sending that to a joined
+        // multiworld hands the game the wrong world. The location table
+        // stays -- it belongs to the WORLD, not the seed.
+        _slotData = null;
+        _idToLabel = new Dictionary<long, string>();
+        _accepted = false;
+        _slotDataSent = false;
+        lock (_checkedIds) _checkedIds.Clear();
+
         // A per-launch suffix: a stream left behind by a crashed session can
         // linger, and colliding with it would hand the new game the old pipe.
         string pipeName = $"openttd_ap_{Environment.ProcessId}_{Guid.NewGuid().ToString("N")[..8]}";
@@ -356,8 +374,7 @@ public sealed class OpenTTDPlugin : IGamePlugin
             Log($"game reports {loaded.Count} NewGRF(s): " +
                 (loaded.Count == 0 ? "none"
                                    : string.Join(", ", loaded.Select(g => $"{g.GrfId} v{g.Version}"))));
-            _slotData = seed.SlotData;    // EvaluateGrfs reads the field
-            string? refusal = EvaluateGrfs(loaded);
+            string? refusal = EvaluateGrfs(seed.SlotData, loaded);
             if (refusal != null)
             {
                 Log("standalone refused: " + refusal);
@@ -367,7 +384,8 @@ public sealed class OpenTTDPlugin : IGamePlugin
 
             await pipe.SendSlotDataAsync(seed.SlotData);
             await pipe.SendLocationCountAsync(seed.Placements.Count);
-            await pipe.SendMissingAsync(seed.Placements.Keys.Where(id => !done.Contains(id)));
+            await pipe.SendCheckedAsync(
+                done.Where(seed.IdToName.ContainsKey).Select(id => seed.IdToName[id]));
 
             // Replay what this run already earned; the index dedups.
             int index = 0;
@@ -438,7 +456,8 @@ public sealed class OpenTTDPlugin : IGamePlugin
                 (loaded.Count == 0 ? "none"
                                    : string.Join(", ", loaded.Select(g => $"{g.GrfId} v{g.Version}"))));
 
-            string? refusal = EvaluateGrfs(loaded);
+            string? refusal = _slotData.HasValue
+                ? EvaluateGrfs(_slotData.Value, loaded) : null;
             if (refusal != null)
             {
                 Log("refused: " + refusal);
@@ -450,9 +469,20 @@ public sealed class OpenTTDPlugin : IGamePlugin
                 ? $"accepted; sending slot_data and {_idToName.Count} locations"
                 : "accepted, but no slot_data has arrived yet");
 
-            if (_slotData.HasValue) await pipe.SendSlotDataAsync(_slotData.Value);
+            _accepted = true;
+            if (_slotData.HasValue)
+            {
+                await pipe.SendSlotDataAsync(_slotData.Value);
+                _slotDataSent = true;
+            }
             if (_idToName.Count > 0) await pipe.SendLocationCountAsync(_idToName.Count);
+            await PushCheckedAsync(pipe);
             await pipe.SendStateAsync(StateNumber(_apState));
+
+            // Replay the item stream from index 0. Items delivered while the
+            // game was still starting had no pipe to land in; the index lets
+            // the game recognise what it already handled.
+            if (_ap != null) await _ap.ResyncAsync();
         };
 
         pipe.ScoutRequested += async () =>
@@ -471,11 +501,10 @@ public sealed class OpenTTDPlugin : IGamePlugin
     /// game is the only side that knows the difference.
     ///
     /// null when everything needed is loaded, otherwise what to tell them.
-    private string? EvaluateGrfs(IReadOnlyList<OpenTTDPipeServer.LoadedGrf> loaded)
+    private static string? EvaluateGrfs(JsonElement slotData,
+                                        IReadOnlyList<OpenTTDPipeServer.LoadedGrf> loaded)
     {
-        if (!_slotData.HasValue) return null;   // nothing to compare against yet
-
-        var required = NewGrfRequirements.FromSlotData(_slotData.Value);
+        var required = NewGrfRequirements.FromSlotData(slotData);
         if (required.Count == 0) return null;
 
         // The scanner's shape, filled from what the game said. Path and name
@@ -510,6 +539,35 @@ public sealed class OpenTTDPlugin : IGamePlugin
         _idToName = nameToId.GroupBy(kv => kv.Value)
                             .ToDictionary(g => g.Key, g => g.First().Key);
         _pipe?.SetLocationTable(nameToId);
+
+        // The table usually lands after the GRF handshake -- the datapackage
+        // is a second round trip. Push the counter and any parked checked
+        // names that could not be resolved without it.
+        var pipe = _pipe;
+        if (pipe != null && _accepted)
+        {
+            _ = pipe.SendLocationCountAsync(_idToName.Count);
+            _ = PushCheckedAsync(pipe);
+        }
+    }
+
+    /// Locations the server says are already checked -- resume sync. Parked
+    /// until the pipe is up and the table can turn the ids into names.
+    public void OnCheckedLocations(long[] locationIds)
+    {
+        lock (_checkedIds)
+            foreach (long id in locationIds) _checkedIds.Add(id);
+        var pipe = _pipe;
+        if (pipe != null && _accepted) _ = PushCheckedAsync(pipe);
+    }
+
+    private async Task PushCheckedAsync(OpenTTDPipeServer pipe)
+    {
+        List<string> names;
+        lock (_checkedIds)
+            names = _checkedIds.Where(_idToName.ContainsKey)
+                               .Select(id => _idToName[id]).ToList();
+        if (names.Count > 0) await pipe.SendCheckedAsync(names);
     }
 
     public void OnLocationHints(IReadOnlyDictionary<long, string> idToLabel) => _idToLabel = idToLabel;
@@ -519,7 +577,18 @@ public sealed class OpenTTDPlugin : IGamePlugin
     /// the element outlives the call, and this is read again every time the
     /// game reconnects.
     ///
-    public void OnSlotData(JsonElement slotData) => _slotData = slotData.Clone();
+    public void OnSlotData(JsonElement slotData)
+    {
+        _slotData = slotData.Clone();
+        // Arrived after the handshake: send it now, once. A second SLOTDATA
+        // mid-game would reset the game's mission completion flags.
+        var pipe = _pipe;
+        if (pipe != null && _accepted && !_slotDataSent)
+        {
+            _slotDataSent = true;
+            _ = pipe.SendSlotDataAsync(_slotData.Value);
+        }
+    }
 
     private static int StateNumber(ApConnectionState s) => s switch
     {

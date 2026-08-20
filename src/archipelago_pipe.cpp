@@ -166,7 +166,9 @@ void ArchipelagoClient::HandleLine(const std::string &line)
 			case 0: this->state.store(APState::DISCONNECTED); break;
 			case 1: this->state.store(APState::CONNECTING); break;
 			case 2:
-				this->state.store(APState::CONNECTED);
+				/* Fully logged in. AUTHENTICATED, not CONNECTED: the session
+				 * gate, item flush and every live update key on it. */
+				this->state.store(APState::AUTHENTICATED);
 				this->PushEvent({ InboundEvent::CONNECTED, "", {}, {} });
 				break;
 			default: this->state.store(APState::AP_ERROR); break;
@@ -258,17 +260,19 @@ void ArchipelagoClient::HandleLine(const std::string &line)
 		return;
 	}
 
-	if (tag == "MISSING") {
-		std::set<std::string> ids;
+	/* Names of locations ALREADY checked -- resume sync for missions,
+	 * stars and shop slots. */
+	if (tag == "CHECKED") {
+		std::set<std::string> names;
 		size_t start = 0;
 		while (start <= body.size()) {
 			size_t comma = body.find(',', start);
 			std::string one = body.substr(start, comma - start);
-			if (!one.empty()) ids.insert(one);
+			if (!one.empty()) names.insert(one);
 			if (comma == std::string::npos) break;
 			start = comma + 1;
 		}
-		this->PushEvent({ InboundEvent::CHECKED_LOCATIONS, "", {}, {}, ids });
+		this->PushEvent({ InboundEvent::CHECKED_LOCATIONS, "", {}, {}, names });
 		return;
 	}
 

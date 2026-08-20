@@ -98,8 +98,11 @@ internal sealed class OpenTTDPipeServer : IAsyncDisposable
     public Task SendSlotDataAsync(JsonElement slotData)
         => SendAsync("SLOTDATA:" + slotData.GetRawText().Replace("\r", "").Replace("\n", ""));
 
-    public Task SendMissingAsync(IEnumerable<long> ids)
-        => SendAsync("MISSING:" + string.Join(",", ids));
+    /// Locations already checked, by NAME — the game holds no id table.
+    /// This is the resume sync: missions, stars and shop slots it names are
+    /// marked done in-game instead of being offered again.
+    public Task SendCheckedAsync(IEnumerable<string> names)
+        => SendAsync("CHECKED:" + string.Join(",", names.Select(OneLine)));
 
     public Task SendPlayersAsync(IEnumerable<string> names)
         => SendAsync("PLAYERS:" + string.Join(",", names.Select(OneLine)));
