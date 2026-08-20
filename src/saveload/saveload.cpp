@@ -3324,6 +3324,13 @@ SaveOrLoadResult SaveOrLoad(std::string_view filename, SaveLoadOperation fop, De
 			Debug(desync, 1, "save: {:08x}; {:02x}; {}", TimerGameEconomy::date, TimerGameEconomy::date_fract, filename);
 			if (!_settings_client.gui.threaded_saves) threaded = false;
 
+			/* Whatever is being saved, the seed save is refreshed with it --
+			 * auto-continue reads only that file, and it must never be older
+			 * than something the player saved by hand. Re-entry is guarded
+			 * inside; the WaitTillSaved above serialises the two writes. */
+			extern void AP_MirrorSeedSave();
+			AP_MirrorSeedSave();
+
 			return DoSave(std::make_shared<FileWriter>(std::move(*fh)), threaded);
 		}
 
@@ -3363,10 +3370,6 @@ void DoAutoOrNetsave(FiosNumberedSaveName &counter)
 		ShowErrorMessage(GetEncodedString(STR_ERROR_AUTOSAVE_FAILED), {}, WL_ERROR);
 	}
 
-	/* The seed save is what auto-continue loads; keep it as fresh as the
-	 * autosave so a crash costs a month of play, not the session. */
-	extern bool AP_SeedExitSave();
-	AP_SeedExitSave();
 }
 
 

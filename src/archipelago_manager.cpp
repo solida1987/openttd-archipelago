@@ -4266,15 +4266,33 @@ void AP_AutoStartOrLoad()
 	StartNewGameWithoutGUI(seed);
 }
 
+/* Guards the mirror against saving itself. */
+static bool _ap_seed_save_busy = false;
+
+/* Called from SaveOrLoad after EVERY game save -- manual, autosave or exit.
+ * Whatever name the player chose, the seed save is refreshed too, so
+ * auto-continue always loads the newest state of THIS seed without having
+ * to know what the player called their file. */
+void AP_MirrorSeedSave()
+{
+	if (_ap_seed_save_busy) return;
+	if (!_ap_session_started || _game_mode != GM_NORMAL) return;
+	std::string name = SeedSaveName();
+	if (name.empty()) return;
+
+	_ap_seed_save_busy = true;
+	SaveOrLoadResult r = SaveOrLoad(name, SLO_SAVE, DFT_GAME_FILE, SAVE_DIR, false);
+	_ap_seed_save_busy = false;
+	if (r == SL_OK) Debug(misc, 0, "[AP] Seed save refreshed: '{}'", name);
+}
+
 /* True when the session's per-seed save was written; the caller skips the
  * generic exit.sav then, so "continue" always finds the newest state. */
 bool AP_SeedExitSave()
 {
 	if (!_ap_session_started || _game_mode != GM_NORMAL) return false;
-	std::string name = SeedSaveName();
-	if (name.empty()) return false;
-	if (SaveOrLoad(name, SLO_SAVE, DFT_GAME_FILE, SAVE_DIR) != SL_OK) return false;
-	Debug(misc, 0, "[AP] Seed save written: '{}'", name);
+	if (SeedSaveName().empty()) return false;
+	AP_MirrorSeedSave();
 	return true;
 }
 
