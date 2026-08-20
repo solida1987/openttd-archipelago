@@ -390,8 +390,16 @@ struct SelectGameWindow : public Window {
 				}
 				break;
 			case WID_SGI_EXIT:            HandleExitGameRequest(); break;
-		case WID_SGI_ARCHIPELAGO:     ShowArchipelagoConnectWindow(); break;
-		case WID_SGI_JOIN_MULTIPLAYER: ShowAPJoinMultiplayerWindow(); break;
+		case WID_SGI_ARCHIPELAGO:
+			/* Under the launcher, London holds the login; a manual connect
+			 * window would only be a chance to get it wrong. */
+			{ extern std::string _ap_pipe_name;
+			  if (_ap_pipe_name.empty()) ShowArchipelagoConnectWindow(); }
+			break;
+		case WID_SGI_JOIN_MULTIPLAYER:
+			{ extern std::string _ap_pipe_name;
+			  if (_ap_pipe_name.empty()) ShowAPJoinMultiplayerWindow(); }
+			break;
 		}
 	}
 };

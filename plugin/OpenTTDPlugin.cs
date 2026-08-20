@@ -260,11 +260,10 @@ public sealed class OpenTTDPlugin : IGamePlugin
         await StopAsync();
         _sessionCts = new CancellationTokenSource();
 
-        // Session state must not leak between launches: a standalone run
-        // leaves ITS seed's slot_data here, and sending that to a joined
-        // multiworld hands the game the wrong world. The location table
-        // stays -- it belongs to the WORLD, not the seed.
-        _slotData = null;
+        // Session state must not leak between launches. slot_data is NOT
+        // cleared: the join flow pushes it before LaunchAsync runs, and each
+        // session overwrites it -- wiping it here starved the game of its
+        // world. Checked ids and hint labels are seed-specific and must go.
         _idToLabel = new Dictionary<long, string>();
         _accepted = false;
         _slotDataSent = false;
