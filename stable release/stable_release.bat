@@ -1,361 +1,290 @@
 @echo off
 setlocal EnableDelayedExpansion
-:: ============================================================
-::  OpenTTD Archipelago — STABLE Release to GitHub
-::
-::  This script:
-::    1. Temporarily switches git remote to the STABLE repo
-::    2. Patches game name OpenTTD-Exp → OpenTTD
-::    3. Stages all relevant files
-::    4. Commits + tags with stable version
-::    5. Pushes to stable repo
-::    6. Creates GitHub Release and uploads the ZIP
-::    7. Switches remote back to EXP repo
-::    8. Reverts game name back to OpenTTD-Exp
-::
-::  Prerequisites:
-::    - Run stable_build_and_package.bat FIRST to create the ZIP
-::    - gh CLI must be installed (https://cli.github.com/)
-::    - Git must be authenticated for both repos
-:: ============================================================
+REM ============================================================
+REM  OpenTTD Archipelago -- STABLE Release to GitHub
+REM
+REM  This script:
+REM    1. Points git remote at the public repo
+REM    3. Stages all relevant files
+REM    4. Commits + tags with stable version
+REM    5. Pushes to stable repo
+REM    6. Creates GitHub Release and uploads ZIP + tar.gz
+REM
+REM  Prerequisites:
+REM    - Run stable_build_and_package.bat FIRST to create the ZIP
+REM    - gh CLI must be installed (https://cli.github.com/)
+REM    - Git must be authenticated for both repos
+REM ============================================================
 
-:: ── CONFIG ──────────────────────────────────────────────────
-set AP_VERSION=1.2.1
-set PROJECT_DIR=C:\Users\marco\OneDrive\Desktop\OpenTTD 15.2 with Archipelago-exp
+REM -- CONFIG ----------------------------------------------------
+set AP_VERSION=2.1.0
+set PROJECT_DIR=C:\Users\marco\OneDrive\Desktop\AP Spil og Launcher\OpenTTD 15.2 Archipelago
 set DIST_DIR=%PROJECT_DIR%\dist
 set RELEASE_NAME=openttd-archipelago-v%AP_VERSION%-win64
 set ZIP_PATH=%DIST_DIR%\%RELEASE_NAME%.zip
-
+set LINUX_RELEASE_NAME=openttd-archipelago-v%AP_VERSION%-linux-amd64
+set LINUX_ZIP_PATH=%DIST_DIR%\%LINUX_RELEASE_NAME%.tar.gz
 set STABLE_REPO=https://github.com/solida1987/openttd-archipelago.git
-set EXP_REPO=https://github.com/solida1987/openttd-archipelago-exp.git
 set TAG=v%AP_VERSION%
 
 echo.
 echo ============================================================
-echo  OpenTTD Archipelago — STABLE RELEASE
+echo  OpenTTD Archipelago -- STABLE RELEASE
 echo  Version : v%AP_VERSION%
 echo  Tag     : %TAG%
-echo  ZIP     : %ZIP_PATH%
+echo  Windows : %ZIP_PATH%
+if exist "%LINUX_ZIP_PATH%" (
+    echo  Linux   : %LINUX_ZIP_PATH%
+) else (
+    echo  Linux   : [not built - skipping]
+)
 echo  Target  : github.com/solida1987/openttd-archipelago
 echo ============================================================
 echo.
 
-:: ── Preflight checks ────────────────────────────────────────
+REM -- Preflight checks ------------------------------------------
 cd /d "%PROJECT_DIR%"
-
 git --version > nul 2>&1
 if errorlevel 1 (
-    echo [FEJL] git ikke fundet i PATH!
+    echo [ERROR] git not found in PATH
     pause & exit /b 1
 )
-
 gh --version > nul 2>&1
 if errorlevel 1 (
-    echo [FEJL] gh CLI ikke fundet! Installer fra https://cli.github.com/
+    echo [ERROR] gh CLI not found - install from cli.github.com
     pause & exit /b 1
 )
-
 if not exist "%ZIP_PATH%" (
-    echo [FEJL] ZIP ikke fundet: %ZIP_PATH%
-    echo        Koer stable_build_and_package.bat foerst!
+    echo [ERROR] ZIP not found: %ZIP_PATH%
+    echo         Run stable_build_and_package.bat first
     pause & exit /b 1
 )
-
-echo [OK] Preflight checks bestaaet.
-echo.
-
-:: ── Bekraeft med bruger ─────────────────────────────────────
-echo ============================================================
-echo  ADVARSEL: Dette vil:
-echo    - Pushe til STABLE repo (openttd-archipelago)
-echo    - Oprette tag %TAG%
-echo    - Oprette GitHub Release med ZIP upload
-echo ============================================================
-echo.
-set /p CONFIRM="Fortsaet? (ja/nej): "
-if /i not "%CONFIRM%"=="ja" (
-    echo Afbrudt.
-    pause & exit /b 0
+echo [OK] Preflight checks passed.
+if exist "%LINUX_ZIP_PATH%" (
+    echo [OK] Linux tar.gz found - will upload with Windows ZIP.
+) else (
+    echo [INFO] No Linux tar.gz - only Windows ZIP will be uploaded.
 )
 echo.
 
-:: ── STEP 1: Switch remote til stable ────────────────────────
-echo [1/8] Skifter remote til stable repo...
+REM -- Confirm with user -----------------------------------------
+echo ============================================================
+echo  WARNING: This will:
+echo    - Push to STABLE repo (openttd-archipelago)
+echo    - Create tag %TAG%
+echo    - Create GitHub Release with file upload
+echo ============================================================
+echo.
+set /p CONFIRM="Continue? (yes/no): "
+if /i not "%CONFIRM%"=="yes" (
+    if /i not "%CONFIRM%"=="ja" (
+        echo Aborted.
+        pause & exit /b 0
+    )
+)
+echo.
+
+REM -- STEP 1: Switch remote to stable --------------------------
+echo [1/8] Switching remote to stable repo...
 git remote set-url origin %STABLE_REPO%
 echo       Remote: %STABLE_REPO%
 
-:: ── STEP 2: Patch game name ─────────────────────────────────
-echo [2/8] Patcher game name: OpenTTD-Exp  -^>  OpenTTD ...
-:: Gem backup af originale filer
+REM -- STEP 2: Patch game name -----------------------------------
+REM Back up original files
 copy /Y "%PROJECT_DIR%\src\archipelago_gui.cpp" "%PROJECT_DIR%\src\archipelago_gui.cpp.bak" > nul
 copy /Y "%PROJECT_DIR%\src\archipelago.h"       "%PROJECT_DIR%\src\archipelago.h.bak"       > nul
 copy /Y "%PROJECT_DIR%\README.md"               "%PROJECT_DIR%\README.md.bak"               > nul
-:: Patch
-powershell -NoProfile -Command ^
-  "(Get-Content '%PROJECT_DIR%\src\archipelago_gui.cpp') -replace 'OpenTTD-Exp', 'OpenTTD' | Set-Content '%PROJECT_DIR%\src\archipelago_gui.cpp'"
-powershell -NoProfile -Command ^
-  "(Get-Content '%PROJECT_DIR%\src\archipelago.h') -replace 'OpenTTD-Exp', 'OpenTTD' | Set-Content '%PROJECT_DIR%\src\archipelago.h'"
+REM Patch
 echo       OK: game name = OpenTTD
 
-:: ── STEP 2b: Use stable README ──────────────────────────────
-echo       Kopierer stable README.md over exp README...
-copy /Y "%PROJECT_DIR%\stable release\README.md" "%PROJECT_DIR%\README.md" > nul
-echo       OK: README.md = stable version
+REM -- STEP 2b: Use stable README --------------------------------
+echo       Copying stable README.md over exp README...
+if exist "%PROJECT_DIR%\stable release\README.md" (
+    copy /Y "%PROJECT_DIR%\stable release\README.md" "%PROJECT_DIR%\README.md" > nul
+    echo       OK: README.md = stable version
+) else (
+    echo       [INFO] No stable README found, using current README
+)
 
-:: ── STEP 3: Stage all relevant files ────────────────────────
-echo [3/8] Stager filer...
+REM -- STEP 3: Stage all relevant files --------------------------
+echo [3/8] Staging files...
 
-:: APWorld (Python + metadata)
+REM Stage ALL project source and assets (broad approach)
+git add src\
 git add apworld\
-
-:: GameScript
-git add gamescript\
-
-:: Core Archipelago source
-git add src\archipelago.cpp
-git add src\archipelago.h
-git add src\archipelago_gui.cpp
-git add src\archipelago_gui.h
-git add src\archipelago_manager.cpp
-
-:: Modified game source files
-git add src\cargo_type.h
-git add src\console_cmds.cpp
-git add src\economy.cpp
-git add src\engine.cpp
-git add src\engine_func.h
-git add src\fileio.cpp
-git add src\gfx.cpp
-git add src\gfxinit.cpp
-git add src\industry_gui.cpp
-git add src\intro_gui.cpp
-git add src\object_cmd.cpp
-git add src\os\windows\win32.cpp
-git add src\rail_cmd.cpp
-git add src\rail_gui.cpp
-git add src\road_cmd.cpp
-git add src\road_gui.cpp
-git add src\settings_type.h
-git add src\settingentry_gui.cpp
-git add src\station_cmd.cpp
-git add src\terraform_cmd.cpp
-git add src\terraform_gui.cpp
-git add src\toolbar_gui.cpp
-git add src\town_cmd.cpp
-git add src\tree_cmd.cpp
-git add src\tree_gui.cpp
-git add src\tunnelbridge_cmd.cpp
-git add src\vehicle_cmd.cpp
-git add src\window_type.h
-git add src\aircraft_cmd.cpp
-git add src\train_cmd.cpp
-git add src\roadveh_cmd.cpp
-git add src\openttd.cpp
-git add src\company_cmd.cpp
-git add src\company_gui.cpp
-git add src\genworld.cpp
-git add src\strings.cpp
-git add src\statusbar_gui.cpp
-git add src\statusbar_gui.h
-
-:: Network / Bridge (multiplayer)
-git add src\network\network_bridge.cpp
-git add src\network\network_bridge_client.cpp
-git add src\network\network_bridge_client.h
-git add src\network\network_bridge.h
-git add src\network\core\tcp_game.cpp
-git add src\network\core\config.h
-git add src\network\network_client.cpp
-git add src\network\network.cpp
-git add src\network\network_server.cpp
-git add src\network\CMakeLists.txt
-git add src\video\dedicated_v.cpp
-
-:: Tables / data
-git add src\table\cargo_const.h
-git add src\table\sprites.h
-git add src\table\settings\game_settings.ini
-
-:: Widgets
-git add src\widgets\toolbar_widget.h
-git add src\widgets\intro_widget.h
-git add src\widgets\statusbar_widget.h
-
-:: Saveload
-git add src\saveload\archipelago_sl.cpp
-git add src\saveload\saveload.cpp
-git add src\saveload\CMakeLists.txt
-
-:: Language
-git add src\lang\english.txt
-
-:: Music (OGG support)
-git add src\music\midifile.cpp
-if exist src\music\ogg_music.cpp git add src\music\ogg_music.cpp
-if exist src\music\ogg_music.h   git add src\music\ogg_music.h
-
-:: Script API
-git add src\script\api\script_controller.cpp
-git add src\script\squirrel.cpp
-
-:: Build system
-git add src\CMakeLists.txt
-git add CMakeLists.txt
-git add cmake\InstallAndPackage.cmake
-
-:: Assets
-git add baseset\archipelago_icons.grf
+git add baseset\
+git add media\baseset\
 git add newgrf\iron_horse.grf
 git add newgrf\archipelago_ruins.grf
-git add media\baseset\CMakeLists.txt
-git add media\baseset\archipelago_icons.grf
-git add media\baseset\archipelago_ruins.grf
-git add media\baseset\archipelago_ruins\
-
-:: Documentation
+if exist newgrf\archipelago_stars.grf git add newgrf\archipelago_stars.grf
+git add cmake\
+git add CMakeLists.txt
+git add .gitignore
+git add README.md
 git add CHANGELOG.md
+if exist changelog.md git add changelog.md
 git add KNOWN_BUGS.md
 git add INSTALL.md
-git add README.md
-git add docs\yaml_options.md
-git add wiki_page.txt
+git add COPYING.md
+git add CREDITS.md
+git add CONTRIBUTING.md
+if exist docs\yaml_options.md git add docs\yaml_options.md
+if exist .github\workflows\build-linux-release.yml git add .github\workflows\build-linux-release.yml
+if exist gamescript\ git add gamescript\
+if exist bridge\ git add bridge\
 
-:: Gitignore
-git add .gitignore
-
-:: Fjern ting der IKKE skal med i stable
+REM Remove things that should NOT be in stable
 git rm -r --cached build\ > nul 2>&1
 git rm -r --cached dist\ > nul 2>&1
-git rm -r --cached .claude\ > nul 2>&1
 git rm -r --cached backup\ > nul 2>&1
 git rm -r --cached "stable release\" > nul 2>&1
+git rm -r --cached "exp release\" > nul 2>&1
 git rm -r --cached Reference\ > nul 2>&1
 git rm -r --cached vcpkg_installed\ > nul 2>&1
-git rm -r --cached src\3rdparty\stb_vorbis\ > nul 2>&1
+git rm -r --cached docs\devnotes\ > nul 2>&1
+git rm -r --cached docs\gamedocs\ > nul 2>&1
+git rm -r --cached docs\source\ > nul 2>&1
 git rm --cached exp_build_and_package.bat > nul 2>&1
 git rm --cached exp_build_incremental.bat > nul 2>&1
 git rm --cached exp_build_openttd.bat > nul 2>&1
 git rm --cached exp_git_push_release.bat > nul 2>&1
 git rm --cached temp_build.bat > nul 2>&1
+git rm --cached temp_build2.bat > nul 2>&1
 git rm --cached build_inc.bat > nul 2>&1
 git rm --cached build_test.bat > nul 2>&1
 git rm --cached LaunchBridge.bat > nul 2>&1
 git rm --cached Server.bat > nul 2>&1
 git rm --cached wiki_page.txt > nul 2>&1
 git rm --cached FEATURE_BACKLOG.md > nul 2>&1
-:: NewGRF binaries that are NOT source (only keep iron_horse + archipelago_ruins)
-git rm --cached newgrf\Aircraft2025.grf > nul 2>&1
-git rm --cached newgrf\firs.grf > nul 2>&1
-git rm --cached newgrf\heqs.grf > nul 2>&1
-git rm --cached newgrf\hoverv.grf > nul 2>&1
-git rm --cached newgrf\military-items.grf > nul 2>&1
-git rm --cached newgrf\shark.grf > nul 2>&1
-git rm --cached newgrf\vactrain_1.0.1.grf > nul 2>&1
-echo       OK.
+git rm --cached CHECK_IDEAS.md > nul 2>&1
+git rm --cached prompt.txt > nul 2>&1
+git rm --cached item_pool_setop.xlsx > nul 2>&1
+git rm --cached item_pool.txt > nul 2>&1
+git rm --cached ih_wagons_out.txt > nul 2>&1
+git rm --cached populate_excel.py > nul 2>&1
+git rm --cached update_fillsheet.py > nul 2>&1
+git rm --cached xlsx_out.txt > nul 2>&1
+REM Remove temp scripts
+for %%F in (temp_build.bat temp_build2.bat temp_compare.py temp_compare2.py temp_fix_all.py temp_ih_names.py temp_ih_railtype.py temp_ih_wagons.py temp_read_xlsx.py temp_run.bat temp_run2.bat temp_update_xlsx.py temp_update_xlsx2.py temp_build_xlsx.py) do (
+    git rm --cached %%F > nul 2>&1
+)
+REM Third-party NewGRFs are gone from newgrf and the packer copies
+REM named files only, so there is nothing left to hide from git.
+REM Remove .apworld binaries from apworld folder (only source gets committed)
+git rm --cached apworld\openttd.apworld > nul 2>&1
+git rm --cached apworld\openttd_exp.apworld > nul 2>&1
+git rm --cached apworld\xcopy_exclude.txt > nul 2>&1
+echo       OK: All files staged.
 
-:: ── STEP 4: Commit ──────────────────────────────────────────
-echo [4/8] Committer...
-git commit -m "v%AP_VERSION%: Fix demigod spawn glitch, fix wagon climate filtering, add progression balancing options"
+REM -- STEP 4: Commit --------------------------------------------
+echo [4/8] Committing...
+git commit -m "v%AP_VERSION%: Fix bridge unlock button, star checks, star counter direction"
 if errorlevel 1 (
-    echo       Intet nyt at committe - fortsaetter til push.
+    echo       Nothing new to commit - continuing to push.
 )
 
-:: ── STEP 5: Push to stable repo ─────────────────────────────
-echo [5/8] Pusher til stable repo...
+REM -- STEP 5: Push to stable repo --------------------------------
+echo [5/8] Pushing to stable repo...
 git push origin HEAD --force
 if errorlevel 1 (
     echo.
-    echo [FEJL] Push fejlede! Tjek din GitHub-forbindelse.
+    echo [ERROR] Push failed - check your GitHub connection.
     goto :revert_all
 )
 echo       OK.
 
-:: ── STEP 6: Tag ─────────────────────────────────────────────
-echo [6/8] Opretter release-tag %TAG%...
+REM -- STEP 6: Tag ------------------------------------------------
+echo [6/8] Creating release tag %TAG%...
 git tag -d %TAG% > nul 2>&1
 git push origin :refs/tags/%TAG% > nul 2>&1
-git tag -a %TAG% -m "OpenTTD Archipelago v%AP_VERSION% — Stable Release"
+git tag -a %TAG% -m "OpenTTD Archipelago v%AP_VERSION% -- Stable Release"
 git push origin %TAG%
 if errorlevel 1 (
-    echo [FEJL] Tag-push fejlede!
+    echo [ERROR] Tag push failed
     goto :revert_all
 )
 echo       OK.
 
-:: ── STEP 7: Create GitHub Release + upload ZIP ──────────────
-echo [7/8] Opretter GitHub Release og uploader ZIP...
-gh release create %TAG% "%ZIP_PATH%" ^
-    --repo solida1987/openttd-archipelago ^
-    --title "OpenTTD Archipelago v%AP_VERSION%" ^
-    --notes "## OpenTTD Archipelago v%AP_VERSION% (Patch)
+REM -- STEP 7: Create GitHub Release + upload files ----------------
+echo [7/8] Creating GitHub Release and uploading files...
 
-**Patch release** built from OpenTTD 15.2.
+REM Build upload command - always include Windows ZIP
+set "GH_CMD=gh release create %TAG% "%ZIP_PATH%""
 
-### Fixes
-- **Demigod spawn graphical glitch**: Grey rendering corruption on toolbar/viewport when the God of Wackens spawns a rival company. AI company creation did not trigger a full screen redraw (dirty rectangle bug).
-- **Wagon climate filtering**: Paper Truck (Arctic-only) and other climate-specific wagons appeared in wrong climate item pools. Wagon exclusion lists were missing entirely.
-- **Victory sphere logic**: Victory now requires 15+ vehicles and full infrastructure when sphere progression is enabled.
-- **Foreign item placement**: Other players' progression items now land in early, reachable locations instead of being randomly scattered.
-- **Music baseset**: Rebuilt openmsx-0.4.2.tar from working files.
-
-### New Features
-- **9 Progression Balancing options**: Configure where progression items land — mission tier priorities, victory vehicle requirement, Hard/Extreme tier multipliers.
-- **Item Placement (Advanced Balancing)** option group in YAML.
-
-### Installation
-1. Extract the ZIP to any folder
-2. Copy \`apworld/openttd/\` to your Archipelago \`custom_worlds\` directory
-3. Run \`openttd.exe\`
-
-See [CHANGELOG.md](CHANGELOG.md) for full details." ^
-    --latest
-if errorlevel 1 (
-    echo [ADVARSEL] gh release create fejlede - opret manuelt paa GitHub.
-    echo            ZIP: %ZIP_PATH%
-    echo            Tag: %TAG%
-) else (
-    echo       OK: Release oprettet med ZIP upload.
+REM Add Linux tar.gz if it exists
+if exist "%LINUX_ZIP_PATH%" (
+    set "GH_CMD=!GH_CMD! "%LINUX_ZIP_PATH%""
 )
 
-:: ── STEP 8: Switch remote back to EXP + revert game name ───
-echo [8/8] Skifter remote tilbage til EXP repo...
+REM Write release notes to temp file to avoid quoting issues
+> "%TEMP%\ap_release_notes.md" (
+    echo ## OpenTTD Archipelago v%AP_VERSION%
+    echo.
+    echo **Stable release** built from OpenTTD 15.2.
+    echo.
+    echo ### Downloads
+    echo - **Windows**: `openttd-archipelago-v%AP_VERSION%-win64.zip`
+    echo - **Linux**: `openttd-archipelago-v%AP_VERSION%-linux-amd64.tar.gz`
+    echo.
+    echo ### Installation
+    echo 1. Extract the archive to any folder
+    echo 2. Copy `apworld/openttd/` to your Archipelago `custom_worlds` directory
+    echo 3. Run `openttd.exe` ^(Windows^) or `./openttd` ^(Linux^)
+    echo.
+    echo See [CHANGELOG.md] for full details.
+)
+
+%GH_CMD% --repo solida1987/openttd-archipelago --title "OpenTTD Archipelago v%AP_VERSION%" --notes-file "%TEMP%\ap_release_notes.md" --latest
+if errorlevel 1 (
+    echo [WARNING] gh release create failed - create manually on GitHub.
+    echo           Windows ZIP: %ZIP_PATH%
+    if exist "%LINUX_ZIP_PATH%" echo           Linux tar.gz: %LINUX_ZIP_PATH%
+    echo           Tag: %TAG%
+) else (
+    echo       OK: Release created with file upload.
+)
+del /f "%TEMP%\ap_release_notes.md" 2>nul
+
+REM -- STEP 8: Switch remote back to EXP + revert game name -------
+echo [8/8] Switching remote back to EXP repo...
 git remote set-url origin %EXP_REPO%
 echo       Remote: %EXP_REPO%
-
-echo Reverter source-filer og README fra backup ...
+echo Reverting source files and README from backup ...
 cd /d "%PROJECT_DIR%"
 move /Y "%PROJECT_DIR%\src\archipelago_gui.cpp.bak" "%PROJECT_DIR%\src\archipelago_gui.cpp" > nul
 move /Y "%PROJECT_DIR%\src\archipelago.h.bak"       "%PROJECT_DIR%\src\archipelago.h"       > nul
 move /Y "%PROJECT_DIR%\README.md.bak"               "%PROJECT_DIR%\README.md"               > nul
-echo       OK: game name revertet til OpenTTD-Exp
-echo       OK: README.md revertet til exp version
+echo       OK: README.md reverted to exp version
 
 echo.
 echo ============================================================
-echo  STABLE RELEASE GENNEMFOERT!
+echo  STABLE RELEASE COMPLETE
 echo.
 echo  Version  : v%AP_VERSION%
 echo  Tag      : %TAG%
+echo  Windows  : %RELEASE_NAME%.zip
+if exist "%LINUX_ZIP_PATH%" (
+    echo  Linux    : %LINUX_RELEASE_NAME%.tar.gz
+)
 echo  Release  : https://github.com/solida1987/openttd-archipelago/releases/tag/%TAG%
-echo  Remote   : Sat tilbage til EXP repo
-echo  Game name: Revertet til OpenTTD-Exp
+echo  Remote   : Set back to EXP repo
 echo.
-echo  Du kan nu fortsaette med at arbejde i experimental.
+echo  You can now continue working in experimental.
 echo ============================================================
 echo.
 pause
 exit /b 0
 
-:: ── Fejl-handler ────────────────────────────────────────────
+REM -- Error handler ---------------------------------------------
 :revert_all
 echo.
-echo Reverter efter fejl...
+echo Reverting after error...
 git remote set-url origin %EXP_REPO%
 echo       Remote: %EXP_REPO%
 cd /d "%PROJECT_DIR%"
 if exist "%PROJECT_DIR%\src\archipelago_gui.cpp.bak" move /Y "%PROJECT_DIR%\src\archipelago_gui.cpp.bak" "%PROJECT_DIR%\src\archipelago_gui.cpp" > nul
 if exist "%PROJECT_DIR%\src\archipelago.h.bak"       move /Y "%PROJECT_DIR%\src\archipelago.h.bak"       "%PROJECT_DIR%\src\archipelago.h"       > nul
 if exist "%PROJECT_DIR%\README.md.bak"               move /Y "%PROJECT_DIR%\README.md.bak"               "%PROJECT_DIR%\README.md"               > nul
-echo       OK: Alt revertet (remote, game name, README).
+echo       OK: Everything reverted (remote, game name, README).
 pause
 exit /b 1
