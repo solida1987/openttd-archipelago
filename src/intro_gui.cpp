@@ -200,15 +200,36 @@ struct SelectGameWindow : public Window {
 		 * intro_gui::OnRealtimeTick runs every ~27ms regardless of game
 		 * mode, so this is the correct place to drive AP in GM_MENU.
 		 * --------------------------------------------------------------- */
+		/* Started by the Multiworld Launcher? Then the launcher already holds
+		 * the Archipelago session and told us its pipe name, so there is
+		 * nothing for the player to fill in. Attaching by hand would only be
+		 * a chance to get it wrong. Once, on the first tick. */
+		{
+			extern std::string _ap_pipe_name;
+			static bool ap_pipe_attach_done = false;
+			if (!ap_pipe_attach_done && !_ap_pipe_name.empty()) {
+				ap_pipe_attach_done = true;
+				if (_ap_client == nullptr) InitArchipelago();
+				if (_ap_client != nullptr) _ap_client->Connect("", 0, "", "", "OpenTTD", false);
+			}
+		}
+
 		if (_ap_client != nullptr) {
 			/* Register callbacks if not done yet, then drain the event queue */
 			EnsureHandlersRegistered();
 			_ap_client->Tick();
 
-			/* If slot data arrived, show the 3-choice start dialog. */
+			/* Slot data arrived. Under the launcher there is nothing to
+			 * ask: load the seed's save if one exists, else generate.
+			 * The 3-choice dialog remains for hand-started games. */
 			if (AP_ShouldStartWorld() && !AP_IsWaitingForStartChoice()) {
-				AP_SetWaitingForStartChoice(true);
-				ShowAPStartChoiceWindow();
+				extern std::string _ap_pipe_name;
+				if (!_ap_pipe_name.empty()) {
+					AP_AutoStartOrLoad();
+				} else {
+					AP_SetWaitingForStartChoice(true);
+					ShowAPStartChoiceWindow();
+				}
 			}
 		}
 
@@ -369,8 +390,16 @@ struct SelectGameWindow : public Window {
 				}
 				break;
 			case WID_SGI_EXIT:            HandleExitGameRequest(); break;
-		case WID_SGI_ARCHIPELAGO:     ShowArchipelagoConnectWindow(); break;
-		case WID_SGI_JOIN_MULTIPLAYER: ShowAPJoinMultiplayerWindow(); break;
+		case WID_SGI_ARCHIPELAGO:
+			/* Under the launcher, London holds the login; a manual connect
+			 * window would only be a chance to get it wrong. */
+			{ extern std::string _ap_pipe_name;
+			  if (_ap_pipe_name.empty()) ShowArchipelagoConnectWindow(); }
+			break;
+		case WID_SGI_JOIN_MULTIPLAYER:
+			{ extern std::string _ap_pipe_name;
+			  if (_ap_pipe_name.empty()) ShowAPJoinMultiplayerWindow(); }
+			break;
 		}
 	}
 };

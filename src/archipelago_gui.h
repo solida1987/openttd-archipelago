@@ -64,6 +64,8 @@ bool     AP_CanAffordShopItem(const std::string &location_name);
 bool     AP_IsShopLocationSent(const std::string &location_name);
 void     AP_DeductShopPrice(const std::string &location_name);
 bool     AP_ShouldStartWorld();
+/* Launcher flow: load the seed's save when it exists, else generate. */
+void     AP_AutoStartOrLoad();
 void     AP_ConsumeWorldStart();   /* applies settings, clears flag */
 uint32_t AP_GetWorldSeed();        /* seed to pass to StartNewGameWithoutGUI */
 void     AP_BridgeSetSlotData(const APSlotData &sd); /* populate _ap_pending_sd from bridge */

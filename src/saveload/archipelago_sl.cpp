@@ -173,14 +173,11 @@ std::string  AP_GetNamedEntityStr();
 void         AP_SetNamedEntityStr(const std::string &s);
 std::string  AP_GetSentShopStr();
 void         AP_SetSentShopStr(const std::string &s);
-uint8_t      AP_GetLockedTrackDirs(uint8_t railtype);
 uint8_t      AP_GetLockedTrackDirsRaw(uint8_t ap_index);
 void         AP_SetLockedTrackDirs(uint8_t railtype, uint8_t mask);
 uint8_t      AP_GetLockedTramDirs();
 void         AP_SetLockedTramDirs(uint8_t mask);
 // back-compat shims (deprecated)
-uint8_t      AP_GetLockedRailDirs();
-void         AP_SetLockedRailDirs(uint8_t mask);
 void         AP_GetColbyState(int *step, int64_t *delivered, int *target_town, bool *escaped, int *escape_ticks, bool *done, bool *popup_shown, uint32_t *stash_tile);
 void         AP_SetColbyState(int step, int64_t delivered, int target_town, bool escaped, int escape_ticks, bool done, bool popup_shown, uint32_t stash_tile);
 bool         AP_GetTownsRenamed();

@@ -54,12 +54,7 @@ extern GRFConfigList _grfconfig_newgame;
  * ========================================================================= */
 
 enum APWidgets : WidgetID {
-	WAPGUI_LABEL_SERVER,
-	WAPGUI_EDIT_SERVER,
-	WAPGUI_LABEL_SLOT,
-	WAPGUI_EDIT_SLOT,
-	WAPGUI_LABEL_PASS,
-	WAPGUI_EDIT_PASS,
+	WAPGUI_LAUNCHER_INFO,
 	WAPGUI_STATUS,
 	WAPGUI_SLOT_INFO,
 	WAPGUI_BTN_CONNECT,
@@ -85,18 +80,9 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_widgets = {
 	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_GREY),
 		NWidget(NWID_VERTICAL), SetPIP(4, 4, 4), SetPadding(6),
-			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
-				NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_LABEL_SERVER), SetStringTip(STR_ARCHIPELAGO_LABEL_SERVER), SetMinimalSize(80, 14),
-				NWidget(WWT_EDITBOX, COLOUR_GREY, WAPGUI_EDIT_SERVER), SetStringTip(STR_EMPTY), SetMinimalSize(200, 14), SetFill(1, 0),
-			EndContainer(),
-			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
-				NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_LABEL_SLOT), SetStringTip(STR_ARCHIPELAGO_LABEL_SLOT), SetMinimalSize(80, 14),
-				NWidget(WWT_EDITBOX, COLOUR_GREY, WAPGUI_EDIT_SLOT), SetStringTip(STR_EMPTY), SetMinimalSize(200, 14), SetFill(1, 0),
-			EndContainer(),
-			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
-				NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_LABEL_PASS), SetStringTip(STR_ARCHIPELAGO_LABEL_PASS), SetMinimalSize(80, 14),
-				NWidget(WWT_EDITBOX, COLOUR_GREY, WAPGUI_EDIT_PASS), SetStringTip(STR_EMPTY), SetMinimalSize(200, 14), SetFill(1, 0),
-			EndContainer(),
+			/* No server/slot/password here: the launcher already holds the
+			 * session, so joining is one click. */
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_LAUNCHER_INFO), SetMinimalSize(284, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
 			/* Town rename row */
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
 				NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_LABEL_TOWNS), SetStringTip(STR_ARCHIPELAGO_LABEL_TOWNS), SetMinimalSize(80, 14),
@@ -154,13 +140,17 @@ static std::string AP_FmtShort(int64_t v) {
 }
 
 struct ArchipelagoConnectWindow : public Window {
-	QueryString server_buf;
-	QueryString slot_buf;
-	QueryString pass_buf;
 	QueryString custom_names_buf;
-	std::string server_str, slot_str, pass_str, custom_str;
+	std::string custom_str;
 	APState  last_state  = APState::DISCONNECTED;
 	bool     last_has_sd = false;
+
+	/* The launcher holds the session; joining takes no input. */
+	static void JoinThroughLauncher()
+	{
+		if (_ap_client == nullptr) return;
+		_ap_client->Connect("", 0, "", "", "OpenTTD", false);
+	}
 
 	void UpdateTownButtons()
 	{
@@ -212,43 +202,30 @@ struct ArchipelagoConnectWindow : public Window {
 	}
 
 	ArchipelagoConnectWindow(WindowDesc &desc, WindowNumber wnum)
-		: Window(desc), server_buf(256), slot_buf(64), pass_buf(64), custom_names_buf(512)
+		: Window(desc), custom_names_buf(512)
 	{
 		this->CreateNestedTree();
-		this->querystrings[WAPGUI_EDIT_SERVER]       = &server_buf;
-		this->querystrings[WAPGUI_EDIT_SLOT]         = &slot_buf;
-		this->querystrings[WAPGUI_EDIT_PASS]         = &pass_buf;
 		this->querystrings[WAPGUI_EDIT_CUSTOM_NAMES] = &custom_names_buf;
 		this->FinishInitNested(wnum);
 
-		/* Restore last connection settings from ap_connection.cfg */
-		AP_LoadConnectionConfig();
-
-		std::string full = _ap_last_host.empty() ? "archipelago.gg:38281"
-		                 : _ap_last_host + ":" + fmt::format("{}", _ap_last_port);
-		server_buf.text.Assign(full.c_str());
-		server_str = full;
-		if (!_ap_last_slot.empty()) { slot_buf.text.Assign(_ap_last_slot.c_str()); slot_str = _ap_last_slot; }
-		if (!_ap_last_pass.empty()) { pass_buf.text.Assign(_ap_last_pass.c_str()); pass_str = _ap_last_pass; }
-
-		/* Restore town rename custom names if any */
 		if (!_ap_town_custom_names.empty()) {
 			custom_names_buf.text.Assign(_ap_town_custom_names.c_str());
 			custom_str = _ap_town_custom_names;
 		}
 
 		UpdateTownButtons();
+
+		/* Opening the window IS the join. */
+		if (!_ap_bridge_mode && _ap_client != nullptr &&
+		    _ap_client->GetState() == APState::DISCONNECTED) {
+			JoinThroughLauncher();
+		}
 	}
 
 	void OnEditboxChanged(WidgetID wid) override {
-		switch (wid) {
-			case WAPGUI_EDIT_SERVER:       server_str = server_buf.text.GetText().data(); break;
-			case WAPGUI_EDIT_SLOT:         slot_str   = slot_buf.text.GetText().data();   break;
-			case WAPGUI_EDIT_PASS:         pass_str   = pass_buf.text.GetText().data();   break;
-			case WAPGUI_EDIT_CUSTOM_NAMES:
-				custom_str = custom_names_buf.text.GetText().data();
-				_ap_town_custom_names = custom_str;
-				break;
+		if (wid == WAPGUI_EDIT_CUSTOM_NAMES) {
+			custom_str = custom_names_buf.text.GetText().data();
+			_ap_town_custom_names = custom_str;
 		}
 	}
 
@@ -285,6 +262,11 @@ struct ArchipelagoConnectWindow : public Window {
 		}
 		if (_ap_client == nullptr) return;
 		switch (widget) {
+			case WAPGUI_LAUNCHER_INFO:
+				DrawString(r.left, r.right, r.top,
+				    "Session managed by the Multiworld Launcher - nothing to type.",
+				    TC_SILVER);
+				break;
 			case WAPGUI_STATUS:
 				DrawString(r.left, r.right, r.top,
 				    StatusStr(_ap_client->GetState(), _ap_client->HasSlotData(), _ap_client->GetLastError()),
@@ -310,28 +292,10 @@ struct ArchipelagoConnectWindow : public Window {
 				_ap_town_rename_mode = 2;
 				UpdateTownButtons();
 				break;
-			case WAPGUI_BTN_CONNECT: {
-				if (_ap_client == nullptr) break;
-				/* Strip any scheme prefix the user may have typed — auto-detect handles it */
-				std::string raw = server_str;
-				if (raw.rfind("wss://", 0) == 0)    raw = raw.substr(6);
-				else if (raw.rfind("ws://", 0) == 0) raw = raw.substr(5);
-				std::string host = raw;
-				uint16_t port = 38281;
-				auto colon = raw.rfind(':');
-				if (colon != std::string::npos) {
-					host = raw.substr(0, colon);
-					int p = ParseInteger<int>(raw.substr(colon + 1)).value_or(0);
-					if (p > 0 && p < 65536) port = (uint16_t)p;
-				}
-				_ap_last_host = host; _ap_last_port = port;
-				_ap_last_slot = slot_str; _ap_last_pass = pass_str;
-				AP_SaveConnectionConfig(); /* persist for next session */
-				_ap_last_ssl = false; /* unused — auto-detect in WorkerThread */
-				_ap_client->Connect(host, port, slot_str, pass_str, "OpenTTD", false);
+			case WAPGUI_BTN_CONNECT:
+				JoinThroughLauncher();
 				this->SetDirty();
 				break;
-			}
 			case WAPGUI_BTN_DISCONNECT:
 				if (_ap_client) _ap_client->Disconnect();
 				this->SetDirty();
@@ -379,17 +343,15 @@ enum APStatusWidgets : WidgetID {
 	WAPST_BTN_RECONNECT,
 	WAPST_BTN_MISSIONS,
 	WAPST_BTN_SETTINGS,
-	WAPST_BTN_SHOP,
-	WAPST_BTN_GUIDE,
-	WAPST_BTN_INDEX,
-	WAPST_BTN_COLBY,
-	WAPST_BTN_DEMIGOD,
-	WAPST_BTN_RUINS,
+	/* Shop, Guide, Index, Events, Demigods and Ruins live on the status bar
+	 * now (WID_S_AP_BTN_* in widgets/statusbar_widget.h). Their ids used to
+	 * sit here too, unused, alongside a disable call for a widget this window
+	 * no longer has -- which did nothing, because SetWidgetDisabledState
+	 * ignores an id that is not in the layout. */
 	WAPST_NEWS_LABEL,
 	WAPST_NEWS_OFF,
 	WAPST_NEWS_SELF,
 	WAPST_NEWS_ALL,
-	WAPST_BTN_DAYNIGHT,
 	WAPST_BTN_OPEN_MP,
 };
 
@@ -585,11 +547,8 @@ struct ArchipelagoStatusWindow : public Window {
 		bool disconnected = !_ap_bridge_mode && (_ap_client == nullptr ||
 		    _ap_client->GetState() == APState::DISCONNECTED ||
 		    _ap_client->GetState() == APState::AP_ERROR);
-		this->SetWidgetDisabledState(WAPST_BTN_RECONNECT, !disconnected || _ap_last_host.empty());
+		this->SetWidgetDisabledState(WAPST_BTN_RECONNECT, !disconnected);
 		this->SetWidgetDisabledState(WAPST_BTN_MISSIONS, !AP_IsConnected());
-		this->SetWidgetDisabledState(WAPST_BTN_SHOP,     !AP_IsConnected());
-		/* Colby button: enabled when event is configured (shows countdown in step 0,
-		 * full event UI once active). Disabled when no event is configured at all. */
 		/* Highlight active news filter button */
 		this->SetWidgetLoweredState(WAPST_NEWS_OFF,  _ap_news_filter == 0);
 		this->SetWidgetLoweredState(WAPST_NEWS_SELF, _ap_news_filter == 1);
@@ -612,8 +571,8 @@ struct ArchipelagoStatusWindow : public Window {
 	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override {
 		switch (widget) {
 			case WAPST_BTN_RECONNECT:
-				if (_ap_client && !_ap_last_host.empty())
-					_ap_client->Connect(_ap_last_host, _ap_last_port, _ap_last_slot, _ap_last_pass, "OpenTTD", _ap_last_ssl);
+				if (_ap_client != nullptr)
+					_ap_client->Connect("", 0, "", "", "OpenTTD", false);
 				break;
 			case WAPST_BTN_MISSIONS:
 				ShowArchipelagoMissionsWindow();
@@ -745,6 +704,10 @@ static std::string ColourizeNumbers(const std::string &text)
  * ========================================================================= */
 
 enum APMissionsWidgets : WidgetID {
+	/* Neither of these two is in the layout below. They are kept because widget
+	 * ids are positional: removing them renumbers every id after them, and the
+	 * gain is two lines. Left deliberately, so the next sweep does not flag
+	 * them as an oversight. */
 	WAPM_CAPTION,
 	WAPM_FILTER_PANEL,
 	WAPM_FILTER_ALL,

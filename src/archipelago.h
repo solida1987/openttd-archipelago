@@ -345,11 +345,9 @@ public:
 
 	/** Returns the "player (game)" hint label for a shop location, or "" if not yet resolved. */
 	std::string GetLocationHint(const std::string &location_name) const {
-		auto id_it = location_ids.find(location_name);
-		if (id_it == location_ids.end()) return "";
-		auto hint_it = location_id_to_hint.find(id_it->second);
-		if (hint_it == location_id_to_hint.end()) return "";
-		return hint_it->second;
+		std::lock_guard<std::mutex> lg(slot_mutex);
+		auto it = location_hints.find(location_name);
+		return it == location_hints.end() ? "" : it->second;
 	}
 
 	/** Dispatch queued callbacks on the main thread. Call every game tick. */
@@ -357,7 +355,7 @@ public:
 
 	APState     GetState()     const { return state.load(); }
 	std::string GetLastError() const { std::lock_guard<std::mutex> lg(slot_mutex); return last_error; }
-	int         GetLocationCount() const { std::lock_guard<std::mutex> lg(slot_mutex); return (int)location_ids.size(); }
+	int         GetLocationCount() const { return total_locations.load(); }
 
 	APSlotData GetSlotData() const {
 		std::lock_guard<std::mutex> lg(slot_mutex);
@@ -395,12 +393,13 @@ private:
 	APSlotData         slot_data;
 	std::atomic<bool>  has_slot_data{ false };
 
-	/* Location name -> ID (filled from slot_data) */
-	std::map<std::string, int64_t> location_ids;
-	std::map<int64_t, std::string> location_id_to_name; ///< Reverse of location_ids
+	/* Location ids live in the launcher now: checks travel out by name and the
+	 * launcher resolves them, so the game never needs the table. What it does
+	 * need is the total, for "x of y checks" -- LOCCOUNT: carries it. */
+	std::atomic<int>               total_locations{ 0 };
 	std::map<int64_t, std::string> player_id_to_name;   ///< Slot number → player alias
 	std::map<int64_t, std::string> player_id_to_game;   ///< Slot number → game name
-	std::map<int64_t, std::string> location_id_to_hint; ///< location_id → "player (game)" label
+	std::map<std::string, std::string> location_hints;  ///< location name → "player (game)"
 
 	std::thread        worker_thread;
 	std::atomic<bool>  stop_requested{ false };
@@ -419,11 +418,10 @@ private:
 	std::mutex               outbound_mutex;
 	std::deque<OutboundMsg>  outbound_queue;
 
-	void        WorkerThread();
-	bool        DoWebSocketHandshake(int sock, const std::string &h, uint16_t p);
-	bool        SendWsText(int sock, const std::string &text);
-	bool        RecvWsFrame(int sock, std::string &out_text, bool &out_closed);
-	void        ProcessAPMessage(const std::string &json_text);
+	void        WorkerThread();          ///< pipe link to the launcher
+	void        HandleLine(const std::string &line); ///< one launcher message
+	void        SendLoadedGrfList();     ///< GRF:.. lines, then GRFEND:
+	void        ReportGrfState();        ///< LOG:.. lines after a refusal, so it can be diagnosed
 	void        PushEvent(InboundEvent ev);
 	std::string PopOutbound();
 	void        SetLastErrorInternal(const std::string &err) { std::lock_guard<std::mutex> lg(slot_mutex); last_error = err; }
@@ -442,6 +440,13 @@ void UninitArchipelago();
  * Called from engine.cpp to block the vanilla date-based vehicle introduction.
  */
 bool AP_IsActive();
+
+/* Per-seed savegame key: explicit from the launcher's SEED: line, or a
+ * stable hash of the slot_data text when none arrives. */
+void AP_SetSeedKey(const std::string &raw);
+void AP_SetSeedKeyFallback(const std::string &raw);
+bool AP_SeedExitSave();
+void AP_MirrorSeedSave();
 
 /** Forward a text/command string to the AP server (Say packet). */
 void AP_SendSay(const std::string &text);
@@ -509,7 +514,6 @@ uint8_t AP_GetLockedTrackDirs(uint8_t railtype);
 uint8_t AP_GetLockedTrackDirsRaw(uint8_t ap_index);
 
 /** Back-compat shim — deprecated, always returns false. Use AP_IsTrackDirLocked. */
-bool AP_IsRailDirectionLocked(uint8_t track);
 
 /** Infrastructure lock checks — called from command intercepts. */
 bool AP_IsRoadDirLocked(uint8_t axis);        ///< axis: 0=X (NE-SW), 1=Y (NW-SE)
@@ -719,6 +723,12 @@ int AP_GetTaskChecksCompleted();
 
 /** Generate/replenish tasks up to the active cap from the current map. */
 void AP_GenerateTasks();
+
+/* NewGRF fetch — the launcher offers, the player accepts, and OpenTTD's own
+ * content client does the download from BaNaNaS. We ship no game data; see
+ * the note on the definition in archipelago_manager.cpp. */
+void AP_FetchNewGrfs(const std::vector<uint32_t> &grfids);
+void AP_StartNewGrfDownload();
 
 /** Saveload helpers for task state. */
 std::string AP_GetTasksStr();

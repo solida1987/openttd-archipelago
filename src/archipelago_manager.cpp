@@ -5,20 +5,9 @@
  * Foundation, version 2.
  */
 
-/**
- * @file archipelago_manager.cpp
- * Game-logic integration for the Archipelago randomizer.
- *
- * Engine unlock strategy:
- *   Vanilla OpenTTD releases vehicles to companies via NewVehicleAvailable()
- *   which is called from CalendarEnginesMonthlyLoop() when the current date
- *   passes an engine's intro_date.  In AP mode engine.cpp skips that call
- *   (AP_IsActive() returns true), so no engine ever becomes available through
- *   the normal date path.  Instead, when the AP server sends us an item we
- *   call EnableEngineForCompany() directly — the same internal function that
- *   NewVehicleAvailable() calls — which sets company_avail, updates railtypes,
- *   and refreshes all affected GUI windows.
- */
+/* @file archipelago_manager.cpp Game-logic for the Archipelago randomizer.
+ * Engines never unlock by date in AP mode (engine.cpp skips the loop);
+ * items call EnableEngineForCompany() directly. */
 
 #include "stdafx.h"
 #include <charconv>
@@ -71,6 +60,7 @@
 
 #include "core/format.hpp"
 #include "console_func.h"
+#include "network/network_content.h"
 #include "console_internal.h"
 #include "window_func.h"
 #include "gui.h"
@@ -971,47 +961,6 @@ static void AP_ResolveRuinTypes()
 	}
 }
 
-/** Place a ruin object on a random valid tile.
- *  @param ruin_index 0..5 (matches NML item IDs)
- *  @return true if successfully placed */
-static bool AP_PlaceRuin(int ruin_index)
-{
-	AP_ResolveRuinTypes();
-
-	if (ruin_index < 0 || ruin_index >= AP_NUM_RUIN_TYPES) return false;
-	ObjectType ot = _ap_ruin_types[ruin_index];
-	if (ot == INVALID_OBJECT_TYPE) {
-		AP_WARN(fmt::format("Ruin type {} not resolved — GRF missing?", ruin_index));
-		return false;
-	}
-
-	/* Try random tiles until we find one that works */
-	for (int attempt = 0; attempt < 5000; attempt++) {
-		TileIndex tile = RandomTile();
-
-		/* Quick pre-checks: flat, clear land, not too close to edge */
-		if (!IsValidTile(tile)) continue;
-		if (TileX(tile) < 2 || TileY(tile) < 2) continue;
-		if (TileX(tile) >= Map::SizeX() - 2 || TileY(tile) >= Map::SizeY() - 2) continue;
-
-		/* Try to build the object (Deity command) */
-		CompanyID old_company = _current_company;
-		_current_company = OWNER_DEITY;
-		CommandCost res = Command<CMD_BUILD_OBJECT>::Do(
-			DoCommandFlags{DoCommandFlag::Execute},
-			tile, ot, 0);
-		_current_company = old_company;
-
-		if (res.Succeeded()) {
-			AP_OK(fmt::format("Ruin placed at tile {}", tile));
-			return true;
-		}
-	}
-
-	AP_WARN(fmt::format("Failed to place ruin type {} after 5000 attempts", ruin_index));
-	return false;
-}
-
 /* ── Star Placement — forward declarations (defined after _ap_pending_sd) ── */
 static bool AP_PlaceSingleStar(APStar &star);
 static void AP_InitStarEntries();
@@ -1026,10 +975,85 @@ static int _ap_ruin_cooldown_months = 0; ///< Months until next spawn allowed
 static constexpr int AP_RUIN_SPAWN_COOLDOWN = 6; ///< Months between new ruin spawns
 static bool _ap_ruins_initial_spawned = false; ///< Have we done the initial batch?
 
+/**
+ * One drain per monitor per tick, shared by every reader.
+ *
+ * ⚠ GetDeliveryAmount() and GetPickupAmount() RESET the counter as they read
+ * it. Missions, tasks, ruins and Colby all encode the SAME key for the same
+ * company+cargo+town, so whoever reads first empties it and everyone after
+ * gets zero -- silently, because zero is also what "nothing was delivered"
+ * looks like.
+ *
+ * A set of already-drained monitors stops the double read but throws the
+ * amount away, which is worse: the second reader is skipped instead of
+ * credited. That is why a ruin sharing a town with another ruin (which the
+ * soft-lock guard makes near-certain, since every ruin gets passengers or
+ * mail) never counted at all.
+ *
+ * So the amount is cached, not the fact. Every reader that asks for the same
+ * monitor in the same tick gets the same number -- which is correct: one
+ * delivery of 100 passengers to a town satisfies the mission, the task AND
+ * the ruin that all asked for exactly that.
+ *
+ * Delivery and pickup are separate counters on the same id, so they cache
+ * separately.
+ */
+class CargoDrainCache {
+public:
+	int32_t Delivered(CargoMonitorID monitor)
+	{
+		auto it = this->delivery.find(monitor);
+		if (it != this->delivery.end()) return it->second;
+		int32_t amount = GetDeliveryAmount(monitor, true);
+		this->delivery.emplace(monitor, amount);
+		return amount;
+	}
+
+	int32_t PickedUp(CargoMonitorID monitor)
+	{
+		auto it = this->pickup.find(monitor);
+		if (it != this->pickup.end()) return it->second;
+		int32_t amount = GetPickupAmount(monitor, true);
+		this->pickup.emplace(monitor, amount);
+		return amount;
+	}
+
+private:
+	std::map<CargoMonitorID, int32_t> delivery;
+	std::map<CargoMonitorID, int32_t> pickup;
+};
+
 /* Forward declarations for ruin functions (defined after _ap_pending_sd) */
 static bool AP_SpawnRuin();
-static void AP_UpdateRuinProgress(CompanyID cid, std::set<CargoMonitorID> &drained);
+static void AP_UpdateRuinProgress(CompanyID cid, CargoDrainCache &cargo);
 static void AP_RuinMonthlyTick();
+
+/* Every location check goes through here -- it writes the trace line and keeps
+ * the shop/mission tallies. Declared early so subsystems above its definition
+ * (the Demigod event) use it instead of poking the client directly. */
+void AP_SendCheckByName(const std::string &location_name);
+
+/**
+ * Fetch missing NewGRF sets through OpenTTD's own content service.
+ *
+ * The seed announces what it was generated from (slot_data required_newgrf),
+ * and the launcher tells the player which of those they are missing. Until now
+ * that was the end of it: the advice was "open the game and use Check Online
+ * Content", which is a chore in the middle of joining a multiworld.
+ *
+ * ⛔ WE DISTRIBUTE NOTHING. This asks the content client the game already
+ * ships to fetch from BaNaNaS, OpenTTD's own service, where every package
+ * carries one of their declared licences. The file comes from them, after the
+ * player pressed the button in the launcher -- the same shape as the emulator
+ * offer.
+ *
+ * ⚠ ONLY WHAT THE SEED NAMES. 'content select all' was removed in OpenTTD
+ * 1.11 because a handful of people downloading everything accounted for 70%
+ * of the service's bandwidth. We look up the exact GRF ids and take those.
+ */
+void AP_FetchNewGrfs(const std::vector<uint32_t> &grfids);
+/** Starts the download for what AP_FetchNewGrfs() queued. */
+void AP_StartNewGrfDownload();
 
 /**
  * Check if a tile is an active (non-completed) ruin and fill cargo acceptance.
@@ -2262,7 +2286,7 @@ static void AP_ColbyInit()
 
 /** Called every ~5 s from the polling loop.
  *  Drives event progression: waiting → active steps → final popup. */
-static void AP_ColbyTick()
+static void AP_ColbyTick(CargoDrainCache &cargo)
 {
 	if (!_ap_colby_enabled) return;
 	if (_ap_colby_target_town == (TownID)UINT16_MAX) return;
@@ -2324,7 +2348,7 @@ static void AP_ColbyTick()
 		AP_ColbyForceTargetAcceptance();
 
 		CargoMonitorID monitor = EncodeCargoTownMonitor(cid, ct, _ap_colby_target_town);
-		int32_t delta = GetDeliveryAmount(monitor, true); /* consume increment, keep monitoring */
+		int32_t delta = cargo.Delivered(monitor); /* shared read -- see CargoDrainCache */
 		if (delta > 0) _ap_colby_step_delivered += (int64_t)delta;
 
 		if (_ap_colby_step_delivered >= COLBY_STEP_AMOUNT) {
@@ -2819,10 +2843,9 @@ void AP_DemigodDefeat()
 	/* Restore vehicle restrictions */
 	AP_DemigodRestoreRestrictions();
 
-	/* Send AP location check */
-	if (_ap_client != nullptr) {
-		_ap_client->SendCheckByName(def.location);
-	}
+	/* Send AP location check. Through the wrapper, not the client directly:
+	 * it is what writes the trace line every other check is debugged from. */
+	AP_SendCheckByName(def.location);
 
 	/* Record defeat */
 	_ap_demigod_defeated.insert(def.location);
@@ -4211,6 +4234,102 @@ bool AP_ShouldStartWorld()
 	return _ap_pending_world_start && _game_mode == GM_MENU;
 }
 
+/* ── The per-seed savegame key ─────────────────────────────────────────
+ * A seed's save must never load under another seed: the server's
+ * placements differ, and locally-finished missions would sit unsendable.
+ * The launcher sends the AP seed name; without it the slot_data text
+ * stands in (stable per seed, distinct between seeds). */
+static std::string _ap_seed_key;
+static bool        _ap_seed_key_explicit = false;
+
+static std::string SanitizeSeedKey(const std::string &raw)
+{
+	std::string out;
+	for (char c : raw) {
+		if (out.size() >= 48) break;
+		bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+		          (c >= '0' && c <= '9') || c == '-' || c == '_';
+		out.push_back(ok ? c : '_');
+	}
+	return out;
+}
+
+void AP_SetSeedKey(const std::string &raw)
+{
+	_ap_seed_key = SanitizeSeedKey(raw);
+	_ap_seed_key_explicit = true;
+}
+
+void AP_SetSeedKeyFallback(const std::string &raw)
+{
+	if (_ap_seed_key_explicit || !_ap_seed_key.empty()) return;
+	/* FNV-1a over the slot_data text. */
+	uint64_t h = 0xcbf29ce484222325ull;
+	for (unsigned char c : raw) { h ^= c; h *= 0x100000001b3ull; }
+	_ap_seed_key = fmt::format("sd_{:016x}", h);
+}
+
+static std::string SeedSaveName()
+{
+	return _ap_seed_key.empty() ? "" : "ap_seed_" + _ap_seed_key + ".sav";
+}
+
+/* The launcher flow: no question, no dialog. A save for this seed means
+ * "continue"; no save means "begin". The 3-choice window stays for games
+ * started outside the launcher. */
+void AP_AutoStartOrLoad()
+{
+	if (!_ap_pending_world_start) return;
+
+	std::string name = SeedSaveName();
+	std::string full = name.empty() ? "" : FioFindFullPath(SAVE_DIR, name);
+	if (!full.empty()) {
+		_ap_pending_world_start        = false;
+		_ap_world_started_this_session = true; /* suppress worldgen on later slot_data */
+		_file_to_saveload.SetMode(FIOS_TYPE_FILE, SLO_LOAD);
+		_file_to_saveload.name = full;
+		_switch_mode = SM_LOAD_GAME;
+		Debug(misc, 0, "[AP] Auto-continue: loading '{}'", name);
+		return;
+	}
+
+	AP_ConsumeWorldStart();
+	uint32_t seed = AP_GetWorldSeed();
+	_is_network_server = false;
+	Debug(misc, 0, "[AP] Auto-start: generating world (seed={})", seed);
+	StartNewGameWithoutGUI(seed);
+}
+
+/* Guards the mirror against saving itself. */
+static bool _ap_seed_save_busy = false;
+
+/* Called from SaveOrLoad after EVERY game save -- manual, autosave or exit.
+ * Whatever name the player chose, the seed save is refreshed too, so
+ * auto-continue always loads the newest state of THIS seed without having
+ * to know what the player called their file. */
+void AP_MirrorSeedSave()
+{
+	if (_ap_seed_save_busy) return;
+	if (!_ap_session_started || _game_mode != GM_NORMAL) return;
+	std::string name = SeedSaveName();
+	if (name.empty()) return;
+
+	_ap_seed_save_busy = true;
+	SaveOrLoadResult r = SaveOrLoad(name, SLO_SAVE, DFT_GAME_FILE, SAVE_DIR, false);
+	_ap_seed_save_busy = false;
+	if (r == SL_OK) Debug(misc, 0, "[AP] Seed save refreshed: '{}'", name);
+}
+
+/* True when the session's per-seed save was written; the caller skips the
+ * generic exit.sav then, so "continue" always finds the newest state. */
+bool AP_SeedExitSave()
+{
+	if (!_ap_session_started || _game_mode != GM_NORMAL) return false;
+	if (SeedSaveName().empty()) return false;
+	AP_MirrorSeedSave();
+	return true;
+}
+
 void AP_ConsumeWorldStart()
 {
 	if (!_ap_pending_world_start) return;
@@ -4461,21 +4580,7 @@ void AP_ConsumeWorldStart()
 			}
 		}
 		if (mg->status != GCS_NOT_FOUND && mg->status != GCS_DISABLED) {
-			/* Parameters for military-items.grf (12 total):
-			 *   [0]  Enable custom airports:  1 = All
-			 *   [1]  Disable airport noise:   1 = yes
-			 *   [2]  Purchase cost mult:      4 = 1x
-			 *   [3]  Running cost mult:       4 = 1x
-			 *   [4]  Aircraft ranges:         0 = disabled
-			 *   [5]  Date restrictions:       0 = off
-			 *   [6]  Czechoslovak aircraft:   1 = All
-			 *   [7]  European aircraft:       1 = All
-			 *   [8]  Soviet/Russian aircraft: 1 = All
-			 *   [9]  US aircraft:             1 = All
-			 *   [10] Other nations aircraft:  1 = All
-			 *   [11] Disable default aircraft:0 = no
-			 * Params 6-10 default to 0 (None) if unset, which hides ALL
-			 * military aircraft and prevents Action 4 name assignment. */
+			/* military-items.grf parameters, in GRF order. */
 			const uint32_t mil_params[] = {1, 1, 4, 4, 0, 0, 1, 1, 1, 1, 1, 0};
 			mg->SetParams(mil_params);
 			AppendToGRFConfigList(_grfconfig_newgame, std::move(mg));
@@ -4856,6 +4961,109 @@ void AP_ShowConsole(const std::string &msg)
 	IConsolePrint(CC_INFO, msg);
 }
 
+/* ---------------------------------------------------------------------------
+ * NewGRF fetch — see the declaration near the top for the why.
+ * -------------------------------------------------------------------------- */
+
+/** Which GRF ids we are still waiting to see in the content list. */
+static std::set<uint32_t> _ap_grf_wanted;
+static bool _ap_grf_fetch_active = false;
+
+/**
+ * Watches the content list arrive and picks out the ids the seed named.
+ *
+ * The list is not delivered in one piece: entries stream in through
+ * OnReceiveContentInfo, so the selection has to happen per entry and the
+ * download is started when the connection reports it is done sending.
+ */
+struct APContentCallback : public ContentCallback {
+	void OnConnect(bool success) override
+	{
+		if (!success) {
+			AP_WARN("[NewGRF] Could not reach OpenTTD's content service.");
+			AP_ShowNews("[AP] Could not reach OpenTTD's content service — try again later.");
+			_ap_grf_fetch_active = false;
+		}
+	}
+
+	void OnReceiveContentInfo(const ContentInfo &ci) override
+	{
+		if (!_ap_grf_fetch_active) return;
+		/* unique_id is the GRF id for NewGRF content -- the same number the
+		 * seed announces and the game reports for a loaded set. */
+		if (ci.type != CONTENT_TYPE_NEWGRF) return;
+		if (_ap_grf_wanted.erase(ci.unique_id) == 0) return;
+
+		_network_content_client.Select(ci.id);
+		AP_OK(fmt::format("[NewGRF] Found {} ({:08x}) — queued for download",
+		                  ci.name, std::byteswap(ci.unique_id)));
+	}
+
+	void OnDisconnect() override
+	{
+		if (!_ap_grf_fetch_active) return;
+		_ap_grf_fetch_active = false;
+		if (!_ap_grf_wanted.empty()) {
+			AP_WARN(fmt::format("[NewGRF] {} set(s) the seed needs are not on the "
+			                    "content service.", _ap_grf_wanted.size()));
+		}
+	}
+
+	void OnDownloadComplete(ContentID cid) override
+	{
+		AP_OK(fmt::format("[NewGRF] Download complete ({})", (int)cid));
+	}
+};
+
+void AP_FetchNewGrfs(const std::vector<uint32_t> &grfids)
+{
+	if (grfids.empty()) return;
+	if (_ap_grf_fetch_active) {
+		AP_WARN("[NewGRF] A fetch is already running.");
+		return;
+	}
+
+	static APContentCallback *const cb = []() {
+		auto *c = new APContentCallback();
+		_network_content_client.AddCallback(c);
+		return c;
+	}();
+	(void)cb;
+
+	_ap_grf_wanted.clear();
+	for (uint32_t id : grfids) _ap_grf_wanted.insert(id);
+	_ap_grf_fetch_active = true;
+
+	AP_ShowNews(fmt::format("[AP] Fetching {} NewGRF set(s) this seed needs from "
+	                        "OpenTTD's content service...", grfids.size()));
+
+	/* Ask only for NewGRFs. The callback selects the matching ids as they
+	 * stream in; nothing else is touched. */
+	_network_content_client.RequestContentList(CONTENT_TYPE_NEWGRF);
+}
+
+/**
+ * Start the download for whatever the callback selected.
+ *
+ * Split from AP_FetchNewGrfs because the content list arrives asynchronously:
+ * the launcher sends GRFGO after GRFGET so the player's confirmation and the
+ * list have both landed.
+ */
+void AP_StartNewGrfDownload()
+{
+	uint files = 0, bytes = 0;
+	_network_content_client.DownloadSelectedContent(files, bytes);
+	if (files == 0) {
+		AP_WARN("[NewGRF] Nothing was queued — the sets may not be on the service.");
+		AP_ShowNews("[AP] Nothing to download — the sets this seed needs were not found.");
+		return;
+	}
+	AP_ShowNews(fmt::format("[AP] Downloading {} file(s), {} KB. "
+	                        "Restart OpenTTD afterwards so the sets load.",
+	                        files, bytes / 1024));
+	AP_OK(fmt::format("[NewGRF] Downloading {} file(s), {} bytes", files, bytes));
+}
+
 void AP_SendCheckByName(const std::string &location_name)
 {
 	if (_ap_client == nullptr) return;
@@ -4980,11 +5188,6 @@ void AP_SetLockedTrackDirs(uint8_t ap_index, uint8_t mask)
 {
 	if (ap_index < AP_NUM_RAILTYPES) _ap_locked_track_dirs[ap_index] = mask;
 }
-
-// Back-compat shims — kept so any future callers don't break
-bool AP_IsRailDirectionLocked(uint8_t track) { return false; } /* deprecated — use AP_IsTrackDirLocked */
-uint8_t AP_GetLockedRailDirs()  { return 0; }
-void    AP_SetLockedRailDirs(uint8_t) {}
 
 /* ─── Road direction lock API ───────────────────────────────────────────── */
 
@@ -5212,7 +5415,10 @@ static void AP_ApplyTasksStr(const std::string &s)
 /* ── Ruin System save/load ──────────────────────────────────────────── */
 
 /** Pack ruin state into a single string for savegame.
- *  Format: "spawned,completed,cooldown,initial#id;tile;variant;town_id;cargo0_type:cargo0_req:cargo0_del,..." */
+ *  Format: "spawned,completed,cooldown,initial#id;tile;variant;town_id;cargo0_type:cargo0_req:cargo0_del:cargo0_name;..."
+ *  Cargo fields are ';'-separated and each holds four ':'-separated parts.
+ *  Saves older than the cargo-name field parse fine -- the name is optional
+ *  on read and refilled by AP_RefreshRuinNames(). */
 std::string AP_GetRuinsStr()
 {
 	/* Header: counters */
@@ -5308,7 +5514,7 @@ void AP_SetRuinsStr(const std::string &s)
 			req.cargo     = (uint8_t)parse_int(cargo_parts[0]);
 			req.required  = parse_i64(cargo_parts[1]);
 			req.delivered = parse_i64(cargo_parts[2]);
-			/* New saves (exp-5.0+) include cargo name as 4th field.
+			/* Newer saves include the cargo name as a 4th field.
 			 * Old saves fall back to placeholder resolved by AP_RefreshRuinNames(). */
 			if (cargo_parts.size() >= 4 && !cargo_parts[3].empty()) {
 				req.cargo_name = cargo_parts[3];
@@ -5605,7 +5811,7 @@ static void AP_RefreshRuinNames()
 		if (ruin.id >= 0 && ruin.id < (int)_ap_pending_sd.ruin_locations.size()) {
 			ruin.location_name = _ap_pending_sd.ruin_locations[ruin.id];
 		}
-		/* Fix cargo_name — skip if already resolved (exp-5.0+ saves include names).
+		/* Fix cargo_name — skip if already resolved (newer saves include names).
 		 * Only fix placeholder names that start with "cargo#". */
 		for (auto &req : ruin.cargo_reqs) {
 			if (req.cargo_name.substr(0, 6) != "cargo#") continue;
@@ -5882,7 +6088,6 @@ static void AP_CompleteTask(APTask &t)
 		t.id, t.description.substr(0, 60), (int)t.reward_type, t.reward_cash));
 	CompanyID cid = _local_company;
 	if (!Company::IsValidID(cid)) return;
-	Company *c = Company::Get(cid);
 
 	if (t.reward_type == APTaskRewardType::CASH) {
 		AP_ChangeMoney(cid, (Money)t.reward_cash);
@@ -6047,23 +6252,8 @@ void AP_DeductShopPrice(const std::string &location_name)
 	AP_ChangeMoney(cid, -(Money)price);
 }
 
-/* -------------------------------------------------------------------------
- * REAL-TIME TIMER — 250ms
- *
- * Responsibilities:
- *   1. Pump the AP network client (Tick)
- *   2. First-tick session setup when we enter GM_NORMAL:
- *        - Build engine name map
- *        - Unlock the starting vehicle via EnableEngineForCompany
- *        - Flush any items that arrived before GM_NORMAL
- *        - Open the AP status window
- *   3. Win-condition polling every ~5 s
- *
- * NOTE: Engine locking is no longer done here.  engine.cpp blocks the
- * vanilla date-based introduction loop when AP_IsActive() is true.
- * Engines are locked by default (company_avail is empty until an engine's
- * intro_date would have fired), and we unlock them on demand.
- * ---------------------------------------------------------------------- */
+/* 250 ms timer: pump the client, first-tick session setup at GM_NORMAL,
+ * win-condition polling ~5 s. Engine locking lives in engine.cpp. */
 
 static uint32_t _ap_realtime_ticks = 0;
 
@@ -6590,7 +6780,7 @@ static bool AP_SpawnRuin()
 }
 
 /** Check ruin cargo delivery progress.  Called from AP_UpdateNamedMissions(). */
-static void AP_UpdateRuinProgress(CompanyID cid, std::set<CargoMonitorID> &drained)
+static void AP_UpdateRuinProgress(CompanyID cid, CargoDrainCache &cargo)
 {
 	for (auto it = _ap_active_ruins.begin(); it != _ap_active_ruins.end(); ) {
 		APRuin &ruin = *it;
@@ -6603,12 +6793,11 @@ static void AP_UpdateRuinProgress(CompanyID cid, std::set<CargoMonitorID> &drain
 			TownID tid = (TownID)ruin.town_id;
 			if (!Town::IsValidID(tid)) continue;
 
+			/* Two ruins near the same town share this key -- and because every
+			 * ruin is guaranteed a basic cargo, that is the normal case, not
+			 * the edge case. The cache gives both the same amount. */
 			CargoMonitorID monitor = EncodeCargoTownMonitor(cid, (CargoType)req.cargo, tid);
-			int32_t delivered = 0;
-			if (!drained.count(monitor)) {
-				delivered = GetDeliveryAmount(monitor, true);
-				drained.insert(monitor);
-			}
+			int32_t delivered = cargo.Delivered(monitor);
 			if (delivered > 0) req.delivered += (int64_t)delivered;
 		}
 
@@ -6860,30 +7049,15 @@ static void AP_AssignNamedEntities()
 	}
 }
 
-/**
- * Called monthly: accumulate named-entity progress and protect industries
- * from random closure while their mission is active.
- */
-/**
- * Called every 250 ms: accumulate named-entity progress for missions AND tasks,
- * and protect mission industries from random closure.
- *
- * Root-cause fix for task progress bug:
- *   Missions and tasks share the same CargoMonitorID key
- *   (company + cargo + town/industry).  GetDeliveryAmount() resets the
- *   counter to 0 on every call.  AP_UpdateNamedMissions() runs every 250 ms
- *   and drained mission monitors before the monthly AP_UpdateTasks() could
- *   read them — tasks always saw 0.
- *   Fix: accumulate BOTH mission and task progress in one pass so each
- *   monitor is only drained once per tick.
- */
-static void AP_UpdateNamedMissions()
+/* Every 250 ms: named-entity progress for missions, tasks, ruins and Colby in
+ * ONE pass, all reading through the same CargoDrainCache. Every subsystem that
+ * reads a cargo monitor MUST go through here -- see the cache's own note for
+ * why a second independent reader silently gets nothing.
+ * Also shields mission industries from closure. */
+static void AP_UpdateNamedMissions(CargoDrainCache &cargo)
 {
 	CompanyID cid = _local_company;
 	if (cid >= MAX_COMPANIES) return;
-
-	/* Track monitors already drained this tick so tasks don't double-drain. */
-	std::set<CargoMonitorID> drained;
 
 	/* ── Mission progress ─────────────────────────────────────────────── */
 	for (APMission &m : _ap_pending_sd.missions) {
@@ -6897,17 +7071,8 @@ static void AP_UpdateNamedMissions()
 			TownID tid = (TownID)m.named_entity.id;
 			if (!Town::IsValidID(tid)) { m.named_entity.cumulative = (uint64_t)m.amount; continue; }
 			CargoMonitorID monitor = EncodeCargoTownMonitor(cid, ct, tid);
-			int32_t delivered = GetDeliveryAmount(monitor, true);
-			drained.insert(monitor);
-			if (delivered > 0) {
-				m.named_entity.cumulative += (uint64_t)delivered;
-				/* Credit any tasks sharing this exact monitor (same town + cargo). */
-				for (APTask &t : _ap_tasks) {
-					if (t.completed || t.expired || !t.monitor_seeded) continue;
-					if (t.type == "passengers_to_town" && t.entity_id == m.named_entity.id)
-						t.current_value += delivered;
-				}
-			}
+			int32_t delivered = cargo.Delivered(monitor);
+			if (delivered > 0) m.named_entity.cumulative += (uint64_t)delivered;
 
 		} else if (m.type == "cargo_from_industry") {
 			IndustryID iid = (IndustryID)m.named_entity.id;
@@ -6917,16 +7082,8 @@ static void AP_UpdateNamedMissions()
 			for (const auto &slot : ind->produced) {
 				if (!IsValidCargoType(slot.cargo)) continue;
 				CargoMonitorID monitor = EncodeCargoIndustryMonitor(cid, slot.cargo, iid);
-				int32_t picked_up = GetPickupAmount(monitor, true);
-				drained.insert(monitor);
-				if (picked_up > 0) {
-					m.named_entity.cumulative += (uint64_t)picked_up;
-					for (APTask &t : _ap_tasks) {
-						if (t.completed || t.expired || !t.monitor_seeded) continue;
-						if (t.type == "cargo_from_industry" && t.entity_id == m.named_entity.id)
-							t.current_value += picked_up;
-					}
-				}
+				int32_t picked_up = cargo.PickedUp(monitor);
+				if (picked_up > 0) m.named_entity.cumulative += (uint64_t)picked_up;
 			}
 
 		} else if (m.type == "cargo_to_industry") {
@@ -6937,14 +7094,16 @@ static void AP_UpdateNamedMissions()
 			for (const auto &slot : ind->accepted) {
 				if (!IsValidCargoType(slot.cargo)) continue;
 				CargoMonitorID monitor = EncodeCargoIndustryMonitor(cid, slot.cargo, iid);
-				int32_t delivered = GetDeliveryAmount(monitor, true);
-				drained.insert(monitor);
+				int32_t delivered = cargo.Delivered(monitor);
 				if (delivered > 0) m.named_entity.cumulative += (uint64_t)delivered;
 			}
 		}
 	}
 
-	/* ── Task progress (monitors NOT already drained by a mission above) ── */
+	/* ── Task progress ────────────────────────────────────────────────
+	 * Each task looks up its OWN monitor. The missions above no longer
+	 * hand-credit tasks: that loop matched on entity id alone, so a mail
+	 * delivery credited a passenger task in the same town. */
 	CargoType pass_ct = AP_FindCargoType("passengers");
 	bool any_task_updated = false;
 	for (APTask &t : _ap_tasks) {
@@ -6955,8 +7114,7 @@ static void AP_UpdateNamedMissions()
 			TownID tid = (TownID)t.entity_id;
 			if (!Town::IsValidID(tid)) continue;
 			CargoMonitorID mon = EncodeCargoTownMonitor(cid, pass_ct, tid);
-			if (drained.count(mon)) continue; /* already credited above */
-			int32_t delivered = GetDeliveryAmount(mon, true);
+			int32_t delivered = cargo.Delivered(mon);
 			if (delivered > 0) {
 				t.current_value += delivered;
 				any_task_updated = true;
@@ -6971,8 +7129,7 @@ static void AP_UpdateNamedMissions()
 			for (const auto &slot : ind->produced) {
 				if (!IsValidCargoType(slot.cargo)) continue;
 				CargoMonitorID mon = EncodeCargoIndustryMonitor(cid, slot.cargo, iid);
-				if (drained.count(mon)) continue;
-				int32_t picked_up = GetPickupAmount(mon, true);
+				int32_t picked_up = cargo.PickedUp(mon);
 				if (picked_up > 0) {
 					t.current_value += picked_up;
 					any_task_updated = true;
@@ -6990,7 +7147,7 @@ static void AP_UpdateNamedMissions()
 	}
 
 	/* ── Ruin cargo delivery progress ──────────────────────────────── */
-	AP_UpdateRuinProgress(cid, drained);
+	AP_UpdateRuinProgress(cid, cargo);
 }
 
 
@@ -7421,18 +7578,8 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* AP settings: vehicle/airport expiry already disabled above (before
 			 * BuildEngineMap).  No additional setting needed here. */
 
-			/* Strip the local company from every ENGINE that was auto-unlocked
-			 * by StartupOneEngine() at game start.
-			 * WAGONS are excluded by default — they are always freely available so the
-			 * player can use any locomotive they receive from AP.
-			 * BUT: if enable_wagon_unlocks is true, wagons are also locked and must
-			 * be unlocked via AP items.
-			 *
-			 * SELECTIVE LOCKING: if the APWorld sent a locked_vehicles list,
-			 * only lock engines whose English name is in that list.  Engines
-			 * NOT in the list (e.g. Iron Horse engines when enable_iron_horse=false)
-			 * remain available so the player can use them freely.
-			 * Legacy fallback: if no locked_vehicles list, lock everything (old behaviour). */
+			/* Strip the local company from engines unlocked by date before AP took
+			 * over -- a mid-session connect must not keep pre-unlocked vehicles. */
 			_ap_unlocked_engine_ids.clear();
 
 			const bool has_lock_list = !_ap_pending_sd.locked_vehicles.empty();
@@ -7807,15 +7954,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			}
 		}
 
-		/* ── Engine lock sweep: every ~5 s ─────────────────────────────── */
-		/* DISABLED in bridge mode: causes desync because the realtime timer
-		 * is NOT synchronised between server and client.  Direct state
-		 * modifications (company_avail, railtypes) at different ticks → crash.
-		 * In bridge mode this sweep is also unnecessary because:
-		 *   - AP_IsActive() blocks vanilla engine introduction
-		 *   - Initial locking happens in session-start (part of map state)
-		 *   - Unlocks go through CMD_ENGINE_CTRL::Post (network-distributed)
-		 *   - DoStartupNewCompany gives all railtypes in bridge mode */
+		/* Engine lock sweep (~5 s): relock anything the calendar slipped through. */
 		if (!_ap_bridge_mode &&
 		    _ap_realtime_ticks % 20 == 0 &&
 		    _ap_session_started &&
@@ -7856,11 +7995,18 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Accumulate cargo/profit from completed economy periods */
 			AP_UpdateSessionStats();
 
+			/* ⚠ ONE CACHE FOR THE WHOLE TICK. Every subsystem below that reads
+			 * a cargo monitor shares this object, because GetDeliveryAmount()
+			 * empties the counter as it reads it -- see CargoDrainCache. It is
+			 * built here rather than inside a subsystem so that no subsystem's
+			 * own early-out can decide whether another one runs. */
+			CargoDrainCache cargo;
+
 			/* Accumulate named-destination progress (town/industry deliveries).
 			 * NOTE: In multiplayer, skip this because it contains Ruin spawning
 			 * which calls RandomRange() and Command::Do(Execute), causing desync
 			 * with clients that don't run AP code. */
-			AP_UpdateNamedMissions();
+			AP_UpdateNamedMissions(cargo);
 
 			/* Evaluate all incomplete missions and refresh the mission window */
 			CheckMissions();
@@ -7870,8 +8016,11 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			 * using direct Command::Do(Execute) and RandomRange() calls.
 			 * In multiplayer these MUST be skipped to avoid desync — clients don't
 			 * run AP code, so their game state would diverge from the server's. */
-			/* Drive Colby Event progression */
-			if (_ap_colby_enabled && !_ap_colby_done) AP_ColbyTick();
+			/* Drive Colby Event progression. Takes the same cache as the pass
+			 * above: his fallback cargo on Tropical and Toyland is an ordinary
+			 * one, so his monitor collides with missions, tasks and ruins, and
+			 * a separate drain left him reading zero forever. */
+			if (_ap_colby_enabled && !_ap_colby_done) AP_ColbyTick(cargo);
 
 			/* Drive Demigod (God of Wackens) system */
 			AP_DemigodTick();
