@@ -75,6 +75,18 @@ other three.
 
 ### WebSocket compression not supported
 
+### OpenTTD lists only one downloaded set at a time in the menu
+
+Measured 26 Aug 2026 with two sets downloaded into content_download/newgrf/
+(Iron Horse and FIRS). Each is read correctly on its own, but with both
+present the game's own scan reports only the one that sorts first by filename
+— renaming the other to sort first swaps which one appears. Waiting two
+minutes does not change it, so it is not the scan still running.
+
+This is the game's behaviour in the menu, not the launcher's: the launcher's
+own scan reads both archives and the badges are correct either way. Enabling
+a set through OpenTTD's NewGRF window is unaffected as far as we have tested.
+
 ### NewGRF sets cannot be loaded mid-session
 
 OpenTTD reads NewGRFs at startup. When the launcher fetches a missing set for

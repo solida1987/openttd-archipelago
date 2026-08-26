@@ -94,6 +94,8 @@
 #	include <emscripten/html5.h>
 #endif
 
+#include "archipelago.h"
+
 #include "safeguards.h"
 
 void CallLandscapeTick();
@@ -495,6 +497,13 @@ static std::vector<OptionData> CreateOptions()
 	 * launcher-only switch has no business competing for one. */
 	options.push_back({ .type = ODF_HAS_VALUE, .id = 'A', .longname = "-ap-pipe" });
 
+	/* Fetch NewGRF sets and quit. The launcher offers this from the game page
+	 * when a seed needs a set the player does not have; it starts us with the
+	 * ids, we ask OpenTTD's own content service, and we exit when the download
+	 * finishes. Doing it here rather than reimplementing the content protocol
+	 * in the launcher keeps the traffic on the client OpenTTD maintains. */
+	options.push_back({ .type = ODF_HAS_VALUE, .id = 'W', .longname = "-ap-fetch-grf" });
+
 	return options;
 }
 
@@ -535,6 +544,11 @@ int openttd_main(std::span<std::string_view> arguments)
 		case 'A': {
 			extern std::string _ap_pipe_name;
 			_ap_pipe_name = mgo.opt;
+			break;
+		}
+		case 'W': {
+			extern std::string _ap_fetch_grf_ids;
+			_ap_fetch_grf_ids = mgo.opt;
 			break;
 		}
 		case 'I': graphics_set = mgo.opt; break;
@@ -1392,6 +1406,17 @@ void GameLoop()
 
 	/* Check for UDP stuff */
 	if (_network_available) NetworkBackgroundLoop();
+
+	/* Started only to fetch NewGRF sets for the launcher (-ap-fetch-grf).
+	 * Driven from here rather than the AP realtime timer, because that timer
+	 * only advances while a game is loaded (GM_NORMAL above) -- in fetch mode
+	 * we sit in the menu, so it never ticked and the process hung until it was
+	 * killed. Here the content client is pumped on the line above, which is
+	 * exactly what the fetch is waiting on. */
+	if (AP_IsFetchGrfMode() && AP_FetchGrfTick()) {
+		_exit_game = true;
+		return;
+	}
 
 	DebugSendRemoteMessages();
 

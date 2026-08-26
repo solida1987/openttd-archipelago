@@ -53,6 +53,7 @@
 #include "timer/timer_game_realtime.h"
 #include "timer/timer.h"
 
+#include <chrono>
 #include <map>
 #include <string>
 #include <atomic>
@@ -60,6 +61,7 @@
 
 #include "core/format.hpp"
 #include "console_func.h"
+#include "openttd.h"
 #include "network/network_content.h"
 #include "console_internal.h"
 #include "window_func.h"
@@ -4989,14 +4991,14 @@ struct APContentCallback : public ContentCallback {
 	void OnReceiveContentInfo(const ContentInfo &ci) override
 	{
 		if (!_ap_grf_fetch_active) return;
-		/* unique_id is the GRF id for NewGRF content -- the same number the
-		 * seed announces and the game reports for a loaded set. */
+		/* unique_id carries the GRF id in the SAME byte order as the hex text
+		 * in slot_data and our GRF: lines -- compare it directly. */
 		if (ci.type != CONTENT_TYPE_NEWGRF) return;
 		if (_ap_grf_wanted.erase(ci.unique_id) == 0) return;
 
 		_network_content_client.Select(ci.id);
 		AP_OK(fmt::format("[NewGRF] Found {} ({:08x}) — queued for download",
-		                  ci.name, std::byteswap(ci.unique_id)));
+		                  ci.name, ci.unique_id));
 	}
 
 	void OnDisconnect() override
@@ -5062,6 +5064,91 @@ void AP_StartNewGrfDownload()
 	                        "Restart OpenTTD afterwards so the sets load.",
 	                        files, bytes / 1024));
 	AP_OK(fmt::format("[NewGRF] Downloading {} file(s), {} bytes", files, bytes));
+}
+
+/* ---------------------------------------------------------------------------
+ * Fetch-and-quit mode (-ap-fetch-grf)
+ *
+ * The launcher's "Get missing content" button starts us with a list of GRF
+ * ids, we fetch them, and we exit. No game is loaded and no window matters --
+ * the player is looking at the launcher, not at us.
+ *
+ * It runs as a small state machine off the realtime tick because the content
+ * list arrives asynchronously: ask, wait for entries to stream in, download,
+ * wait for the downloads to finish, quit. Every step has a deadline, so a
+ * service that never answers ends as an exit rather than a hung window.
+ * -------------------------------------------------------------------------- */
+
+std::string _ap_fetch_grf_ids;   ///< set from the command line
+
+static int _ap_fetch_state = 0;   ///< 0 idle, 1 asked, 2 downloading, 3 done
+static std::chrono::steady_clock::time_point _ap_fetch_since;
+
+/** Seconds spent in the current step. */
+static int AP_FetchElapsed()
+{
+	return (int)std::chrono::duration_cast<std::chrono::seconds>(
+	           std::chrono::steady_clock::now() - _ap_fetch_since).count();
+}
+
+bool AP_IsFetchGrfMode() { return !_ap_fetch_grf_ids.empty(); }
+
+/** Called from the realtime tick. Returns true when it is time to quit. */
+bool AP_FetchGrfTick()
+{
+	if (_ap_fetch_grf_ids.empty()) return false;
+
+	switch (_ap_fetch_state) {
+		case 0: {
+			/* Same hex form the launcher and our GRF: lines use. */
+			std::vector<uint32_t> ids;
+			size_t start = 0;
+			while (start <= _ap_fetch_grf_ids.size()) {
+				size_t comma = _ap_fetch_grf_ids.find(',', start);
+				std::string one = _ap_fetch_grf_ids.substr(start,
+					comma == std::string::npos ? std::string::npos : comma - start);
+				if (!one.empty()) {
+					uint32_t v = 0;
+					auto res = std::from_chars(one.data(), one.data() + one.size(), v, 16);
+					/* ⚠ NO byteswap. The launcher sends the same hex text our
+					 * GRF: lines print, and that is exactly the form
+					 * ContentInfo::unique_id already holds -- OpenTTD swaps it
+					 * the other way when it wants a GRFConfig id
+					 * (network_content.cpp: FindGRFConfig(byteswap(unique_id))).
+					 * Swapping here matched nothing and downloaded nothing,
+					 * silently, because "no match" and "nothing wanted" look
+					 * the same from outside. */
+					if (res.ec == std::errc()) ids.push_back(v);
+				}
+				if (comma == std::string::npos) break;
+				start = comma + 1;
+			}
+			if (ids.empty()) { _ap_fetch_state = 3; return true; }
+			AP_FetchNewGrfs(ids);
+			_ap_fetch_state = 1;
+			_ap_fetch_since = std::chrono::steady_clock::now();
+			return false;
+		}
+		case 1:
+			/* Give the list up to 30 s to stream in; go as soon as every id
+			 * we asked for has been matched. */
+			if (AP_FetchElapsed() < 30 && !_ap_grf_wanted.empty()) return false;
+			AP_StartNewGrfDownload();
+			_ap_fetch_state = 2;
+			_ap_fetch_since = std::chrono::steady_clock::now();
+			return false;
+
+		case 2:
+			/* Downloads run on the content client's own socket, which closes
+			 * when it is finished. Cap at five minutes so an unresponsive
+			 * service ends as an exit rather than a window nobody closes. */
+			if (AP_FetchElapsed() < 300 && _network_content_client.IsConnected()) return false;
+			_ap_fetch_state = 3;
+			return true;
+
+		default:
+			return true;
+	}
 }
 
 void AP_SendCheckByName(const std::string &location_name)

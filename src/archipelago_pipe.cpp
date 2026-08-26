@@ -207,8 +207,9 @@ void ArchipelagoClient::HandleLine(const std::string &line)
 
 	/* The player accepted the launcher's offer to fetch missing NewGRF sets.
 	 * Body is a comma-separated list of GRF ids in the same hex form the GRF:
-	 * lines use. Two steps on purpose -- GRFGET asks the content service for
-	 * its list, GRFGO starts the download once that list has arrived. */
+	 * lines use -- and the same form ContentInfo::unique_id holds, so no byte
+	 * swapping. Two steps on purpose: GRFGET asks the content service for its
+	 * list, GRFGO starts the download once that list has arrived. */
 	if (tag == "GRFGET") {
 		std::vector<uint32_t> ids;
 		size_t start = 0;
@@ -221,7 +222,8 @@ void ArchipelagoClient::HandleLine(const std::string &line)
 				auto res = std::from_chars(one.data(), one.data() + one.size(), v, 16);
 				/* The launcher speaks the byte-swapped form our GRF: lines
 				 * print; the content service keys on the raw id. */
-				if (res.ec == std::errc()) ids.push_back(std::byteswap(v));
+				/* No byteswap -- ContentInfo::unique_id holds this same form. */
+				if (res.ec == std::errc()) ids.push_back(v);
 			}
 			if (comma == std::string::npos) break;
 			start = comma + 1;

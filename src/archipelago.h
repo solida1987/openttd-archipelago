@@ -730,6 +730,11 @@ void AP_GenerateTasks();
 void AP_FetchNewGrfs(const std::vector<uint32_t> &grfids);
 void AP_StartNewGrfDownload();
 
+/* Fetch-and-quit mode: the launcher starts the game with -ap-fetch-grf when
+ * the player asks for missing content from the game page. */
+bool AP_IsFetchGrfMode();
+bool AP_FetchGrfTick();
+
 /** Saveload helpers for task state. */
 std::string AP_GetTasksStr();
 void        AP_SetTasksStr(const std::string &s);
