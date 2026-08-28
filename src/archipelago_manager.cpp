@@ -4504,6 +4504,33 @@ void AP_ConsumeWorldStart()
 	 * Clearing the list ensures our versions (with correct params) win. */
 	_grfconfig_newgame.clear();
 
+	/* ⚠⚠ WHAT THIS LIST IS NOT: THE LAST WORD.
+	 *
+	 * Everything built here can be thrown away again before the world is
+	 * generated, and it happens on a race nobody can see:
+	 *
+	 *   AfterNewGRFScan::OnNewGRFsScanned()   (openttd.cpp)
+	 *     -> LoadFromConfig()                 (settings.cpp:1448)
+	 *          _grfconfig_newgame = GRFLoadConfig(ini, "newgrf", false);
+	 *
+	 * The NewGRF scan is asynchronous. When it finishes AFTER this function
+	 * has run -- which is the normal case on a cold start -- its callback
+	 * reloads the config and _grfconfig_newgame becomes whatever openttd.cfg
+	 * says, byte for byte. ResetGRFConfig(true) then copies that into the
+	 * live list, and the sets chosen here are simply gone.
+	 *
+	 * Measured in a player's session: this function reported "DONE: 4 GRFs",
+	 * and SessionStart one moment later reported "newgame=3" -- the three
+	 * lines in his openttd.cfg. The two missing ones were ours, and with them
+	 * went every ruin in a 400-ruin pool:
+	 *     [AP] WARNING: No ruin ObjectTypes found! GRFID=0x55525041
+	 *
+	 * So openttd.cfg is the only list that survives, and the launcher writes
+	 * BOTH the seed's sets and our own two into it before starting the game
+	 * (OpenTTD-London-Plugin, NewGrfEnabler). What follows still runs -- it is
+	 * correct, and it is what a player starting the game by hand gets -- but
+	 * it must not be relied on as the thing that decides. */
+
 	/* ── NewGRF: Archipelago Ruins ───────────────────────────────────── */
 	{
 		/* The ruins GRF is in baseset/ (copied by CMake). It defines 6
