@@ -119,10 +119,22 @@ class OpenTTDWorld(World):
     web = OpenTTDWeb()
 
     item_name_to_id = {name: data.code for name, data in ITEM_TABLE.items()}
-    # Pre-build with max possible config so AP can read locations at class level
+    # Pre-build with max possible config so AP can read locations at class level.
+    #
+    # ⭐ This is the REGISTRY, not a seed: every location name this world could
+    # ever hand out. It has to be at least as large as the biggest seed any
+    # option combination can produce, or generation fails on a missing name --
+    # ruin_count here must therefore keep up with RuinPoolSize.range_end.
+    #
+    # ⚠ Growing it is safe only because _build_location_table assigns ids from
+    # a FIXED per-category base (DIFFICULTY_ID_OFFSET / SHOP_ID_BASE /
+    # RUIN_ID_BASE / ...). Ruin_100 keeps id RUIN_ID_BASE+99 whatever else
+    # changes, so seeds and trackers built against the old registry still
+    # resolve. Sequential ids across categories would have made this a
+    # breaking change.
     location_name_to_id: Dict[str, int] = {
         name: data.code
-        for name, data in get_location_table(mission_count=600, shop_item_count=600, ruin_count=100, demigod_count=10, star_count=1000).items()
+        for name, data in get_location_table(mission_count=600, shop_item_count=600, ruin_count=500, demigod_count=10, star_count=1000).items()
     }
 
     # Slot data stored during generation
@@ -1059,10 +1071,38 @@ class OpenTTDWorld(World):
             self.multiworld.random.shuffle(non_shop_locs)
             self.multiworld.random.shuffle(trap_utility_items)
 
+            # ⚠⚠ Traps first, and give back whatever will not fit.
+            #
+            # Every trap and utility item was taken out of the pool above, but
+            # this loop used to place them only "while non_shop_locs" -- so a
+            # surplus was silently dropped, and each dropped item left behind
+            # a location nothing could ever fill. Generation then died in AP's
+            # Fill with "Unable to fill all locations", listing shop slots that
+            # were never the cause.
+            #
+            # It hid for as long as the pools were small: 20 utility + 10 traps
+            # against 225 non-shop locations never overflowed. It appears the
+            # moment utility_count grows, because the padding create_items adds
+            # to reach the location count is ALSO drawn from UTILITY_ITEMS and
+            # so also lands in this list. Measured at utility_count=300 with
+            # 400 ruins: 730 items for 600 places, 130 dropped, plus the 5
+            # starting vehicles held back as precollected = exactly the 135
+            # locations Fill reported.
+            #
+            # Traps go first because they are the ones with a real rule -- they
+            # must never end up in the shop. A utility item bought in a shop is
+            # just a cash injection you paid for, which is no problem at all.
+            trap_names = frozenset(TRAP_ITEMS)
+            trap_utility_items.sort(key=lambda it: it.name not in trap_names)
+
             for item in trap_utility_items:
                 if non_shop_locs:
                     loc = non_shop_locs.pop()
                     loc.place_locked_item(item)
+                else:
+                    # No room left. Back into the pool, never into the bin:
+                    # an item and a location have to stay in step.
+                    self.multiworld.itempool.append(item)
 
         # ── Step 2: Distribute progression items by fixed percentages ─────
         # Each pool gets a fixed % of progression items.
@@ -1163,6 +1203,16 @@ class OpenTTDWorld(World):
                     break
                 loc.place_locked_item(prog_items[idx])
                 idx += 1
+
+        # ⚠ Same rule as the trap/utility half above: an item that finds no
+        # location goes BACK in the pool, never on the floor. This branch
+        # should be unreachable -- progression items were drawn out of a pool
+        # that is already location-sized -- but the identical shape one screen
+        # up was also "unreachable" until utility_count grew, and it cost a
+        # whole afternoon to trace from the error AP reports, which names shop
+        # slots that had nothing to do with the cause.
+        for leftover in prog_items[idx:]:
+            self.multiworld.itempool.append(leftover)
 
     def fill_slot_data(self) -> Dict[str, Any]:
         """Data sent to the game client via the bridge."""

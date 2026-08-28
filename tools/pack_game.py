@@ -130,11 +130,32 @@ def main():
             os.remove(os.path.join(apw_dst_dir, old))
     shutil.copy2(apw_src, os.path.join(apw_dst_dir, "openttd.apworld"))
 
+    # ⚠⚠ AND THE LOOSE SOURCE BESIDE IT. Exactly the same trap as above, one
+    # level down: the base folder also carries apworld/openttd/*.py from its
+    # own release, and replacing only the .apworld left the package holding
+    # two copies of the world that disagreed with each other. Caught packaging
+    # v2.1.2 -- the zip was current while the .py files beside it still had
+    # the old option ranges and none of the pre_fill fix.
+    #
+    # Both are shipped on purpose (the source goes out with every release), so
+    # both have to be the same world.
+    src_tree = os.path.join(ROOT, "apworld", "openttd")
+    dst_tree = os.path.join(apw_dst_dir, "openttd")
+    if os.path.isdir(dst_tree):
+        shutil.rmtree(dst_tree)
+    shutil.copytree(src_tree, dst_tree,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+
     # And prove it took: reading the version back is the only way to know the
-    # copy above actually replaced what the base folder brought.
+    # copies above actually replaced what the base folder brought. Read from
+    # BOTH, because the whole point is that they must agree.
     with zipfile.ZipFile(apw_src) as _apw:
         _v = json.loads(_apw.read("openttd/archipelago.json"))["world_version"]
-    print(f"  apworld: openttd.apworld (world_version {_v})")
+    with io.open(os.path.join(dst_tree, "archipelago.json"), encoding="utf-8") as _f:
+        _vs = json.load(_f)["world_version"]
+    if _v != _vs:
+        raise SystemExit(f"apworld zip says {_v} but its source says {_vs}")
+    print(f"  apworld: openttd.apworld + source (world_version {_v})")
 
     shutil.copytree(seeds, os.path.join(staging, "standalone_seeds"))
 

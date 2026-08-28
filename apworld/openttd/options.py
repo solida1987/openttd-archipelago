@@ -228,9 +228,15 @@ class ExtremeTierVehicleMultiplier(Range):
 class UtilityCount(Range):
     """How many utility items (cash injections, loan reductions, boosts) to include.
     The remainder of the item pool is filled with vehicles for your landscape."""
+    # ⚠ Utility items are the filler this world pads a large seed with, and
+    # they are the only filler that stays useful: cash, loan reductions and
+    # cargo/reliability boosts still matter in year 2050. Speed Boost does
+    # NOT -- it caps at 300% after 20 items and every copy past that says so
+    # out loud (archipelago_manager.cpp: "already at max 300%"), which is why
+    # SpeedBoostCount is deliberately left where it is.
     display_name = "Utility Count"
     range_start = 5
-    range_end   = 100
+    range_end   = 300
     default     = 20
 
 
@@ -282,10 +288,19 @@ class StartingCashBonus(Choice):
 
 class SpeedBoostCount(Range):
     """How many Speed Boost items to place in the multiworld pool.
-    Each Speed Boost gives +10% fast-forward speed.
-    20 items = 100% → 300% max speed (default).
-    100 items = 100% → 1100% max speed.
-    More items means more chances to go faster, but takes up item slots."""
+    Each Speed Boost gives +10% fast-forward speed, from 100% up to 300%.
+    20 items reaches that maximum. Anything beyond 20 is a dead item: the
+    game caps the speed and says so out loud when the 21st arrives.
+    Raise this only to pad the pool; use Utility Count for that instead."""
+    # ⚠⚠ MEASURED IN THE GAME, not carried over from the old text here, which
+    # promised "100 items = 100% → 1100% max speed". The game disagrees:
+    #
+    #   archipelago.h        "each Speed Boost item adds 10, capped at 300"
+    #   archipelago_manager  "[AP] Speed Boost received (already at max 300%)"
+    #
+    # A player who set this to 100 on the strength of the old docstring got
+    # 80 items that announce they do nothing. range_end stays where it is so
+    # existing YAMLs keep generating -- the text is the part that was wrong.
     display_name = "Speed Boost Count"
     range_start = 20
     range_end   = 100
@@ -398,9 +413,20 @@ class RuinPoolSize(Range):
     Ruins appear on the map and require cargo delivery to clear them.
     Clearing a ruin sends a check (items come from the shop pool).
     Set to 0 to disable ruins entirely."""
+    # ⭐ This is the only setting that adds real content to the check total.
+    #
+    # Every other location in this world is carved out of the item pool:
+    # missions and shop slots share whatever vehicles, infrastructure, traps
+    # and utility items exist, so raising one lowers another. Ruins are extra
+    # -- each one is its own delivery objective placed on the map, and only
+    # MaxActiveRuins of them exist at a time, so the pool is a queue that
+    # lasts the whole game rather than 500 markers dumped on the player.
+    #
+    # The id block holds 2000 (locations.py, RUIN_ID_BASE), and the game
+    # stores them in a std::vector, so 500 costs nothing structurally.
     display_name = "Ruin Pool Size"
     range_start = 0
-    range_end = 100
+    range_end = 500
     default = 25
 
 
