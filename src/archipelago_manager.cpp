@@ -7503,6 +7503,39 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				AP_ShowNews("[AP] Starting vehicles: " + sv_list);
 			}
 
+			/* ⭐ What can the player ACTUALLY build right now?
+			 *
+			 * Every other line in this log reports what we TRIED to do:
+			 * "5 engines locked", "result=OK avail=1". None of them answers
+			 * the only question a player has, which is whether anything shows
+			 * up in the build window — and that window asks exactly one
+			 * function, IsEngineBuildable. So ask it, for every engine, and
+			 * write the answer down.
+			 *
+			 * A player reported having no way to earn anything and there was
+			 * no way to tell from the log whether that was true. Now there is. */
+			{
+				/* Engine ids, not names: resolving a name needs the
+				 * context dance BuildEngineMap does, and ap_engine_map.log
+				 * already prints "[id] 'Name'" for every one of them. */
+				std::string ids;
+				int n_build = 0, per_type[4] = { 0, 0, 0, 0 };
+				for (const Engine *be : Engine::Iterate()) {
+					if (!IsEngineBuildable(be->index, be->type, cid)) continue;
+					n_build++;
+					if ((int)be->type >= 0 && (int)be->type < 4) per_type[(int)be->type]++;
+					if (n_build <= 60) {
+						if (!ids.empty()) ids += " ";
+						ids += fmt::format("{}", (int)be->index.base());
+					}
+				}
+				AP_OK(fmt::format("[AP] Buildable right now: {} "
+					"(trains={} road={} ships={} aircraft={}){}",
+					n_build, per_type[0], per_type[1], per_type[2], per_type[3],
+					n_build == 0 ? "  -- NOTHING. The player cannot start." : ""));
+				if (!ids.empty()) AP_OK("[AP]   buildable engine ids: " + ids);
+			}
+
 			/* Apply starting cash bonus if configured */
 			if (_ap_pending_sd.starting_cash_bonus > 0 && c != nullptr) {
 				static const Money bonus_amounts[] = {
