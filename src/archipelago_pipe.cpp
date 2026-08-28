@@ -265,25 +265,33 @@ void ArchipelagoClient::HandleLine(const std::string &line)
 			this->PushEvent({ InboundEvent::DISCONNECTED, this->last_error, {}, {} });
 			return;
 		}
-		/* Second line of defence, after the launcher's own check. */
-		std::string grf_problem;
-		try {
-			grf_problem = CheckRequiredGrfs(json::parse(body));
-		} catch (const json::exception &) { /* already reported above */ }
-
-		if (!grf_problem.empty()) {
-			{
+		/* NOT A GATE ANY MORE -- and it never could be one here.
+		 *
+		 * This ran the instant slot_data arrived and asked whether the required
+		 * NewGRFs were loaded. At that moment they cannot be: the list it reads
+		 * is _grfconfig_newgame, and the thing that FILLS _grfconfig_newgame
+		 * from the seed is AP_ConsumeWorldStart -- which runs from OnSlotData,
+		 * i.e. only after this function returns. So the check refused the seed
+		 * one step before the code that would have satisfied it, and the world
+		 * was never generated. Every launch ended on the title screen.
+		 *
+		 * The file scan makes it worse: _all_grfs is still filling while this
+		 * runs. A player with six sets in content_download was measured with
+		 * three scanned -- the alphabetically first ones -- so even a correct
+		 * check here would have been reading a half-built list.
+		 *
+		 * Say what the seed wants; let AP_ConsumeWorldStart do its job. */
+		{
+			std::string grf_note;
+			try {
+				grf_note = CheckRequiredGrfs(json::parse(body));
+			} catch (const json::exception &) { /* already reported above */ }
+			if (!grf_note.empty()) {
 				std::lock_guard<std::mutex> lg(this->outbound_mutex);
-				this->outbound_queue.push_back({ "LOG:GRF check failed: " + grf_problem });
+				this->outbound_queue.push_back({
+						"LOG:seed asks for NewGRFs not selected yet -- the world "
+						"start will select them: " + grf_note });
 			}
-			this->ReportGrfState();
-			{
-				std::lock_guard<std::mutex> lg(this->slot_mutex);
-				this->last_error = grf_problem;
-			}
-			this->state.store(APState::AP_ERROR);
-			this->PushEvent({ InboundEvent::DISCONNECTED, grf_problem, {}, {} });
-			return;
 		}
 
 		this->PushEvent(std::move(ev));

@@ -4332,12 +4332,74 @@ bool AP_SeedExitSave()
 	return true;
 }
 
+/**
+ * Put one NewGRF into the new-game list, by GRF ID.
+ *
+ * ⚠⚠ BY ID, NOT BY FILENAME. Every block here used to build a GRFConfig from a
+ * bare name like "shark.grf" and hand it to FillGRFDetails. That only ever
+ * finds a LOOSE file in newgrf/ -- and BaNaNaS, which is where players get
+ * these sets, delivers them as .tar archives whose member path is
+ * "4a44bbb1-shark_ship_set-1.0.tar\shark-1.0\shark.grf". So a player with
+ * SHARK, Hover and Vactrain sitting in content_download got
+ * "DONE: 2 GRFs in _grfconfig_newgame" -- only the two we ship ourselves --
+ * and none of the seed's vehicles existed in their game.
+ *
+ * FindGRFConfig searches the scanned set by id and does not care where the
+ * file lives. The filename is kept only as a fallback for a hand-placed copy.
+ *
+ * ⚠ The scan has to have finished first. _all_grfs is still filling while
+ * slot_data arrives -- measured at three of six sets on one machine, the
+ * alphabetically first ones -- so this rescans once per world start.
+ */
+static bool AP_ActivateGrfById(uint32_t grfid_hex, const std::string &filename,
+                               const char *label)
+{
+	/* The id travels here the way it is written in the file; the engine holds
+	 * it byte-swapped. */
+	const GRFConfig *found = FindGRFConfig(std::byteswap(grfid_hex), FGCM_NEWEST_VALID);
+	if (found != nullptr) {
+		auto c = std::make_unique<GRFConfig>(*found);
+		c->SetSuitablePalette();
+		AppendToGRFConfigList(_grfconfig_newgame, std::move(c));
+		AP_OK(fmt::format("{} activated for new game (found as {}).", label, found->filename));
+		return true;
+	}
+
+	/* Nothing scanned carries that id. Fall back to a loose file of the
+	 * expected name, which is how a hand-placed copy arrives. */
+	auto c = std::make_unique<GRFConfig>(filename);
+	c->SetSuitablePalette();
+	if (FillGRFDetails(*c, false, NEWGRF_DIR)
+	    && c->status != GCS_NOT_FOUND && c->status != GCS_DISABLED) {
+		AppendToGRFConfigList(_grfconfig_newgame, std::move(c));
+		AP_OK(fmt::format("{} activated for new game (loose file).", label));
+		return true;
+	}
+
+	AP_WARN(fmt::format("{} is in the seed but nothing installed carries GRF id {:08x} "
+	                    "-- install it from Check Online Content.", label, grfid_hex));
+	return false;
+}
+
 void AP_ConsumeWorldStart()
 {
 	if (!_ap_pending_world_start) return;
 	_ap_pending_world_start = false;
 
 	const APSlotData &sd = _ap_pending_sd;
+
+	/* ⚠⚠ NO RESCAN HERE.
+	 *
+	 * ScanNewGRFFiles rebuilds _all_grfs from scratch, and the TITLE GAME is
+	 * still live at this point holding GRFConfig pointers of its own. Doing it
+	 * here crashed the game one second in, twice, with an access violation and
+	 * a crash report showing the title game (year 2090, landscape 3) rather
+	 * than the seed's world.
+	 *
+	 * The scan OpenTTD runs at startup is enough: by the time slot_data has
+	 * been fetched, parsed and delivered, _all_grfs is populated. If a set is
+	 * genuinely not there, AP_ActivateGrfById says so and the world still
+	 * starts -- a missing vehicle set is a worse game, not a dead one. */
 
 	/* Debug: log AP slot data flags to file (stdout is DEVNULL in bridge mode) */
 	{
@@ -4480,383 +4542,28 @@ void AP_ConsumeWorldStart()
 	}
 
 	/* ── NewGRF: Iron Horse ──────────────────────────────────────────── */
-	if (sd.enable_iron_horse) {
-		/* iron_horse.grf is bundled in the {exe}/newgrf/ subfolder of the
-		 * Archipelago patch release zip.  OpenTTD searches SP_BINARY_DIR
-		 * last in its NewGRF scan, so if the user has not yet done a
-		 * ScanNewGRFFiles() that picked it up, we copy it into the personal
-		 * newgrf directory first so FillGRFDetails can find it. */
-
-		static const std::string IH_FILENAME = "iron_horse.grf";
-
-		/* 1) Does the file already exist anywhere OpenTTD would find it? */
-		auto ih = std::make_unique<GRFConfig>(IH_FILENAME);
-		ih->SetSuitablePalette();
-
-		if (!FillGRFDetails(*ih, false, NEWGRF_DIR)) {
-			/* Not found — try to copy from our bundle (next to the exe) */
-			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + IH_FILENAME;
-			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + IH_FILENAME;
-
-			bool copied = false;
-			{
-				/* std::filesystem is banned by safeguards — use fopen/fwrite */
-				FILE *fsrc = fopen(src.c_str(), "rb");
-				if (fsrc != nullptr) {
-					FILE *fdst = fopen(dst.c_str(), "wb");
-					if (fdst != nullptr) {
-						char buf[65536];
-						size_t n;
-						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) {
-							fwrite(buf, 1, n, fdst);
-						}
-						fclose(fdst);
-						copied = true;
-					}
-					fclose(fsrc);
-				}
-			}
-
-			if (copied) {
-				AP_OK(fmt::format("Iron Horse GRF installed from bundle to: {}", dst));
-				/* Re-try FillGRFDetails now that the file is in place */
-				ih = std::make_unique<GRFConfig>(IH_FILENAME);
-				ih->SetSuitablePalette();
-				if (!FillGRFDetails(*ih, false, NEWGRF_DIR)) {
-					/* Rescan so OpenTTD finds the newly copied file */
-					ScanNewGRFFiles(nullptr);
-					ih = std::make_unique<GRFConfig>(IH_FILENAME);
-					ih->SetSuitablePalette();
-					FillGRFDetails(*ih, false, NEWGRF_DIR);
-				}
-			} else {
-				AP_WARN(fmt::format(
-					"iron_horse.grf not found in bundle ({}) — "
-					"place it in your newgrf/ folder or re-download the patch zip.",
-					src));
-			}
-		}
-
-		/* 2) If the GRF is now resolved, add it to the new-game config */
-		if (ih->status != GCS_NOT_FOUND && ih->status != GCS_DISABLED) {
-			AppendToGRFConfigList(_grfconfig_newgame, std::move(ih));
-			AP_OK("Iron Horse GRF activated for new game.");
-		}
-	}
+	if (sd.enable_iron_horse) AP_ActivateGrfById(0x43411223, "iron_horse.grf", "Iron Horse");
 
 	/* ── NewGRF: Military Items ─────────────────────────────────────── */
-	if (sd.enable_military_items) {
-		static const std::string MIL_FILENAME = "military-items.grf";
-		auto mg = std::make_unique<GRFConfig>(MIL_FILENAME);
-		mg->SetSuitablePalette();
-		if (!FillGRFDetails(*mg, false, NEWGRF_DIR)) {
-			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + MIL_FILENAME;
-			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + MIL_FILENAME;
-			bool copied = false;
-			{
-				FILE *fsrc = fopen(src.c_str(), "rb");
-				if (fsrc != nullptr) {
-					FILE *fdst = fopen(dst.c_str(), "wb");
-					if (fdst != nullptr) {
-						char buf[65536];
-						size_t n;
-						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
-						fclose(fdst);
-						copied = true;
-					}
-					fclose(fsrc);
-				}
-			}
-			if (copied) {
-				AP_OK(fmt::format("Military Items GRF installed from bundle to: {}", dst));
-				mg = std::make_unique<GRFConfig>(MIL_FILENAME);
-				mg->SetSuitablePalette();
-				if (!FillGRFDetails(*mg, false, NEWGRF_DIR)) {
-					ScanNewGRFFiles(nullptr);
-					mg = std::make_unique<GRFConfig>(MIL_FILENAME);
-					mg->SetSuitablePalette();
-					FillGRFDetails(*mg, false, NEWGRF_DIR);
-				}
-			} else {
-				AP_WARN(fmt::format("military-items.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
-			}
-		}
-		if (mg->status != GCS_NOT_FOUND && mg->status != GCS_DISABLED) {
-			/* military-items.grf parameters, in GRF order. */
-			const uint32_t mil_params[] = {1, 1, 4, 4, 0, 0, 1, 1, 1, 1, 1, 0};
-			mg->SetParams(mil_params);
-			AppendToGRFConfigList(_grfconfig_newgame, std::move(mg));
-			AP_OK("Military Items GRF activated for new game (airports=All, noise=off).");
-		}
-	}
+	if (sd.enable_military_items) AP_ActivateGrfById(0x41440101, "military-items.grf", "Military Items");
 
 	/* ── NewGRF: SHARK Ship Set ─────────────────────────────────────── */
-	if (sd.enable_shark_ships) {
-		static const std::string SHARK_FILENAME = "shark.grf";
-		auto sg = std::make_unique<GRFConfig>(SHARK_FILENAME);
-		sg->SetSuitablePalette();
-
-		if (!FillGRFDetails(*sg, false, NEWGRF_DIR)) {
-			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + SHARK_FILENAME;
-			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + SHARK_FILENAME;
-			bool copied = false;
-			{
-				FILE *fsrc = fopen(src.c_str(), "rb");
-				if (fsrc != nullptr) {
-					FILE *fdst = fopen(dst.c_str(), "wb");
-					if (fdst != nullptr) {
-						char buf[65536];
-						size_t n;
-						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
-						fclose(fdst);
-						copied = true;
-					}
-					fclose(fsrc);
-				}
-			}
-			if (copied) {
-				AP_OK(fmt::format("SHARK GRF installed from bundle to: {}", dst));
-				sg = std::make_unique<GRFConfig>(SHARK_FILENAME);
-				sg->SetSuitablePalette();
-				if (!FillGRFDetails(*sg, false, NEWGRF_DIR)) {
-					ScanNewGRFFiles(nullptr);
-					sg = std::make_unique<GRFConfig>(SHARK_FILENAME);
-					sg->SetSuitablePalette();
-					FillGRFDetails(*sg, false, NEWGRF_DIR);
-				}
-			} else {
-				AP_WARN(fmt::format("shark.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
-			}
-		}
-		if (sg->status != GCS_NOT_FOUND && sg->status != GCS_DISABLED) {
-			AppendToGRFConfigList(_grfconfig_newgame, std::move(sg));
-			AP_OK("SHARK Ship Set GRF activated for new game.");
-		}
-	}
+	if (sd.enable_shark_ships) AP_ActivateGrfById(0x4a44bbb1, "shark.grf", "SHARK Ship Set");
 
 	/* ── NewGRF: Hover Vehicles ─────────────────────────────────────── */
-	if (sd.enable_hover_vehicles) {
-		static const std::string HV_FILENAME = "hoverv.grf";
-		auto hg = std::make_unique<GRFConfig>(HV_FILENAME);
-		hg->SetSuitablePalette();
-
-		if (!FillGRFDetails(*hg, false, NEWGRF_DIR)) {
-			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + HV_FILENAME;
-			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + HV_FILENAME;
-			bool copied = false;
-			{
-				FILE *fsrc = fopen(src.c_str(), "rb");
-				if (fsrc != nullptr) {
-					FILE *fdst = fopen(dst.c_str(), "wb");
-					if (fdst != nullptr) {
-						char buf[65536];
-						size_t n;
-						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
-						fclose(fdst);
-						copied = true;
-					}
-					fclose(fsrc);
-				}
-			}
-			if (copied) {
-				AP_OK(fmt::format("Hover Vehicles GRF installed from bundle to: {}", dst));
-				hg = std::make_unique<GRFConfig>(HV_FILENAME);
-				hg->SetSuitablePalette();
-				if (!FillGRFDetails(*hg, false, NEWGRF_DIR)) {
-					ScanNewGRFFiles(nullptr);
-					hg = std::make_unique<GRFConfig>(HV_FILENAME);
-					hg->SetSuitablePalette();
-					FillGRFDetails(*hg, false, NEWGRF_DIR);
-				}
-			} else {
-				AP_WARN(fmt::format("hoverv.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
-			}
-		}
-		if (hg->status != GCS_NOT_FOUND && hg->status != GCS_DISABLED) {
-			AppendToGRFConfigList(_grfconfig_newgame, std::move(hg));
-			AP_OK("Hover Vehicles GRF activated for new game.");
-		}
-	}
+	if (sd.enable_hover_vehicles) AP_ActivateGrfById(0x485a0101, "hoverv.grf", "Hover Vehicles");
 
 	/* ── NewGRF: HEQS Heavy Equipment Set ──────────────────────────── */
-	if (sd.enable_heqs) {
-		static const std::string HEQS_FILENAME = "heqs.grf";
-		auto hq = std::make_unique<GRFConfig>(HEQS_FILENAME);
-		hq->SetSuitablePalette();
-
-		if (!FillGRFDetails(*hq, false, NEWGRF_DIR)) {
-			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + HEQS_FILENAME;
-			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + HEQS_FILENAME;
-			bool copied = false;
-			{
-				FILE *fsrc = fopen(src.c_str(), "rb");
-				if (fsrc != nullptr) {
-					FILE *fdst = fopen(dst.c_str(), "wb");
-					if (fdst != nullptr) {
-						char buf[65536];
-						size_t n;
-						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
-						fclose(fdst);
-						copied = true;
-					}
-					fclose(fsrc);
-				}
-			}
-			if (copied) {
-				AP_OK(fmt::format("HEQS GRF installed from bundle to: {}", dst));
-				hq = std::make_unique<GRFConfig>(HEQS_FILENAME);
-				hq->SetSuitablePalette();
-				if (!FillGRFDetails(*hq, false, NEWGRF_DIR)) {
-					ScanNewGRFFiles(nullptr);
-					hq = std::make_unique<GRFConfig>(HEQS_FILENAME);
-					hq->SetSuitablePalette();
-					FillGRFDetails(*hq, false, NEWGRF_DIR);
-				}
-			} else {
-				AP_WARN(fmt::format("heqs.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
-			}
-		}
-		if (hq->status != GCS_NOT_FOUND && hq->status != GCS_DISABLED) {
-			AppendToGRFConfigList(_grfconfig_newgame, std::move(hq));
-			AP_OK("HEQS Heavy Equipment GRF activated for new game.");
-		}
-	}
+	if (sd.enable_heqs) AP_ActivateGrfById(0x41501202, "heqs.grf", "HEQS Heavy Equipment");
 
 	/* ── NewGRF: Vactrain Set ──────────────────────────────────────── */
-	if (sd.enable_vactrain) {
-		static const std::string VAC_FILENAME = "vactrain_1.0.1.grf";
-		auto vg = std::make_unique<GRFConfig>(VAC_FILENAME);
-		vg->SetSuitablePalette();
-
-		if (!FillGRFDetails(*vg, false, NEWGRF_DIR)) {
-			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + VAC_FILENAME;
-			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + VAC_FILENAME;
-			bool copied = false;
-			{
-				FILE *fsrc = fopen(src.c_str(), "rb");
-				if (fsrc != nullptr) {
-					FILE *fdst = fopen(dst.c_str(), "wb");
-					if (fdst != nullptr) {
-						char buf[65536];
-						size_t n;
-						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
-						fclose(fdst);
-						copied = true;
-					}
-					fclose(fsrc);
-				}
-			}
-			if (copied) {
-				AP_OK(fmt::format("Vactrain GRF installed from bundle to: {}", dst));
-				vg = std::make_unique<GRFConfig>(VAC_FILENAME);
-				vg->SetSuitablePalette();
-				if (!FillGRFDetails(*vg, false, NEWGRF_DIR)) {
-					ScanNewGRFFiles(nullptr);
-					vg = std::make_unique<GRFConfig>(VAC_FILENAME);
-					vg->SetSuitablePalette();
-					FillGRFDetails(*vg, false, NEWGRF_DIR);
-				}
-			} else {
-				AP_WARN(fmt::format("vactrain_1.0.1.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
-			}
-		}
-		if (vg->status != GCS_NOT_FOUND && vg->status != GCS_DISABLED) {
-			AppendToGRFConfigList(_grfconfig_newgame, std::move(vg));
-			AP_OK("Vactrain Set GRF activated for new game.");
-		}
-	}
+	if (sd.enable_vactrain) AP_ActivateGrfById(0x444a5901, "vactrain_1.0.1.grf", "Vactrain Set");
 
 	/* ── NewGRF: Aircraftpack 2025 ─────────────────────────────────── */
-	if (sd.enable_aircraftpack) {
-		static const std::string AP25_FILENAME = "Aircraft2025.grf";
-		auto ag = std::make_unique<GRFConfig>(AP25_FILENAME);
-		ag->SetSuitablePalette();
-
-		if (!FillGRFDetails(*ag, false, NEWGRF_DIR)) {
-			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + AP25_FILENAME;
-			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + AP25_FILENAME;
-			bool copied = false;
-			{
-				FILE *fsrc = fopen(src.c_str(), "rb");
-				if (fsrc != nullptr) {
-					FILE *fdst = fopen(dst.c_str(), "wb");
-					if (fdst != nullptr) {
-						char buf[65536];
-						size_t n;
-						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
-						fclose(fdst);
-						copied = true;
-					}
-					fclose(fsrc);
-				}
-			}
-			if (copied) {
-				AP_OK(fmt::format("Aircraftpack 2025 GRF installed from bundle to: {}", dst));
-				ag = std::make_unique<GRFConfig>(AP25_FILENAME);
-				ag->SetSuitablePalette();
-				if (!FillGRFDetails(*ag, false, NEWGRF_DIR)) {
-					ScanNewGRFFiles(nullptr);
-					ag = std::make_unique<GRFConfig>(AP25_FILENAME);
-					ag->SetSuitablePalette();
-					FillGRFDetails(*ag, false, NEWGRF_DIR);
-				}
-			} else {
-				AP_WARN(fmt::format("Aircraft2025.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
-			}
-		}
-		if (ag->status != GCS_NOT_FOUND && ag->status != GCS_DISABLED) {
-			AppendToGRFConfigList(_grfconfig_newgame, std::move(ag));
-			AP_OK("Aircraftpack 2025 GRF activated for new game.");
-		}
-	}
+	if (sd.enable_aircraftpack) AP_ActivateGrfById(0x4c480101, "Aircraft2025.grf", "Aircraftpack 2025");
 
 	/* ── NewGRF: FIRS Industries ───────────────────────────────────── */
-	if (sd.enable_firs) {
-		static const std::string FIRS_FILENAME = "firs.grf";
-		auto fg = std::make_unique<GRFConfig>(FIRS_FILENAME);
-		fg->SetSuitablePalette();
-
-		if (!FillGRFDetails(*fg, false, NEWGRF_DIR)) {
-			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + FIRS_FILENAME;
-			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + FIRS_FILENAME;
-			bool copied = false;
-			{
-				FILE *fsrc = fopen(src.c_str(), "rb");
-				if (fsrc != nullptr) {
-					FILE *fdst = fopen(dst.c_str(), "wb");
-					if (fdst != nullptr) {
-						char buf[65536];
-						size_t n;
-						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) fwrite(buf, 1, n, fdst);
-						fclose(fdst);
-						copied = true;
-					}
-					fclose(fsrc);
-				}
-			}
-			if (copied) {
-				AP_OK(fmt::format("FIRS Industries GRF installed from bundle to: {}", dst));
-				fg = std::make_unique<GRFConfig>(FIRS_FILENAME);
-				fg->SetSuitablePalette();
-				if (!FillGRFDetails(*fg, false, NEWGRF_DIR)) {
-					ScanNewGRFFiles(nullptr);
-					fg = std::make_unique<GRFConfig>(FIRS_FILENAME);
-					fg->SetSuitablePalette();
-					FillGRFDetails(*fg, false, NEWGRF_DIR);
-				}
-			} else {
-				AP_WARN(fmt::format("firs.grf not found in bundle ({}) — place it in your newgrf/ folder.", src));
-			}
-		}
-		if (fg->status != GCS_NOT_FOUND && fg->status != GCS_DISABLED) {
-			/* FIRS parameter 0 = Economy type (0=Temperate Basic, 1=Arctic Basic,
-			 * 2=Tropic Basic, 3=Steeltown, 4=In A Hot Country) */
-			std::vector<uint32_t> firs_params = {sd.firs_economy};
-			fg->SetParams(firs_params);
-			AppendToGRFConfigList(_grfconfig_newgame, std::move(fg));
-			AP_OK(fmt::format("FIRS Industries GRF activated (economy={}).", sd.firs_economy));
-		}
-	}
+	if (sd.enable_firs) AP_ActivateGrfById(0xf1250009, "firs.grf", "FIRS Industries");
 
 	/* Count how many GRFs were added to _grfconfig_newgame */
 	{
@@ -7542,6 +7249,22 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 					fmt::print(dbg, "[SessionStart] bridge_mode={} cid={} company_valid={} missions={} locked_vehicles={}\n",
 						(int)_ap_bridge_mode, (int)cid.base(), c != nullptr ? 1 : 0,
 						_ap_pending_sd.missions.size(), _ap_pending_sd.locked_vehicles.size());
+					/* ⚠ The list that actually matters once the world exists.
+					 * _grfconfig_newgame can hold five sets while the running game
+					 * shows none -- which is exactly what happened -- so log both
+					 * and say which entry was dropped and with what status. */
+					fmt::print(dbg, "[SessionStart] grf: active={} newgame={} scanned={}\n",
+						_grfconfig.size(), _grfconfig_newgame.size(), _all_grfs.size());
+					for (const auto &gc : _grfconfig) {
+						if (gc == nullptr) continue;
+						fmt::print(dbg, "  active {:08x} status={} {}\n",
+							std::byteswap(gc->ident.grfid), (int)gc->status, gc->filename);
+					}
+					for (const auto &gc : _grfconfig_newgame) {
+						if (gc == nullptr) continue;
+						fmt::print(dbg, "  newgame {:08x} status={} {}\n",
+							std::byteswap(gc->ident.grfid), (int)gc->status, gc->filename);
+					}
 					fclose(dbg);
 				}
 			}
