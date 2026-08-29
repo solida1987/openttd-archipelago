@@ -567,6 +567,12 @@ class MapSizeX(Choice):
     option_512  = 3
     option_1024 = 4
     option_2048 = 5
+    option_4096 = 6
+    # ⭐ 4096 is the ENGINE's ceiling, measured: map_type.h declares
+    # MAX_MAP_SIZE_BITS = 12, and nothing limits the two axes combined --
+    # each is validated on its own (archipelago_manager: 6 <= map_x <= 12).
+    # ⚠ 4096x4096 is 16.7 million tiles. Generation takes minutes and the
+    # map alone wants gigabytes; it is offered, not recommended.
     default = 3  # 512
 
     @property
@@ -580,6 +586,12 @@ class MapSizeY(Choice):
     option_512  = 3
     option_1024 = 4
     option_2048 = 5
+    option_4096 = 6
+    # ⭐ 4096 is the ENGINE's ceiling, measured: map_type.h declares
+    # MAX_MAP_SIZE_BITS = 12, and nothing limits the two axes combined --
+    # each is validated on its own (archipelago_manager: 6 <= map_x <= 12).
+    # ⚠ 4096x4096 is 16.7 million tiles. Generation takes minutes and the
+    # map alone wants gigabytes; it is offered, not recommended.
     default = 3  # 512
 
     @property
