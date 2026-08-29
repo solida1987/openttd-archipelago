@@ -7839,6 +7839,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			CompanyID lock_cid = _local_company;
 			if (lock_cid < MAX_COMPANIES) {
 				bool need_invalidate = false;
+				int relocked = 0;
 				const bool lock_wagons = _ap_pending_sd.enable_wagon_unlocks;
 				for (Engine *e : Engine::Iterate()) {
 					/* Wagons stay available unless wagon unlocks are enabled */
@@ -7853,7 +7854,22 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 					if (e->company_avail.Test(lock_cid)) {
 						e->company_avail.Reset(lock_cid);
 						need_invalidate = true;
+						relocked++;
 					}
+				}
+				/* ⚠ _ap_unlocked_engine_ids is a RUNTIME set and is never
+				 * saved. If anything ever leaves it empty while a session is
+				 * running -- a save reloaded without the session-start block
+				 * re-running, for instance -- this sweep takes the player's
+				 * whole fleet away five seconds after they get it, silently.
+				 * So say when it takes anything, and say how many it is
+				 * protecting. A player reported having nothing to build and
+				 * there was no way to tell this apart from him looking in the
+				 * wrong window. */
+				if (relocked > 0) {
+					AP_TRACE(fmt::format("LockSweep: relocked {} engine(s); "
+						"AP-unlocked set holds {}", relocked,
+						(int)_ap_unlocked_engine_ids.size()));
 				}
 				if (need_invalidate) InvalidateWindowClassesData(WC_BUILD_VEHICLE, 0);
 			}
