@@ -100,13 +100,43 @@ def main():
 
     base = newest_win64_base()
     build_bin = newest_engine_build()
+
+    # ⚠ The window title is the version string in rev.cpp, which the build
+    # regenerates every time -- from the .ap_version file in the repo root,
+    # which OVERRIDES git entirely (cmake/scripts/FindVersion.cmake reads it
+    # first). Nobody updated that file after v2.0.4, so the title bar lied
+    # through five releases and the player used it as evidence he was running
+    # an old build. The stamp has to match the release being packed, or the
+    # package is refused here rather than doubted in the field.
+    exe_bytes = open(os.path.join(build_bin, "openttd.exe"), "rb").read()
+    if args.version.encode() not in exe_bytes:
+        raise SystemExit(
+            f"STOP: the engine does not carry the version stamp {args.version}. "
+            "The stamp comes from the .ap_version file in the repo root -- it "
+            "overrides git entirely and said v2.0.4 through five releases. "
+            "Write the release version into .ap_version and rebuild.")
+    print(f"  version stamp {args.version} present in the engine")
     seeds = os.path.join(ROOT, "standalone_seeds")
     if not os.path.isfile(os.path.join(seeds, "index.json")):
         raise SystemExit("no standalone_seeds/index.json -- run tools/gen_standalone_seeds.py")
 
     staging = os.path.join(DIST, "game_package")
     if os.path.isdir(staging):
-        shutil.rmtree(staging)
+        # ⚠ The repo lives under OneDrive, and OneDrive intermittently holds a
+        # handle on a staging folder from the previous run -- rmtree then dies
+        # on "Adgang nægtet" for a directory that is empty and deletable two
+        # seconds later. Hit twice in two days; clear attributes, wait, retry.
+        def _clear(_func, _path, _exc):
+            os.chmod(_path, 0o700)
+            _func(_path)
+        for attempt in range(4):
+            try:
+                shutil.rmtree(staging, onexc=_clear)
+                break
+            except OSError:
+                if attempt == 3:
+                    raise
+                time.sleep(2)
     shutil.copytree(base, staging)
 
     # Fresh engine on top of the proven layout.

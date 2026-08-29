@@ -3479,13 +3479,47 @@ static void AP_OnSlotData(const APSlotData &sd)
 	}
 }
 
-static void AP_OnItemReceived(const APItem &item)
+static void AP_OnItemReceived(const APItem &incoming)
 {
-	Debug(misc, 1, "[AP] Item received: '{}' (id={} idx={})", item.item_name, item.item_id, item.server_index);
+	Debug(misc, 1, "[AP] Item received: '{}' (id={} idx={})", incoming.item_name, incoming.item_id, incoming.server_index);
 	AP_TRACE(fmt::format("ItemReceived: name='{}' id={} server_idx={} session_started={}",
-		item.item_name, item.item_id, item.server_index, _ap_session_started));
+		incoming.item_name, incoming.item_id, incoming.server_index, _ap_session_started));
 
-	/* Queue items that arrive before we've entered GM_NORMAL */
+	/* ⚠⚠ THE PIPE SENDS IDS, NOT NAMES. Resolve here, or nothing below runs.
+	 *
+	 * Every item London relays arrives with an EMPTY name -- the trace above
+	 * printed name='' for every single one -- and the guard further down
+	 * returns on an empty name. The result, measured in a live session: the
+	 * player bought five shop checks and collected three stars, the server
+	 * registered all of them and sent the items back, and NOT ONE was
+	 * applied. No Kirby Paul Tank in the build list, no ferry, and a
+	 * "Cash Injection £200,000" that never became money. The starting
+	 * vehicles masked it, because they are unlocked from slot_data's
+	 * starting_vehicles list on a different path entirely.
+	 *
+	 * The header even documents the intent -- APItem::item_name says
+	 * "Resolved from slot_data item_id_to_name map" -- the resolution just
+	 * never existed. slot_data always arrives before items: London sends
+	 * SLOTDATA before it replays the item stream, and the pipe dispatch
+	 * queue preserves that order. */
+	APItem item = incoming;
+	if (item.item_name.empty()) {
+		auto found = _ap_pending_sd.item_id_to_name.find(item.item_id);
+		if (found != _ap_pending_sd.item_id_to_name.end()) {
+			item.item_name = found->second;
+			AP_TRACE(fmt::format("ItemResolved: id={} -> '{}'", item.item_id, item.item_name));
+		} else {
+			/* Said in the console log, not only in the debug stream: an
+			 * unresolvable item is a dropped item, and silence here is how
+			 * the bug above survived every session before this one. */
+			AP_TRACE(fmt::format("ItemUNRESOLVED: id={} is not in item_id_to_name ({} entries) — item DROPPED",
+				item.item_id, _ap_pending_sd.item_id_to_name.size()));
+		}
+	}
+
+	/* Queue items that arrive before we've entered GM_NORMAL.
+	 * Queue the RESOLVED copy; the flush re-enters this function and slot
+	 * data could in principle have been replaced in between. */
 	if (!_ap_session_started) {
 		AP_TRACE(fmt::format("ItemQueued: '{}' (session not started, queue_size={})", item.item_name, _ap_pending_items.size() + 1));
 		_ap_pending_items.push_back(item);
