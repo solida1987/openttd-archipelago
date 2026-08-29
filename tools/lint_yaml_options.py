@@ -104,7 +104,12 @@ def main():
         proc = subprocess.run(
             [gen_exe, "--player_files_path", players, "--outputpath", output,
              "--seed", "20260814"],
-            capture_output=True, text=True, timeout=900)
+            # ⚠ encoding + errors, not bare text=True. The generator prints
+            # £ and — in its own log, and the Windows default (cp1252) throws
+            # on them mid-read: stdout comes back as None and this gate died
+            # in its own reporting AFTER the check it exists for had passed.
+            capture_output=True, text=True, timeout=900,
+            encoding="utf-8", errors="replace")
 
         made = [f for f in os.listdir(output) if f.endswith(".zip")]
         if made:

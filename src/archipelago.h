@@ -463,6 +463,24 @@ void ShowArchipelagoIndexWindow();
 /** Returns true if the given EngineID has been unlocked via Archipelago items. */
 bool AP_IsEngineUnlocked(uint32_t engine_id);
 
+/**
+ * Is this game setting owned by the Archipelago seed?
+ *
+ * ⚠⚠ A seed decides map size, economy, vehicle limits, station spread and
+ * forty other things, and every one of them was left editable in the settings
+ * window while a session ran. Changing one after generation makes the game
+ * disagree with the seed everyone else is playing, and the change is saved --
+ * so it survives, silently, for the rest of the multiworld.
+ *
+ * Called from SettingDesc::IsEditable, which is the single choke point every
+ * path to a setting goes through: the settings window greys the entry out, the
+ * console refuses, and a network client cannot push it either.
+ *
+ * @param name the setting's full name, e.g. "vehicle.max_train_length"
+ * @return true while an AP session owns it -- outside a session, nothing locks
+ */
+bool AP_IsSettingLocked(std::string_view name);
+
 /** Unlock an engine by its AP item name.  Used by both singleplayer AP and bridge mode. */
 bool AP_UnlockEngineByName(const std::string &name);
 

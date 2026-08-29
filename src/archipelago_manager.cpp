@@ -1376,6 +1376,74 @@ static void ForceEnglishLanguage()
  * AP_IsActive — called from engine.cpp to block vanilla date-introduction
  * ---------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------
+ * AP_IsSettingLocked — the seed owns these, the player does not
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Every setting AP_ApplyGameSettings writes into _settings_newgame.
+ *
+ * ⭐ Kept in the same file as the code that writes them, so the two cannot
+ * drift apart unnoticed: adding a line there without adding it here leaves a
+ * setting the seed decides and the player can undo. tools/lint_settings_locked.py
+ * compares the two lists and fails the build when they disagree.
+ */
+static const std::set<std::string_view> _ap_owned_settings = {
+	"construction.crossing_with_competitor",
+	"construction.road_stop_on_competitor_road",
+	"construction.road_stop_on_town_road",
+	"difficulty.construction_cost",
+	"difficulty.disasters",
+	"difficulty.industry_density",
+	"difficulty.infinite_money",
+	"difficulty.max_loan",
+	"difficulty.number_towns",
+	"difficulty.quantity_sea_lakes",
+	"difficulty.terrain_type",
+	"difficulty.vehicle_breakdowns",
+	"difficulty.vehicle_costs",
+	"economy.allow_town_roads",
+	"economy.bribe",
+	"economy.exclusive_rights",
+	"economy.found_town",
+	"economy.fund_buildings",
+	"economy.fund_roads",
+	"economy.give_money",
+	"economy.industry_cargo_scale",
+	"economy.inflation",
+	"economy.infrastructure_maintenance",
+	"economy.town_cargo_scale",
+	"economy.town_growth_rate",
+	"economy.type",
+	"game_creation.amount_of_rivers",
+	"game_creation.land_generator",
+	"game_creation.landscape",
+	"game_creation.map_x",
+	"game_creation.map_y",
+	"game_creation.starting_year",
+	"game_creation.tgen_smoothness",
+	"game_creation.town_name",
+	"game_creation.variety",
+	"station.never_expire_airports",
+	"station.station_spread",
+	"vehicle.max_aircraft",
+	"vehicle.max_roadveh",
+	"vehicle.max_ships",
+	"vehicle.max_train_length",
+	"vehicle.max_trains",
+	"vehicle.never_expire_vehicles",
+	"vehicle.plane_crashes",
+	"vehicle.road_side",
+};
+
+bool AP_IsSettingLocked(std::string_view name)
+{
+	/* Outside a session nothing is locked -- the main menu has to stay usable,
+	 * and a player who is not in a multiworld owns their own game. */
+	if (!AP_IsActive()) return false;
+	return _ap_owned_settings.count(name) > 0;
+}
+
 bool AP_IsActive()
 {
 	/* Bridge mode: the Bridge controls AP, not a local client. */

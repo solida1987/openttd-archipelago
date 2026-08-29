@@ -850,7 +850,11 @@ class MaxTrainLength(Range):
     """Maximum length for trains in tiles. Extended beyond vanilla limit of 64."""
     display_name = "Max Train Length (tiles)"
     range_start = 1
-    range_end   = 1000
+        # ⚠ 255 is the ENGINE's ceiling, not a preference: both settings live in a
+    # uint8_t and the game's own table declares max = 255 (already raised from
+    # vanilla's 64). Offering 1000 got silently clamped on arrival -- a player
+    # who asked for a 1000-tile train got 255 and no warning anywhere.
+    range_end   = 255
     default     = 7
 
 
@@ -861,7 +865,11 @@ class StationSpread(Range):
     """
     display_name = "Station Spread (tiles)"
     range_start = 4
-    range_end   = 1024
+        # ⚠ 255 is the ENGINE's ceiling, not a preference: both settings live in a
+    # uint8_t and the game's own table declares max = 255 (already raised from
+    # vanilla's 64). Offering 1000 got silently clamped on arrival -- a player
+    # who asked for a 1000-tile train got 255 and no warning anywhere.
+    range_end   = 255
     default     = 12
 
 

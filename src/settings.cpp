@@ -55,6 +55,8 @@
 
 #include "table/strings.h"
 
+#include "archipelago.h"  /* AP_IsSettingLocked() -- the seed owns some settings */
+
 #include "safeguards.h"
 
 ClientSettings _settings_client;
@@ -893,6 +895,11 @@ void IniSaveWindowSettings(IniFile &ini, std::string_view grpname, WindowDesc *d
  */
 bool SettingDesc::IsEditable(bool do_command) const
 {
+	/* Archipelago: the seed decided this one. Refusing here covers every route
+	 * to a setting -- the settings window greys the entry out on the same
+	 * answer, the console command refuses, and a network client cannot push
+	 * it either. See AP_IsSettingLocked. */
+	if (AP_IsSettingLocked(this->GetName())) return false;
 	if (!do_command && !this->flags.Test(SettingFlag::NoNetworkSync) && _networking && !_network_server && !this->flags.Test(SettingFlag::PerCompany)) return false;
 	if (do_command && this->flags.Test(SettingFlag::NoNetworkSync)) return false;
 	if (this->flags.Test(SettingFlag::NetworkOnly) && !_networking && _game_mode != GM_MENU) return false;
