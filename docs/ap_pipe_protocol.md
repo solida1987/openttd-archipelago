@@ -44,16 +44,29 @@ only what happens inside them is different.
 
 | Message | Meaning |
 |---|---|
-| `STATE:<n>` | connection state: 0 disconnected, 1 connecting, 2 connected, 3 error |
+| `STATE:<n>` | connection state: 0 disconnected, 1 connecting, 2 authenticated, 3 error |
 | `ERROR:<text>` | human-readable reason for state 3 |
+| `SEED:<name>` | the AP seed name; keys the per-seed savegame. Sent **before** `SLOTDATA` |
 | `SLOTDATA:<json>` | the raw `slot_data` object, one line, no newlines inside |
 | `ITEM:<id>:<index>` | item received; `<index>` is the AP resume index |
-| `MISSING:<id>,<id>,…` | locations still unchecked |
+| `CHECKED:<name>,<name>,…` | locations **already checked**, by name; resume sync for missions, stars and shop |
 | `LOCCOUNT:<n>` | how many locations the seed has, for the "x of y" counter |
-| `HINT:<location>:<label>` | scout result, `player (game)`; keyed by location **name** |
+| `HINT:<location>:<label>` | scout result; keyed by location **name** |
 | `DEATHLINK:<cause>` | DeathLink in |
 | `PLAYERS:<name>,<name>,…` | slot names in the room |
+| `PRINT:<text>` | a server message to show in the game's console |
+| `GRFGET:<id>,<id>,…` | fetch these NewGRF sets from BaNaNaS with the game's own content client |
+| `GRFGO:` | start the fetch queued by `GRFGET` |
 | `REJECT:<text>` | the launcher refuses to start play; the game shows this and stops |
+
+⚠ `STATE:2` maps to AUTHENTICATED, not merely connected: the session gate, the
+item flush and every live update key on it. Anything else the game cannot read
+— an empty payload, an unknown number — is ignored rather than treated as an
+error, so one malformed line cannot end a live session.
+
+⚠ There is no `MISSING:` message. An earlier version of this document listed
+one and neither side ever implemented it; resume works off `CHECKED:` instead,
+which carries names rather than ids.
 
 ---
 
@@ -66,12 +79,18 @@ game                          launcher
   |-- GRF:f1250009:7366 ------->|
   |-- GRFEND: ----------------->|
   |                             |  compares the list with slot_data
+  |<------------- SEED:ABC123 --|
   |<------------- SLOTDATA:{…} -|  (or REJECT: and nothing else)
-  |<------------- MISSING:1,2,3 |
+  |<------------- CHECKED:a,b --|
+  |<------------- LOCCOUNT:168 -|
   |<------------- STATE:2 ------|
   |-- CHECK:101 --------------->|
   |<------------- ITEM:55:0 ----|
 ```
+
+The GRF list the game reports is a snapshot the **main thread** publishes. The
+NewGRF scan is asynchronous and is still filling the engine's lists while the
+pipe worker runs, so the worker never reads them directly.
 
 The GRF list comes **before** `SLOTDATA`, so the launcher can refuse a seed the
 player cannot finish instead of letting them discover it three hours in. A

@@ -20,7 +20,7 @@ pipe, guards that your NewGRF sets match the seed, and tracks your checks and
 items live while you play.
 
 The launcher is a **separate download from its own project** (version
-**3.4.0 or newer**), and it ships with no games in it: every game arrives as a
+**3.21.2 or newer**), and it ships with no games in it: every game arrives as a
 plugin file you fetch and add yourself.
 
 There is no in-game server login. The launcher owns the session, so pressing

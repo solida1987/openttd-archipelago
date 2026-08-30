@@ -1,6 +1,6 @@
 # Known Bugs & Limitations — OpenTTD Archipelago
 
-Last updated: 2026-08-26
+Last updated: 2026-08-30
 
 Only things actually observed go in here. A bug nobody has reproduced is a
 guess, and a guess in this file reads as a warning.
@@ -13,11 +13,50 @@ guess, and a guess in this file reads as a warning.
 
 ## 🟠 Serious bugs (incorrect behaviour)
 
-*None known.*
+### Multiplayer can desync
+
+Several systems decide what to do from `_local_company`, which is a property of
+the client looking at the game rather than of the game itself. Cargo Bonus
+doubles freight income for that company inside `GetTransportedGoodsIncome`, the
+Wrath counters tally that company's demolitions, and the DeathLink penalty is
+charged to it. The demigod system also changes company money and names directly
+instead of going through the command system.
+
+In singleplayer none of this can diverge. In a networked or bridged game the
+server and each client can compute different numbers, which is what a desync is.
+Multiplayer is not a supported configuration today; this is why.
 
 ## 🟡 Medium bugs (something is wrong but not game-breaking)
 
-*None known.*
+### v2.2.0 has not been played through
+
+The release fixes a long list of faults found by reading the code, and it builds
+with no errors or warnings, but the fixes have not been exercised in a live
+session. The settings repair, the reconnect behaviour and the town/road change
+are the three worth watching first.
+
+### The logic does not know about the shop's mission gate
+
+In game, shop slot N needs a number of completed missions to open — five more
+missions for every five more slots. The generator's logic only asks whether the
+player can move cargo at all, so it considers every shop slot reachable from the
+moment they can. The two do not disagree about whether a slot can *ever* open,
+which is why generation is sound, but they disagree about when: on the largest
+seeds the last slots need almost every mission in the seed finished.
+
+This is why the shop's own ceiling matters. The measured worst case is 858
+slots, whose top slot needs 175 missions against the 200 such a seed carries.
+Comfortable at ordinary sizes, tight at the extreme.
+
+### NewGRF sets cannot be enabled when Documents is an unavailable OneDrive path
+
+If `Documents` redirects into OneDrive and OneDrive is not installed, OpenTTD's
+personal directory cannot be read, `openttd.cfg` cannot be written, and no
+NewGRF is ever enabled — so every seed that needs one is refused. This is an
+operating-system condition, not something the game or launcher can work around:
+`SP_PERSONAL_DIR` comes from the home directory unconditionally, and `-c` does
+not move it. Reinstalling OneDrive or moving `Documents` out of the OneDrive
+path fixes it.
 
 ---
 

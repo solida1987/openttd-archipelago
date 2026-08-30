@@ -8,7 +8,7 @@ file you fetch and add yourself.
 
 | | |
 |---|---|
-| **Multiworld Launcher 3.0.1 or newer** | The host program. → [Download it here](https://github.com/solida1987/Multiworld-Launcher/releases/latest) |
+| **Multiworld Launcher 3.21.2 or newer** | The host program. → [Download it here](https://github.com/solida1987/Multiworld-Launcher/releases/latest) |
 | **This plugin** | The `.londonplugin` file from [this project's releases](https://github.com/solida1987/openttd-archipelago/releases/latest) |
 | **Windows 10 or 11** | No separate runtime needed. |
 

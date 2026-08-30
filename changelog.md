@@ -1,5 +1,107 @@
 # Changelog — OpenTTD Archipelago
 
+## [v2.2.0] — 2026-08-30
+
+### Fixed
+
+- **The seed's settings were thrown away before the world was built.** World
+  generation is deferred by a turn of the main loop, and in that gap the
+  asynchronous NewGRF scan finished and reloaded `openttd.cfg` over
+  `_settings_newgame`. Max train length, station spread, vehicle limits and the
+  rest of the 45 settings the seed owns reverted to the player's config — and
+  were then baked into the seed's savegame. The settings now go in again from
+  `MakeNewgameSettingsLive`, which every route to a new world passes through.
+- **Worlds already generated are repaired on load**, so a running seed picks up
+  the settings it should have had. Terrain-derived settings (map size,
+  landscape, sea level, town count, starting year) and road side are left alone;
+  they cannot change in a world that already exists.
+- **A reconnect replayed every item.** Reconnecting reset the received-item
+  counter, so the server's replay from index 0 looked entirely new: money was
+  paid twice, traps fired again, and cumulative cargo, profit and partial
+  mission progress were lost. Only a savegame used to restore any of that.
+- **Missions synced from the server did not count.** They were marked complete
+  but never reached the per-difficulty counters that gate tier unlocks, shop
+  slots and the goal, so a player whose save was older than the server's state
+  could be locked out of the higher tiers permanently.
+- **The Mission Check task reward did nothing.** It was written to its own
+  counter and never added to the shop's. It now counts toward shop unlocks, and
+  deliberately not toward the goal.
+- **Infrastructure locks blocked towns, the engine and AI.** Road, tram, rail,
+  signal, bridge, tunnel, airport, tree, terraform and town-action locks gated
+  on "is Archipelago active", not on who was building. With both road axes
+  locked at session start, no town on the map could lay a road until the player
+  received a Road Direction item, and industries could not level ground to
+  spawn.
+- **The NewGRF lists were read from the pipe thread** while the scan was still
+  filling them. The main thread now publishes a snapshot.
+- **`firs_economy` was read and never used**, so FIRS always ran its default
+  economy while the seed's missions were built from the chosen one.
+- **Continuing a seed skipped the forced English switch**, breaking item and
+  starting-vehicle matching on non-English installations.
+- **Trap timers ran down while the game was paused.**
+- **Colby could stall for good**: saving with a decision popup open lost it, and
+  the escape branch was unreachable code duplicated in the tick loop.
+- **Wrath punishments** scanned all 16.7 million tiles of a 4096² map to pick a
+  handful of targets, ran without a company context, and counted their own
+  terraforming as the player's — feeding the anger that caused them.
+- **Custom win difficulty** was clamped to Madness for ruin amounts.
+- **Items were dropped and marked delivered** when no valid company existed,
+  which in bridge mode was always.
+- **A DeathLink you sent came back and hit you**: the echo guard was written but
+  never read.
+- Shop hints were never requested, so every shop slot showed a fallback label.
+- The play timer stopped when the status window was closed.
+- Star locations restored from a save could send an empty check name.
+- Empty `STATE:` and `ITEM:` payloads no longer become an error state and a
+  phantom item; `Disconnect` no longer blocks the game thread for the pipe
+  timeout; the community name pool is bounds-checked; the mission list no longer
+  holds pointers into a vector a reconnect replaces.
+- Non-ASCII glyphs in the goal screen and mission list rendered as boxes.
+- `docs/ap_pipe_protocol.md` matches the code again: `MISSING:` never existed;
+  `SEED`, `CHECKED`, `PRINT`, `GRFGET` and `GRFGO` were undocumented.
+
+### Fixed — apworld 2.5.0
+
+Every one of these produces a broken seed from option values the YAML allows,
+and none of them is visible from reading a diff. `tools/pool_balance_proof.py`
+now generates at the edges of the ranges instead of moving three dials.
+
+- **An unlock could be placed behind the tier it unlocks.** `pre_fill` places
+  progression with `place_locked_item`, which bypasses the logic entirely, so
+  nothing caught a circular placement: the Extreme tier requires terraform, and
+  the terraform unlock landing in an Extreme mission made every Extreme mission
+  unreachable. Generation then failed listing Extreme locations and a handful of
+  ordinary vehicles — nowhere near the cause. It was a lottery rather than a
+  property of any one configuration: the same seed generated fine one number
+  later. Tier-gating infrastructure now only goes into pools that gate on
+  vehicles or cargo, never on infrastructure.
+- **The shop could outgrow its own name registry.** The shop takes whatever is
+  left of the pool, and with stars switched off it takes the whole remainder
+  rather than half — measured at 858 slots against 600 registered names, so
+  `Shop_Purchase_0601` and up had no id at all. The registry now holds 1000
+  names and the runtime count is clamped to it. Existing ids are untouched: the
+  block has room for 2000, so this only adds names.
+- **Tier and victory vehicle requirements ignored how many vehicles exist.**
+  They are a product of two options and reached 200 where Toyland can hand out
+  52. They are now capped against the seed's own obtainable count.
+- **The win target could ask for more missions than the seed has** — 70 against
+  46 on the smallest configuration, which is a goal nobody can reach.
+- **Multiplayer mode did not disable what it promised.** Ruins, stars, Colby
+  and the demigods were still built into the location table while the game
+  refused to run them, leaving locations nothing could ever check.
+- **Missions and the Colby event named cargo that does not exist** on Toyland
+  and in the FIRS Arctic Basic and Steeltown economies, where there is no Goods.
+- **Town and city mission targets ignored the map.** The old ceiling worked out
+  to 120 for every map size and was never applied to cities at all, so a small
+  map at low density could be asked to connect a hundred of them.
+- The vehicle count was computed twice and the two disagreed by six or seven
+  with the default wagon setting, which could trim vehicles out of the pool
+  while leaving them locked in the game.
+
+> Versions v2.0.0 through v2.1.6 are not listed here — this file was not kept up
+> after March, and reconstructing those entries after the fact would be a guess.
+> Their history is in the repository's release notes.
+
 ## [exp-5.0] — 2026-03-17
 
 ### Fixed
