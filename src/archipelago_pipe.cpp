@@ -56,40 +56,53 @@ static const GRFConfigList &ActiveGrfList()
 	return _game_mode == GM_MENU ? _grfconfig_newgame : _grfconfig;
 }
 
-void ArchipelagoClient::SendLoadedGrfList()
+/* ⚠⚠ THE GRF LISTS BELONG TO THE MAIN THREAD.
+ *
+ * The NewGRF scan runs asynchronously and is still pushing entries into
+ * _grfconfig_newgame while the pipe worker is already up and reporting the
+ * list -- the worker starts the moment the pipe opens, which is well before
+ * the scan finishes on a cold start. Walking a list another thread is
+ * appending to is undefined behaviour: a crash, or a half-read list handed to
+ * the launcher, which then turns down a seed the player can actually play.
+ *
+ * So the main thread publishes a snapshot and the worker only ever reads that.
+ * A handful of pairs, refreshed from Tick, is far cheaper than the lists it
+ * replaces. */
+namespace {
+	struct ApGrfEntry { uint32_t grfid_file_order; uint32_t version; };
+	std::mutex _ap_grf_snapshot_mutex;
+	std::vector<ApGrfEntry> _ap_grf_snapshot;
+}
+
+void AP_PublishGrfSnapshot()
 {
+	std::vector<ApGrfEntry> snap;
 	for (const auto &c : ActiveGrfList()) {
 		if (c == nullptr) continue;
 		/* Disabled or missing sets are not loaded, so reporting them would
 		 * tell the launcher the seed is playable when it is not. */
 		if (c->status == GCS_DISABLED || c->status == GCS_NOT_FOUND) continue;
-
-		this->outbound_queue.push_back({ fmt::format("GRF:{:08x}:{}",
-				std::byteswap(c->ident.grfid), c->version) });
+		snap.push_back({ std::byteswap(c->ident.grfid), c->version });
 	}
-	this->outbound_queue.push_back({ "GRFEND:" });
+
+	std::lock_guard<std::mutex> lg(_ap_grf_snapshot_mutex);
+	_ap_grf_snapshot = std::move(snap);
 }
 
-/**
- * What the game can see, for when it has just refused a seed.
- *
- * "You do not have Iron Horse" is unhelpful to a player who does have it, and
- * the two GRF lists look identical from the launcher's side. This says which
- * list was read and what the file scan turned up, so the launcher can show it
- * instead of the player and I guessing.
- */
-void ArchipelagoClient::ReportGrfState()
+/** The snapshot, copied so the caller never holds the lock while sending. */
+static std::vector<ApGrfEntry> AP_ReadGrfSnapshot()
 {
-	std::lock_guard<std::mutex> lg(this->outbound_mutex);
-	this->outbound_queue.push_back({ fmt::format(
-			"LOG:grf lists -- game {}, newgame {}, scanned {}, mode {}",
-			_grfconfig.size(), _grfconfig_newgame.size(),
-			_all_grfs.size(), (int)_game_mode) });
-	for (const auto &c : _all_grfs) {
-		if (c == nullptr) continue;
-		this->outbound_queue.push_back({ fmt::format("LOG:on disk {:08x} v{} {}",
-				std::byteswap(c->ident.grfid), c->version, c->filename) });
+	std::lock_guard<std::mutex> lg(_ap_grf_snapshot_mutex);
+	return _ap_grf_snapshot;
+}
+
+void ArchipelagoClient::SendLoadedGrfList()
+{
+	for (const ApGrfEntry &e : AP_ReadGrfSnapshot()) {
+		this->outbound_queue.push_back({ fmt::format("GRF:{:08x}:{}",
+				e.grfid_file_order, e.version) });
 	}
+	this->outbound_queue.push_back({ "GRFEND:" });
 }
 
 /**
@@ -107,12 +120,13 @@ static std::string CheckRequiredGrfs(const json &slot)
 {
 	if (!slot.contains("required_newgrf") || !slot["required_newgrf"].is_array()) return "";
 
-	/* What is loaded, by GRFID. */
+	/* What is loaded, by GRFID. Read from the main thread's snapshot -- see
+	 * AP_PublishGrfSnapshot; this runs on the pipe worker. The snapshot holds
+	 * ids in file order, which is the form the slot_data hex text uses, so no
+	 * byte swap is needed on either side here. */
 	std::map<uint32_t, uint32_t> have;
-	for (const auto &c : ActiveGrfList()) {
-		if (c == nullptr) continue;
-		if (c->status == GCS_DISABLED || c->status == GCS_NOT_FOUND) continue;
-		have[c->ident.grfid] = c->version;
+	for (const ApGrfEntry &e : AP_ReadGrfSnapshot()) {
+		have[e.grfid_file_order] = e.version;
 	}
 
 	std::string problems;
@@ -134,7 +148,6 @@ static std::string CheckRequiredGrfs(const json &slot)
 			id = (id << 4) | (uint32_t)d;
 		}
 		if (id == 0) continue;
-		id = std::byteswap(id);
 
 		auto it = have.find(id);
 		if (it == have.end()) {
@@ -164,7 +177,11 @@ void ArchipelagoClient::HandleLine(const std::string &line)
 	const std::string body = line.substr(colon + 1);
 
 	if (tag == "STATE") {
-		switch (body.empty() ? -1 : body[0] - '0') {
+		/* An empty or unreadable payload is not an error state -- the rule is
+		 * that anything we cannot make sense of is ignored, and turning it into
+		 * AP_ERROR would kill a live session over one malformed line. */
+		if (body.empty()) return;
+		switch (body[0] - '0') {
 			case 0: this->state.store(APState::DISCONNECTED); break;
 			case 1: this->state.store(APState::CONNECTING); break;
 			case 2:
@@ -173,7 +190,8 @@ void ArchipelagoClient::HandleLine(const std::string &line)
 				this->state.store(APState::AUTHENTICATED);
 				this->PushEvent({ InboundEvent::CONNECTED, "", {}, {} });
 				break;
-			default: this->state.store(APState::AP_ERROR); break;
+			case 3: this->state.store(APState::AP_ERROR); break;
+			default: return;
 		}
 		return;
 	}
@@ -302,6 +320,9 @@ void ArchipelagoClient::HandleLine(const std::string &line)
 	if (tag == "ITEM") {
 		/* ITEM:<id>:<index> -- index is AP's resume position, so a replayed
 		 * item can be recognised as one already handled. */
+		/* An empty payload used to become item id 0 at index -1: a phantom
+		 * item the game then tried to resolve and warned about. */
+		if (body.empty()) return;
 		size_t sep = body.find(':');
 		InboundEvent ev;
 		ev.type = InboundEvent::ITEM;
@@ -379,7 +400,7 @@ void ArchipelagoClient::WorkerThread()
 	ApPipe pipe;
 
 	const std::string name = _ap_pipe_name.empty() ? "openttd_archipelago" : _ap_pipe_name;
-	if (!pipe.Open(name)) {
+	if (!pipe.Open(name, 10000, &this->stop_requested)) {
 		{
 			std::lock_guard<std::mutex> lg(this->slot_mutex);
 			this->last_error = pipe.Error();

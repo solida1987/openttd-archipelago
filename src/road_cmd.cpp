@@ -631,8 +631,9 @@ CommandCost CmdBuildRoad(DoCommandFlags flags, TileIndex tile, RoadBits pieces, 
 	if (pieces == ROAD_NONE || !IsValidRoadBits(pieces) || !IsValidDisallowedRoadDirections(toggle_drd)) return CMD_ERROR;
 	if (!ValParamRoadType(rt)) return CMD_ERROR;
 
-	/* AP road/tram direction lock: block building locked axes */
-	if (AP_IsActive()) {
+	/* AP road/tram direction lock: block building locked axes.
+	 * Only for the player -- towns lay their own roads through this command. */
+	if (AP_LocksApplyToCurrentCompany()) {
 		if (RoadTypeIsRoad(rt)) {
 			if ((pieces & ROAD_X) && AP_IsRoadDirLocked(0)) return CommandCost(STR_ERROR_ARCHIPELAGO_ROAD_DIR_LOCKED);
 			if ((pieces & ROAD_Y) && AP_IsRoadDirLocked(1)) return CommandCost(STR_ERROR_ARCHIPELAGO_ROAD_DIR_LOCKED);

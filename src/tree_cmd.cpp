@@ -512,7 +512,7 @@ CommandCost CmdPlantTree(DoCommandFlags flags, TileIndex tile, TileIndex start_t
 	if (tree_to_plant != TREE_INVALID && !IsInsideBS(tree_to_plant, _tree_base_by_landscape[to_underlying(_settings_game.game_creation.landscape)], _tree_count_by_landscape[to_underlying(_settings_game.game_creation.landscape)])) return CMD_ERROR;
 
 	/* AP tree lock: block planting locked tree types */
-	if (tree_to_plant != TREE_INVALID && AP_IsActive() && AP_IsTreeLocked(tree_to_plant)) {
+	if (tree_to_plant != TREE_INVALID && AP_LocksApplyToCurrentCompany() && AP_IsTreeLocked(tree_to_plant)) {
 		return CommandCost(STR_ERROR_ARCHIPELAGO_TREE_LOCKED);
 	}
 

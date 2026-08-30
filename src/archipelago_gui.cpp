@@ -140,6 +140,8 @@ static std::string AP_FmtShort(int64_t v) {
 }
 
 struct ArchipelagoConnectWindow : public Window {
+	/* Own view of _ap_status_dirty; a shared flag would be stolen. */
+	uint32_t seen_status = 0;
 	QueryString custom_names_buf;
 	std::string custom_str;
 	APState  last_state  = APState::DISCONNECTED;
@@ -231,7 +233,9 @@ struct ArchipelagoConnectWindow : public Window {
 
 	void OnGameTick() override {
 		if (_ap_bridge_mode) {
-			bool d = _ap_status_dirty.exchange(false);
+			uint32_t gen = _ap_status_dirty.load(std::memory_order_relaxed);
+			bool d = (gen != this->seen_status);
+			this->seen_status = gen;
 			if (d) this->SetDirty();
 			return;
 		}
@@ -393,6 +397,8 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = 
 };
 
 struct ArchipelagoStatusWindow : public Window {
+	/* Own view of _ap_status_dirty; a shared flag would be stolen. */
+	uint32_t seen_status = 0;
 	APState last_state  = APState::DISCONNECTED;
 	bool    last_has_sd = false;
 
@@ -475,15 +481,16 @@ struct ArchipelagoStatusWindow : public Window {
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override {
 		/* In bridge mode, just check the dirty flag */
 		if (_ap_bridge_mode) {
-			bool d = _ap_status_dirty.exchange(false);
+			uint32_t gen = _ap_status_dirty.load(std::memory_order_relaxed);
+			bool d = (gen != this->seen_status);
+			this->seen_status = gen;
 			if (d) this->SetDirty();
 			return;
 		}
 
-		/* Play timer: tick while game is not paused and goal not sent */
-		if (_game_mode == GM_NORMAL && !_pause_mode.Any() && !AP_GetGoalSent()) {
-			AP_AddPlayTimerMs(delta_ms);
-		}
+		/* The play timer is driven from the manager's realtime tick, not from
+		 * here: this window has a close box, and closing it used to stop the
+		 * clock for the rest of the session -- a value that is then saved. */
 
 		/* Redraw once per second for the timer, or when state changes */
 		bool need_redraw = false;
@@ -501,7 +508,9 @@ struct ArchipelagoStatusWindow : public Window {
 				need_redraw = true;
 			}
 		}
-		bool d = _ap_status_dirty.exchange(false);
+		uint32_t gen = _ap_status_dirty.load(std::memory_order_relaxed);
+			bool d = (gen != this->seen_status);
+			this->seen_status = gen;
 		if (d) need_redraw = true;
 
 		if (need_redraw) this->SetDirty();
@@ -768,16 +777,24 @@ static std::string AP_FormatMoneyCompact(int64_t amount)
 	else if (scaled >= 1000) num = fmt::format("{}k", scaled / 1000);
 	else num = fmt::format("{}", scaled);
 
-	if (cs.symbol_pos == 0) return cs.prefix + num + cs.suffix;
+	/* symbol_pos 0 puts the symbol in front, so the suffix must not come along
+	 * too -- a currency that defines both showed it at each end. */
+	if (cs.symbol_pos == 0) return cs.prefix + num;
 	return num + cs.suffix;
 }
 
 struct ArchipelagoMissionsWindow : public Window {
+	/* Own view of _ap_status_dirty; a shared flag would be stolen. */
+	uint32_t seen_status = 0;
 	int           row_height    = 0;      /* computed in constructor from font height */
 	int           max_line_px   = 0;      /* width in pixels of the longest line */
 	std::string   filter        = "all";  /* "all","easy","medium","hard","extreme","tasks" */
 	bool          show_tasks    = false;  /* true = Tasks tab, false = Missions tab */
-	std::vector<const APMission *> visible_missions;
+	/* ⚠ Indices, not pointers. These used to be APMission* into
+	 * _ap_pending_sd.missions, and a reconnect replaces that whole vector --
+	 * every cached pointer dangled and the next draw read freed memory. An
+	 * index can go stale too, but a stale index is a bounds check away. */
+	std::vector<size_t> visible_missions;
 	std::vector<APTask> cached_tasks;     /* snapshot for task tab rendering */
 	Scrollbar *scrollbar  = nullptr;
 	Scrollbar *hscrollbar = nullptr;
@@ -806,16 +823,18 @@ struct ArchipelagoMissionsWindow : public Window {
 		if (show_tasks) { RebuildTaskList(); return; }
 		visible_missions.clear();
 		const APSlotData &sd = AP_GetSlotData();
-		for (const APMission &m : sd.missions) {
-			if (filter == "all" || m.difficulty == filter)
-				visible_missions.push_back(&m);
+		for (size_t i = 0; i < sd.missions.size(); i++) {
+			if (filter == "all" || sd.missions[i].difficulty == filter)
+				visible_missions.push_back(i);
 		}
 		if (this->scrollbar) {
 			this->scrollbar->SetCount((int)visible_missions.size());
 		}
 		/* Compute max line pixel width so the horizontal scrollbar range is correct */
 		max_line_px = 0;
-		for (const APMission *m : visible_missions) {
+		for (size_t mi : visible_missions) {
+			if (mi >= sd.missions.size()) continue;
+			const APMission *m = &sd.missions[mi];
 			std::string cap_diff = m->difficulty.empty() ? "" :
 				std::string(1, (char)toupper((unsigned char)m->difficulty[0])) + m->difficulty.substr(1);
 			std::string prefix = m->completed ? "[X] " : "[ ] ";
@@ -855,7 +874,10 @@ struct ArchipelagoMissionsWindow : public Window {
 		/* Always rebuild — manager calls SetWindowClassesDirty every 250 ms
 		 * so this fires continuously for real-time mission progress display.
 		 * Tasks tab: ALWAYS rebuild so live t.current_value is reflected. */
-		if (_ap_status_dirty.exchange(false) || show_tasks) RebuildVisibleList();
+		uint32_t gen = _ap_status_dirty.load(std::memory_order_relaxed);
+		bool changed = (gen != this->seen_status);
+		this->seen_status = gen;
+		if (changed || show_tasks) RebuildVisibleList();
 		else this->SetDirty();
 	}
 
@@ -914,7 +936,14 @@ struct ArchipelagoMissionsWindow : public Window {
 					/* Missions: 1 row per mission */
 					int row = this->scrollbar->GetPosition() + (pt.y - r.top - 2) / rh;
 					if (row < 0 || row >= (int)visible_missions.size()) break;
-					const APMission *m = visible_missions[row];
+					const APSlotData &sd_click = AP_GetSlotData();
+					size_t mi = visible_missions[row];
+					if (mi >= sd_click.missions.size()) break;
+					const APMission *m = &sd_click.missions[mi];
+					/* A locked tier draws only "[LOCKED] ..." with no name and no
+					 * place; scrolling the map to it anyway handed the player
+					 * the location the row was hiding. */
+					if (!AP_IsTierUnlocked(m->difficulty)) break;
 					if (m->named_entity.tile != UINT32_MAX) {
 						ScrollMainWindowToTile(TileIndex{m->named_entity.tile});
 					}
@@ -952,7 +981,7 @@ struct ArchipelagoMissionsWindow : public Window {
 			{
 				int y = row_y();
 				if (y >= 0) {
-					int total  = AP_GetTotalMissionsCompleted();
+					int total  = AP_GetShopMissionCredit();
 					int checks = AP_GetTaskChecksCompleted();
 					std::string hdr = fmt::format("Task Mission Checks: {} (Total shop counter: {})", checks, total);
 					DrawString(r.left + 4 + x_off, r.right, y, hdr, TC_GOLD);
@@ -1032,7 +1061,7 @@ struct ArchipelagoMissionsWindow : public Window {
 						}
 
 						std::string prefix_str = (used_sep != nullptr && strstr(used_sep, "from"))
-						                       ? "    \xe2\x86\x92 from " : "    \xe2\x86\x92 to ";
+						                       ? "    -> from " : "    -> to ";
 
 						if (!remainder.empty() && !t.entity_name.empty()) {
 							/* Chain safely: DrawString returns 0 when clipped (overlapping windows). */
@@ -1098,8 +1127,11 @@ struct ArchipelagoMissionsWindow : public Window {
 		int first = this->scrollbar->GetPosition();
 		int last  = first + (r.Height() / rh) + 1;
 
+		const APSlotData &sd_draw = AP_GetSlotData();
 		for (int i = first; i < last && i < (int)visible_missions.size(); i++) {
-			const APMission *m = visible_missions[i];
+			size_t mi = visible_missions[i];
+			if (mi >= sd_draw.missions.size()) continue;
+			const APMission *m = &sd_draw.missions[mi];
 
 			/* Tier lock check */
 			bool tier_locked = !AP_IsTierUnlocked(m->difficulty);
@@ -1201,11 +1233,11 @@ struct ArchipelagoMissionsWindow : public Window {
 			 * to hint that clicking this row will scroll the viewport there. */
 			std::string nav_hint;
 			if (m->named_entity.tile != UINT32_MAX) {
-				nav_hint = " \xe2\x86\x91"; /* ↑ unicode arrow — visual cue to scroll map */
+				nav_hint = " ^"; /* ↑ unicode arrow — visual cue to scroll map */
 			}
 			/* Assemble the main line WITHOUT the status/progress suffix —
 			 * we draw that separately in TC_BLACK for readability. */
-			std::string main_line = prefix + cap_diff + mission_num + " \xe2\x80\x93 " + desc + nav_hint;
+			std::string main_line = prefix + cap_diff + mission_num + " - " + desc + nav_hint;
 
 			int x_off = this->hscrollbar ? -this->hscrollbar->GetPosition() : 0;
 			int x = r.left + 4 + x_off;
@@ -1383,7 +1415,7 @@ struct ArchipelagoShopWindow : public Window {
 			} else if (e.locked) {
 				full = fmt::format("[{}] [LOCKED] Complete {} missions to unlock", e.display_num, e.missions_needed);
 			} else {
-				full = fmt::format("[{}] {} \xe2\x80\x94 {}", e.display_num, e.label, AP_FormatMoneyCompact(e.price));
+				full = fmt::format("[{}] {} - {}", e.display_num, e.label, AP_FormatMoneyCompact(e.price));
 			}
 			int w = GetStringBoundingBox(full).width;
 			if (w > max_line_px) max_line_px = w;
@@ -3218,7 +3250,7 @@ struct APVictoryWindow : Window {
 		DrawStringMultiLine(
 			tx + ScaleSpriteTrad(20), tx + W - ScaleSpriteTrad(20),
 			y0 + ScaleSpriteTrad(60), y0 + ScaleSpriteTrad(120),
-			std::string("ARCHIPELAGO \xe2\x80\x94 GOAL COMPLETE!"),
+			std::string("ARCHIPELAGO - GOAL COMPLETE!"),
 			TC_GOLD, SA_CENTER);
 
 		/* Line 2 — Player / company (white) */
@@ -3236,7 +3268,7 @@ struct APVictoryWindow : Window {
 		const int64_t items_recv = AP_GetItemsReceivedCount();
 
 		const std::string stats_line = fmt::format(
-			"Missions completed: {} / {}     \xe2\x80\xa2     Items received: {}",
+			"Missions completed: {} / {}     -     Items received: {}",
 			missions_done, missions_total, items_recv);
 		DrawStringMultiLine(
 			tx + ScaleSpriteTrad(30), tx + W - ScaleSpriteTrad(30),
@@ -3253,7 +3285,7 @@ struct APVictoryWindow : Window {
 			: _ap_last_host + ":" + fmt::format("{}", _ap_last_port);
 
 		const std::string footer_line = fmt::format(
-			"Year {}  \xe2\x80\xa2  {} years in service  \xe2\x80\xa2  {}",
+			"Year {}  -  {} years in service  -  {}",
 			current_year, years_played, server_str);
 		DrawStringMultiLine(
 			tx + ScaleSpriteTrad(30), tx + W - ScaleSpriteTrad(30),

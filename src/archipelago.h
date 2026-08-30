@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <deque>
 #include <map>
+#include <chrono>
 
 #include "town_type.h"
 #include "tile_type.h"
@@ -336,6 +337,21 @@ public:
 	void SendGoal();
 	void SendScoutsForShop(); ///< Scout all shop locations to get player/game labels
 
+	/**
+	 * Did we send a DeathLink ourselves within the last @p window seconds?
+	 *
+	 * AP bounces a DeathLink to the whole room, sender included, so our own
+	 * crash comes straight back as an incoming death. SendDeath stamps the
+	 * time for this test.
+	 */
+	bool WasOwnRecentDeath(double window) const
+	{
+		if (this->last_death_link_time <= 0.0) return false;
+		double now = std::chrono::duration<double>(
+				std::chrono::steady_clock::now().time_since_epoch()).count();
+		return (now - this->last_death_link_time) < window;
+	}
+
 	/** Send a chat/command message to the AP server (e.g. "!hint item"). */
 	void SendSay(const std::string &text);
 
@@ -421,7 +437,6 @@ private:
 	void        WorkerThread();          ///< pipe link to the launcher
 	void        HandleLine(const std::string &line); ///< one launcher message
 	void        SendLoadedGrfList();     ///< GRF:.. lines, then GRFEND:
-	void        ReportGrfState();        ///< LOG:.. lines after a refusal, so it can be diagnosed
 	void        PushEvent(InboundEvent ev);
 	std::string PopOutbound();
 	void        SetLastErrorInternal(const std::string &err) { std::lock_guard<std::mutex> lg(slot_mutex); last_error = err; }
@@ -439,7 +454,17 @@ void UninitArchipelago();
  * Returns true when an Archipelago session is active (authenticated).
  * Called from engine.cpp to block the vanilla date-based vehicle introduction.
  */
+/** Refresh the NewGRF snapshot the pipe worker reads. MAIN THREAD ONLY --
+ *  the scan fills the real lists while the worker is running. */
+void AP_PublishGrfSnapshot();
+
 bool AP_IsActive();
+/** True when the current command's company is the one the locks restrict.
+ *  Use this, not AP_IsActive, to gate build commands: towns, the engine and
+ *  AI companies drive the same commands and must not be blocked. */
+bool AP_LocksApplyToCurrentCompany();
+/** Same test for a company that is passed in rather than acting right now. */
+bool AP_LocksApplyToCompanyIndex(int company_index);
 
 /* Per-seed savegame key: explicit from the launcher's SEED: line, or a
  * stable hash of the slot_data text when none arrives. */
@@ -481,6 +506,10 @@ bool AP_IsEngineUnlocked(uint32_t engine_id);
  */
 bool AP_IsSettingLocked(std::string_view name);
 
+/** Restore the seed's settings into _settings_newgame. Called from
+ *  MakeNewgameSettingsLive; no-op when no AP world start is in flight. */
+void AP_ReapplyGameSettings();
+
 /** Unlock an engine by its AP item name.  Used by both singleplayer AP and bridge mode. */
 bool AP_UnlockEngineByName(const std::string &name);
 
@@ -499,6 +528,8 @@ bool AP_IsColbyConfigured();
 /** Mission completion counters. */
 int AP_GetTierCompleted(const std::string &difficulty);
 int AP_GetTotalMissionsCompleted();
+/** Missions completed plus Mission Check task rewards; gates the shop only. */
+int AP_GetShopMissionCredit();
 int64_t AP_GetItemsReceivedCount();
 int     AP_GetCheckedLocationCount();
 int     AP_GetTotalLocationCount();

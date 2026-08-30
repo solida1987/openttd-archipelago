@@ -34,7 +34,7 @@ ApPipe::~ApPipe()
 	this->Close();
 }
 
-bool ApPipe::Open(const std::string &name, int timeout_ms)
+bool ApPipe::Open(const std::string &name, int timeout_ms, const std::atomic<bool> *abort)
 {
 	this->Close();
 	this->last_error.clear();
@@ -63,6 +63,10 @@ bool ApPipe::Open(const std::string &name, int timeout_ms)
 		}
 		if (waited >= timeout_ms) {
 			this->last_error = fmt::format("the launcher did not open {} in time", path);
+			return false;
+		}
+		if (abort != nullptr && abort->load()) {
+			this->last_error = "cancelled while waiting for the launcher";
 			return false;
 		}
 		Sleep(step);
@@ -179,7 +183,7 @@ bool ApPipe::ReadLine(std::string &out, int timeout_ms)
 
 ApPipe::~ApPipe() = default;
 
-bool ApPipe::Open(const std::string &, int)
+bool ApPipe::Open(const std::string &, int, const std::atomic<bool> *)
 {
 	this->last_error = "the launcher link is only available on Windows";
 	return false;

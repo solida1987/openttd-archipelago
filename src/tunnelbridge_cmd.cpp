@@ -323,7 +323,7 @@ CommandCost CmdBuildBridge(DoCommandFlags flags, TileIndex tile_end, TileIndex t
 	}
 
 	/* AP bridge lock: block building locked bridge types (skip for QueryCost) */
-	if (AP_IsActive() && AP_IsBridgeLocked(bridge_type) && !flags.Test(DoCommandFlag::QueryCost)) {
+	if (AP_LocksApplyToCurrentCompany() && AP_IsBridgeLocked(bridge_type) && !flags.Test(DoCommandFlag::QueryCost)) {
 		return CommandCost(STR_ERROR_ARCHIPELAGO_BRIDGE_LOCKED);
 	}
 
@@ -659,7 +659,7 @@ CommandCost CmdBuildTunnel(DoCommandFlags flags, TileIndex start_tile, Transport
 	_build_tunnel_endtile = TileIndex{};
 
 	/* AP tunnel lock: block tunnel construction while locked */
-	if (AP_IsActive() && AP_IsTunnelLocked()) {
+	if (AP_LocksApplyToCurrentCompany() && AP_IsTunnelLocked()) {
 		return CommandCost(STR_ERROR_ARCHIPELAGO_TUNNEL_LOCKED);
 	}
 

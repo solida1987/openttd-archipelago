@@ -180,6 +180,8 @@ void         AP_SetLockedTramDirs(uint8_t mask);
 // back-compat shims (deprecated)
 void         AP_GetColbyState(int *step, int64_t *delivered, int *target_town, bool *escaped, int *escape_ticks, bool *done, bool *popup_shown, uint32_t *stash_tile);
 void         AP_SetColbyState(int step, int64_t delivered, int target_town, bool escaped, int escape_ticks, bool done, bool popup_shown, uint32_t stash_tile);
+int          AP_GetColbyPendingPopup();
+void         AP_SetColbyPendingPopup(int t);
 bool         AP_GetTownsRenamed();
 void         AP_SetTownsRenamed(bool v);
 uint8_t      AP_GetLockedRoadDirs();
@@ -295,6 +297,7 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "co_done",   IStr(co_done));
         KVSet(_ap_sl_blob, "co_pop",    IStr(co_pop));
         KVSet(_ap_sl_blob, "co_stash",  IStr((int64_t)co_stash));
+        KVSet(_ap_sl_blob, "co_pend",   IStr(AP_GetColbyPendingPopup()));
 
         KVSet(_ap_sl_blob, "towns_renamed", IStr(AP_GetTownsRenamed()));
 
@@ -448,6 +451,9 @@ struct APSTChunkHandler : ChunkHandler {
                 KVGet(_ap_sl_blob, "co_pop",  "0") == "1",
                 (uint32_t)ParseI64(KVGet(_ap_sl_blob, "co_stash", "4294967295"))
             );
+            /* An unanswered decision popup survives the save; without it the
+             * event stalls for good. Absent in saves made before this key. */
+            AP_SetColbyPendingPopup(getint("co_pend"));
 
             AP_SetTownsRenamed(KVGet(_ap_sl_blob, "towns_renamed", "0") == "1");
 

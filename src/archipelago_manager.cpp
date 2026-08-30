@@ -148,7 +148,15 @@ static bool _ap_cargo_map_built = false;
  * Forward declarations — defined later in this file but needed by functions
  * that appear before their definition site.
  * ---------------------------------------------------------------------- */
+/* True once the seed's settings have been written for a world that has not
+ * been generated yet. See AP_ReapplyGameSettings for why this has to outlive
+ * AP_ConsumeWorldStart. */
+static bool        _ap_settings_owned    = false;
 static bool        _ap_towns_renamed     = false;
+/* Staging for the flag above — AP_InitSessionStats clears it, which would make a
+ * loaded or reconnected session rename every town a second time.
+ * -1 = nothing staged, 0/1 = the value to restore after init. */
+static int         _ap_staging_towns_renamed = -1;
 int                _ap_town_rename_mode  = 0;        ///< extern in archipelago_gui.cpp
 std::string        _ap_town_custom_names;             ///< extern in archipelago_gui.cpp
 static int64_t     _ap_items_received_count = 0;
@@ -318,7 +326,7 @@ static void AP_RenameTowns()
 
 /** APST accessors for save/load */
 bool AP_GetTownsRenamed()       { return _ap_towns_renamed; }
-void AP_SetTownsRenamed(bool v) { _ap_towns_renamed = v; }
+void AP_SetTownsRenamed(bool v) { _ap_towns_renamed = v; _ap_staging_towns_renamed = v ? 1 : 0; }
 
 /* -------------------------------------------------------------------------
  * Session statistics — cumulative cargo delivery and profit accumulators.
@@ -1189,6 +1197,7 @@ static bool     _ap_staging_stats            = false;
 static std::string _ap_staging_shop_sent;
 static bool        _ap_staging_shop_sent_valid = false;
 
+
 /* Staging for AP-server checked locations — received via Connected/RoomUpdate.
  * Applied after session init (which clears _ap_sent_shop_locations and mission flags). */
 static std::set<std::string> _ap_server_checked_locations;
@@ -1240,12 +1249,13 @@ static void BuildEngineMap()
 	_ap_engine_extras.clear();
 
 	/* Military Items GRF: engine names are assigned by Action 4 during GRF
-	 * loading, conditioned on param[0].  AP_ConsumeWorldStart sets the correct
-	 * params ({1,1,4,4,0}) for NEW games.  Saves created before this fix have
-	 * param[0]=0 → 123 empty aircraft engine slots with no names, no cargo,
-	 * no speed — these are not real purchasable aircraft and cannot be fixed
-	 * retroactively (engine slot allocation is baked into the save).
-	 * For these old saves, MIL aircraft items are silently skipped. */
+	 * loading, conditioned on param[0].  With param[0]=0 the set produces 123
+	 * empty aircraft engine slots with no name, cargo or speed — not real
+	 * purchasable aircraft, and not fixable afterwards, because engine slot
+	 * allocation is baked into the savegame. Those slots are skipped below.
+	 * ⚠ AP_ConsumeWorldStart does NOT set parameters for this set. Only FIRS
+	 * has a parameter the seed decides; an earlier version of this comment
+	 * claimed Military Items got {1,1,4,4,0}, and no such code ever existed. */
 
 	int skipped_empty = 0;
 	int recovered_invalid = 0;
@@ -1451,6 +1461,33 @@ bool AP_IsActive()
 
 	return _ap_client != nullptr &&
 	       _ap_client->GetState() == APState::AUTHENTICATED;
+}
+
+/**
+ * True when the company running the current command is the one the seed's
+ * infrastructure locks are meant to restrict.
+ *
+ * ⚠⚠ THE LOCKS ARE ABOUT THE PLAYER, NOT ABOUT THE COMMAND.
+ *
+ * Towns grow their own roads, the engine terraforms platforms for new
+ * industries and levels ground for houses, and AI companies build like anyone
+ * else -- all through the very same commands the player uses. Gating those
+ * commands on AP_IsActive alone stopped all of it: with both road axes locked
+ * at session start, which is the normal starting state, not one town on the
+ * map could lay a single road until the player happened to receive a Road
+ * Direction item, and town growth simply stopped with nothing said.
+ */
+bool AP_LocksApplyToCompanyIndex(int company_index)
+{
+	if (!AP_IsActive()) return false;
+	CompanyID player = _ap_bridge_mode ? CompanyID(0) : _local_company;
+	if (player >= MAX_COMPANIES) return false;
+	return company_index == (int)player.base();
+}
+
+bool AP_LocksApplyToCurrentCompany()
+{
+	return AP_LocksApplyToCompanyIndex((int)_current_company.base());
 }
 
 /* -------------------------------------------------------------------------
@@ -2203,7 +2240,7 @@ static void AP_ColbySpawnStash()
 		int px = (int)(TileX(placed_tile) * TILE_SIZE + TILE_SIZE / 2);
 		int py = (int)(TileY(placed_tile) * TILE_SIZE + TILE_SIZE / 2);
 		int pz = (int)(TileHeight(placed_tile) * TILE_HEIGHT);
-		std::string label = fmt::format("\xe2\x98\x85 Colby's Stash \xe2\x80\x94 Step {} \xe2\x98\x85", _ap_colby_step);
+		std::string label = fmt::format("* Colby's Stash - Step {} *", _ap_colby_step);
 		Sign *si = new Sign(OWNER_DEITY, px, py, pz, label);
 		si->UpdateVirtCoord();
 		_ap_colby_source_sign = si->index;
@@ -2301,11 +2338,18 @@ static void AP_ColbyInit()
 			    IsTileType(_ap_colby_stash_tile, MP_OBJECT)) {
 				/* Stash object survived save/load — just re-create the sign */
 				_ap_colby_source_tile = _ap_colby_stash_tile;
+				/* First-tick setup runs again on every reconnect, and this used
+				 * to add another sign each time without removing the one
+				 * before it. */
+				if (Sign *old_si = Sign::GetIfValid(_ap_colby_source_sign); old_si != nullptr) {
+					delete old_si;
+					_ap_colby_source_sign = SignID::Invalid();
+				}
 				if (Sign::CanAllocateItem()) {
 					int px = (int)(TileX(_ap_colby_stash_tile) * TILE_SIZE + TILE_SIZE / 2);
 					int py = (int)(TileY(_ap_colby_stash_tile) * TILE_SIZE + TILE_SIZE / 2);
 					int pz = (int)(TileHeight(_ap_colby_stash_tile) * TILE_HEIGHT);
-					std::string label = fmt::format("\xe2\x98\x85 Colby's Stash \xe2\x80\x94 Step {} \xe2\x98\x85", _ap_colby_step);
+					std::string label = fmt::format("* Colby's Stash - Step {} *", _ap_colby_step);
 					Sign *si = new Sign(OWNER_DEITY, px, py, pz, label);
 					si->UpdateVirtCoord();
 					_ap_colby_source_sign = si->index;
@@ -2372,15 +2416,10 @@ static void AP_ColbyTick(CargoDrainCache &cargo)
 		}
 	}
 
-	/* If escape countdown is running (popup B pending), tick it down */
-	if (_ap_colby_escaped && !_ap_colby_popup_pending) {
-		/* _ap_colby_done is true, escape was chosen, waiting for popup B */
-		_ap_colby_escape_ticks--;
-		if (_ap_colby_escape_ticks <= 0) {
-			AP_ColbyShowEscapeQuery();
-		}
-		return;
-	}
+	/* The escape countdown lives in the realtime tick loop, which guards on
+	 * escape_ticks > 0 so the query fires exactly once. A second copy used to
+	 * sit here; it was unreachable, and reachable it would have decremented the
+	 * same counter twice and then re-opened the query on every tick. */
 
 	if (_ap_colby_done) return;
 
@@ -2475,6 +2514,22 @@ void AP_SetColbyState(int step, int64_t delivered, int target_town,
 	_ap_colby_stash_tile     = (stash_tile != UINT32_MAX) ? (TileIndex)stash_tile : INVALID_TILE;
 }
 
+/**
+ * The decision popup waiting to be answered, or 0 for none.
+ *
+ * Saving while a popup is open used to lose it: the window is not part of the
+ * savegame, the pending flag was not stored either, and the guard in
+ * AP_ColbyShowFinalQuery refuses to re-open a popup it has already shown once.
+ * The event then stood still for the rest of the game with no way back.
+ */
+int  AP_GetColbyPendingPopup()      { return _ap_colby_popup_pending ? _ap_colby_popup_type : 0; }
+void AP_SetColbyPendingPopup(int t)
+{
+	_ap_colby_popup_pending = (t > 0);
+	if (t > 0) _ap_colby_popup_type = t;
+	_ap_colby_reopen_ticks = 0;
+}
+
 
 static void AP_ShowNews(const std::string &text, bool is_self)
 {
@@ -2492,7 +2547,7 @@ static void AP_ShowNews(const std::string &text, bool is_self)
 }
 
 /* Forward declaration — defined later in this file */
-extern std::atomic<bool> _ap_status_dirty;
+extern std::atomic<uint32_t> _ap_status_dirty;
 
 /* =========================================================================
  * Demigods (God of Wackens) — state and logic
@@ -2661,7 +2716,7 @@ void AP_OnMoneyGivenToCompany(int dest_company, int64_t amount)
 		Debug(misc, 0, "[AP] Demigod befriended! money_given={} ai_value={}", _ap_demigod_money_given, ai_value);
 		AP_TRACE(fmt::format("DemigodBefriended: money_given={} ai_value={}", _ap_demigod_money_given, ai_value));
 
-		_ap_status_dirty.store(true);
+		_ap_status_dirty.fetch_add(1, std::memory_order_relaxed);
 	}
 }
 
@@ -2943,7 +2998,7 @@ void AP_DemigodDefeat()
 		AP_DemigodScheduleNext();
 	}
 
-	_ap_status_dirty.store(true);
+	_ap_status_dirty.fetch_add(1, std::memory_order_relaxed);
 }
 
 /** Status snapshot for the GUI. */
@@ -3104,10 +3159,16 @@ static int  _ap_wrath_limit_trees      = 10;
 
 /* ── Tracking (called from *_cmd.cpp hooks) ─────────────────────── */
 
-void AP_WrathTrackHouse()  { if (_ap_wrath_enabled) { _ap_wrath_houses_year++;  AP_TRACE(fmt::format("Wrath: house demolished (total this year: {})", _ap_wrath_houses_year)); } }
-void AP_WrathTrackRoad()   { if (_ap_wrath_enabled) { _ap_wrath_roads_year++;   AP_TRACE(fmt::format("Wrath: road demolished (total this year: {})", _ap_wrath_roads_year)); } }
-void AP_WrathTrackTerrain(){ if (_ap_wrath_enabled) { _ap_wrath_terrain_year++; AP_TRACE(fmt::format("Wrath: terrain modified (total this year: {})", _ap_wrath_terrain_year)); } }
-void AP_WrathTrackTree()   { if (_ap_wrath_enabled) { _ap_wrath_trees_year++;   AP_TRACE(fmt::format("Wrath: tree removed (total this year: {})", _ap_wrath_trees_year)); } }
+/* True while a punishment runs its own commands. The sinkhole issues about a
+ * hundred terraform operations as the player's company, and the terraform hook
+ * counts those as the player wrecking the landscape -- so the punishment fed
+ * the anger that caused it and kept the wrath from ever decaying. */
+static bool _ap_wrath_punishing = false;
+
+void AP_WrathTrackHouse()  { if (_ap_wrath_enabled && !_ap_wrath_punishing) { _ap_wrath_houses_year++;  AP_TRACE(fmt::format("Wrath: house demolished (total this year: {})", _ap_wrath_houses_year)); } }
+void AP_WrathTrackRoad()   { if (_ap_wrath_enabled && !_ap_wrath_punishing) { _ap_wrath_roads_year++;   AP_TRACE(fmt::format("Wrath: road demolished (total this year: {})", _ap_wrath_roads_year)); } }
+void AP_WrathTrackTerrain(){ if (_ap_wrath_enabled && !_ap_wrath_punishing) { _ap_wrath_terrain_year++; AP_TRACE(fmt::format("Wrath: terrain modified (total this year: {})", _ap_wrath_terrain_year)); } }
+void AP_WrathTrackTree()   { if (_ap_wrath_enabled && !_ap_wrath_punishing) { _ap_wrath_trees_year++;   AP_TRACE(fmt::format("Wrath: tree removed (total this year: {})", _ap_wrath_trees_year)); } }
 
 /* ── Newspaper messages ─────────────────────────────────────────── */
 
@@ -3139,36 +3200,60 @@ static const char *kWrathPunishLines[] = {
 /* ── Punishment helpers ─────────────────────────────────────────── */
 
 /** Level 4: Remove a handful of random player-owned rail tiles. */
-static void AP_WrathInfraDamage(CompanyID cid)
+/**
+ * Pick up to `want` random tiles owned by the company, in a single pass.
+ *
+ * ⚠ Reservoir sampling, not "collect them all and choose". The map is up to
+ * 4096x4096 -- 16.7 million tiles -- and the old code pushed every match into a
+ * vector before picking a handful out of it. This keeps the same uniform choice
+ * with `want` entries of memory instead of millions.
+ */
+static std::vector<TileIndex> AP_SampleOwnedTiles(CompanyID cid, int want, bool include_stations)
 {
-	std::vector<TileIndex> owned_rail;
+	std::vector<TileIndex> out;
+	if (want <= 0) return out;
+	out.reserve(want);
+
+	uint32_t seen = 0;
 	for (TileIndex t = TileIndex{}; t < Map::Size(); t++) {
-		if (IsTileType(t, MP_RAILWAY) && GetTileOwner(t) == cid) {
-			owned_rail.push_back(t);
+		if (!IsTileType(t, MP_RAILWAY) &&
+		    !(include_stations && IsTileType(t, MP_STATION))) continue;
+		if (GetTileOwner(t) != cid) continue;
+
+		seen++;
+		if ((int)out.size() < want) {
+			out.push_back(t);
+		} else {
+			uint32_t j = InteractiveRandomRange(seen);
+			if ((int)j < want) out[j] = t;
 		}
 	}
-	int to_remove = std::min((int)owned_rail.size(), 5 + (int)InteractiveRandomRange(4));
-	for (int i = 0; i < to_remove && !owned_rail.empty(); i++) {
-		int idx = (int)InteractiveRandomRange((uint32_t)owned_rail.size());
-		Command<CMD_LANDSCAPE_CLEAR>::Do(DoCommandFlag::Execute, owned_rail[idx]);
-		owned_rail[idx] = owned_rail.back();
-		owned_rail.pop_back();
+	return out;
+}
+
+static void AP_WrathInfraDamage(CompanyID cid)
+{
+	int to_remove = 5 + (int)InteractiveRandomRange(4);
+	std::vector<TileIndex> owned_rail = AP_SampleOwnedTiles(cid, to_remove, false);
+
+	/* Clearing a company's own tiles has to run as that company. */
+	CompanyID old = _current_company;
+	_current_company = cid;
+	for (TileIndex t : owned_rail) {
+		Command<CMD_LANDSCAPE_CLEAR>::Do(DoCommandFlag::Execute, t);
 	}
+	_current_company = old;
 }
 
 /** Level 5: Create a crater by clearing and lowering a 5x5 area around random player infrastructure. */
 static void AP_WrathSinkhole(CompanyID cid)
 {
-	std::vector<TileIndex> targets;
-	for (TileIndex t = TileIndex{}; t < Map::Size(); t++) {
-		if ((IsTileType(t, MP_RAILWAY) || IsTileType(t, MP_STATION)) &&
-		    GetTileOwner(t) == cid) {
-			targets.push_back(t);
-		}
-	}
+	std::vector<TileIndex> targets = AP_SampleOwnedTiles(cid, 1, true);
 	if (targets.empty()) return;
-	TileIndex center = targets[InteractiveRandomRange((uint32_t)targets.size())];
+	TileIndex center = targets[0];
 
+	CompanyID old = _current_company;
+	_current_company = cid;
 	for (int dx = -2; dx <= 2; dx++) {
 		for (int dy = -2; dy <= 2; dy++) {
 			TileIndex t = TileAddWrap(center, dx, dy);
@@ -3181,6 +3266,7 @@ static void AP_WrathSinkhole(CompanyID cid)
 			Command<CMD_TERRAFORM_LAND>::Do(DoCommandFlag::Execute, t, SLOPE_W, false);
 		}
 	}
+	_current_company = old;
 }
 
 /** Level 5: Delete 1-2 random player stations. */
@@ -3229,6 +3315,8 @@ static void AP_WrathPunish(int level)
 	Company *c = Company::GetIfValid(cid);
 	if (c == nullptr) return;
 
+	_ap_wrath_punishing = true;
+
 	switch (level) {
 		case 1: /* Newspaper warning only — already shown by escalation message */
 			break;
@@ -3267,7 +3355,8 @@ static void AP_WrathPunish(int level)
 			break;
 	}
 
-	_ap_status_dirty.store(true, std::memory_order_relaxed);
+	_ap_wrath_punishing = false;
+	_ap_status_dirty.fetch_add(1, std::memory_order_relaxed);
 }
 
 /* ── Yearly evaluation ──────────────────────────────────────────── */
@@ -3428,7 +3517,14 @@ static std::vector<APItem> _ap_pending_items;
  * NOTE: declared at the top of this file so it is available to AP_InitSessionStats(). */
 
 /* Exposed for GUI polling */
-std::atomic<bool> _ap_status_dirty{ false };
+/* A generation counter, not a flag.
+ *
+ * ⚠ It used to be a bool that every window consumed with exchange(false), and
+ * there are four of them: the connect window, the status overlay, the missions
+ * list and the shop. Whichever ticked first took the update and the other three
+ * never saw it, so a window that was not in front simply stopped refreshing.
+ * A counter can be read by all of them; each remembers what it last saw. */
+std::atomic<uint32_t> _ap_status_dirty{ 0 };
 
 /* Public accessors */
 const APSlotData &AP_GetSlotData() { return _ap_pending_sd; }
@@ -3481,11 +3577,55 @@ static bool        _ap_mp_join_pending = false;  ///< Waiting for AP slot_data b
 static std::string _ap_mp_join_server;            ///< Game server address to connect to
 static std::string _ap_mp_join_slot;              ///< Slot name (used as player name)
 
+/* Save/restore helpers, defined further down; a reconnect needs them here to
+ * stage the running session's progress before the reset below. */
+void        AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out);
+void        AP_SetCumulStats(const uint64_t *cargo_in, int num_cargo, int64_t profit_in);
+int64_t     AP_GetItemsReceivedCount();
+void        AP_SetItemsReceivedCount(int64_t v);
+std::string AP_GetCompletedMissionsStr();
+void        AP_SetCompletedMissionsStr(const std::string &s);
+std::string AP_GetMaintainCountersStr();
+void        AP_SetMaintainCountersStr(const std::string &s);
+std::string AP_GetNamedEntityStr();
+void        AP_SetNamedEntityStr(const std::string &s);
+std::string AP_GetSentShopStr();
+void        AP_SetSentShopStr(const std::string &s);
+
 static void AP_OnSlotData(const APSlotData &sd)
 {
 	AP_OK("[CALLBACK] AP_OnSlotData called on main thread!");
 	Debug(misc, 1, "[AP] Slot data received. {} missions, win_diff={} cv={} start_year={}",
 	      sd.missions.size(), (int)sd.win_difficulty, sd.win_target_company_value, sd.start_year);
+
+	/* ⚠⚠ A RECONNECT ARRIVES HERE TOO, AND IT LOOKS EXACTLY LIKE A FIRST CONNECT.
+	 *
+	 * Everything below resets the session so first-tick setup runs again, and
+	 * that setup calls AP_InitSessionStats, which zeroes _ap_items_received_count.
+	 * The server then replays the whole item stream from index 0 and the replay
+	 * guard in AP_OnItemReceived -- server_index < _ap_items_received_count --
+	 * is false for all of it: every Cash Injection is paid a second time, every
+	 * trap fires again, and the cumulative cargo/profit the win condition counts
+	 * starts over. Overwriting _ap_pending_sd below also throws away partial
+	 * mission progress (maintain months, named-entity totals).
+	 *
+	 * Only a savegame used to restore any of this. Stage the live values through
+	 * the same setters the save path uses, and first-tick setup puts them all
+	 * back after the reset. */
+	if (_ap_session_started && _game_mode == GM_NORMAL) {
+		uint64_t cargo[NUM_CARGO];
+		int64_t  profit = 0;
+		AP_GetCumulStats(cargo, NUM_CARGO, &profit);
+		AP_SetCumulStats(cargo, NUM_CARGO, profit);
+		AP_SetItemsReceivedCount(AP_GetItemsReceivedCount());
+		AP_SetCompletedMissionsStr(AP_GetCompletedMissionsStr());
+		AP_SetMaintainCountersStr(AP_GetMaintainCountersStr());
+		AP_SetNamedEntityStr(AP_GetNamedEntityStr());
+		AP_SetSentShopStr(AP_GetSentShopStr());
+		AP_SetTownsRenamed(AP_GetTownsRenamed());
+		AP_LOG(fmt::format("Reconnect: staged {} received items, cumulative stats, "
+		                   "mission progress and shop history.", AP_GetItemsReceivedCount()));
+	}
 
 	_ap_pending_sd      = sd;
 	_ap_session_started = false; /* reset so first-tick setup runs again */
@@ -3504,7 +3644,7 @@ static void AP_OnSlotData(const APSlotData &sd)
 	 * already unlocked. Item replay handles re-unlock automatically. */
 	_ap_track_dirs_inited = false; /* safe: has any_loaded guard */
 	/* All other _inited flags are intentionally NOT reset here. */
-	_ap_status_dirty.store(true);
+	_ap_status_dirty.fetch_add(1, std::memory_order_relaxed);
 
 	/* ── MP Join path: apply NewGRFs from slot_data, then connect ── */
 	if (_ap_mp_join_pending) {
@@ -3540,7 +3680,7 @@ static void AP_OnSlotData(const APSlotData &sd)
 		 * slot_data arrived, so we can't rely on it to re-run. */
 		if (_game_mode == GM_NORMAL) {
 			AP_AssignNamedEntities();
-			_ap_status_dirty.store(true);
+			_ap_status_dirty.fetch_add(1, std::memory_order_relaxed);
 		}
 
 		ShowArchipelagoStatusWindow();
@@ -3608,6 +3748,11 @@ static void AP_OnItemReceived(const APItem &incoming)
 
 	if (item.item_name.empty()) {
 		Debug(misc, 1, "[AP] WARNING: empty item name for id {}", item.item_id);
+		/* Unresolved now may resolve after the next slot_data; do not let the
+		 * counter mark it delivered. */
+		if (!is_replay && item.server_index >= 0) {
+			_ap_items_received_count = item.server_index;
+		}
 		return;
 	}
 
@@ -3629,10 +3774,24 @@ static void AP_OnItemReceived(const APItem &incoming)
 	 * trees, terraform, town actions) are IDEMPOTENT and MUST re-apply on reconnect,
 	 * because slot_data resets all lock states. */
 	AP_TRACE(fmt::format("ProcessingItem: '{}' (not a vehicle — checking trap/utility)", item.item_name));
-	CompanyID cid = _local_company;
-	if (cid >= MAX_COMPANIES) return;
-	Company *c = Company::GetIfValid(cid);
-	if (c == nullptr) return;
+
+	/* ⚠ Bridge mode runs on a dedicated server, where _local_company is a
+	 * spectator -- the rest of this file uses Company 0 there, this function
+	 * did not, so no trap and no infrastructure unlock ever applied.
+	 *
+	 * ⚠ And bailing out here is not free: the received counter was advanced
+	 * above, so the item counts as delivered and every later replay skips it.
+	 * Put the counter back, or the item is lost for the rest of the seed. */
+	CompanyID cid = _ap_bridge_mode ? CompanyID(0) : _local_company;
+	Company *c = (cid < MAX_COMPANIES) ? Company::GetIfValid(cid) : nullptr;
+	if (c == nullptr) {
+		if (!is_replay && item.server_index >= 0) {
+			_ap_items_received_count = item.server_index;
+		}
+		AP_TRACE(fmt::format("ItemDeferred: '{}' — no valid company yet, counter rewound",
+			item.item_name));
+		return;
+	}
 
 	/* ── TRAPS (non-idempotent — skip on replay) ──────── */
 	if (is_replay) {
@@ -4180,7 +4339,7 @@ static void AP_OnConnected()
 	/* NOTE: ForceEnglishLanguage() was moved to AP_ConsumeWorldStart()
 	 * to avoid a race condition in multiplayer — ReadLanguagePack()
 	 * replaces _langpack while GUI threads call GetString(). */
-	_ap_status_dirty.store(true);
+	_ap_status_dirty.fetch_add(1, std::memory_order_relaxed);
 }
 
 static void AP_OnDisconnected(const std::string &reason)
@@ -4194,8 +4353,11 @@ static void AP_OnDisconnected(const std::string &reason)
 	_ap_session_started = false;
 	_ap_server_checked_locations.clear();
 	_ap_server_checked_pending = false;
+	/* If the link dropped before the world was generated, the seed no longer
+	 * owns the new-game settings; a game the player starts by hand is theirs. */
+	_ap_settings_owned = false;
 	AP_LOG("Session flags reset — next connect can start world");
-	_ap_status_dirty.store(true);
+	_ap_status_dirty.fetch_add(1, std::memory_order_relaxed);
 }
 
 static void AP_OnPrint(const std::string &msg)
@@ -4232,6 +4394,16 @@ static void AP_OnDeathReceived(const std::string &source)
 {
 	if (!_ap_session_started) return;
 	if (!AP_GetSlotData().death_link) return; /* Death Link disabled in slot_data */
+
+	/* ⚠ AP bounces a DeathLink back to the room including the sender, so our
+	 * own crash returns as an incoming death. SendDeath stamps the time for
+	 * exactly this test, and nothing ever read it: the player lost the train
+	 * AND half the bank for one crash of their own. */
+	if (_ap_client != nullptr && _ap_client->WasOwnRecentDeath(5.0)) {
+		Debug(misc, 0, "[AP] Death from {} ignored — this is our own bounce", source);
+		return;
+	}
+
 	if (_ap_death_cooldown_ticks > 0) {
 		Debug(misc, 0, "[AP] Death from {} ignored — cooldown active", source);
 		return;
@@ -4390,6 +4562,11 @@ void AP_AutoStartOrLoad()
 	if (!full.empty()) {
 		_ap_pending_world_start        = false;
 		_ap_world_started_this_session = true; /* suppress worldgen on later slot_data */
+		/* Only AP_ConsumeWorldStart used to do this, and continuing skips it.
+		 * The engine name map is built from the running language, so on a
+		 * non-English install every item and starting vehicle failed to match
+		 * on this path while a fresh start worked. */
+		ForceEnglishLanguage();
 		_file_to_saveload.SetMode(FIOS_TYPE_FILE, SLO_LOAD);
 		_file_to_saveload.name = full;
 		_switch_mode = SM_LOAD_GAME;
@@ -4454,14 +4631,24 @@ bool AP_SeedExitSave()
  * alphabetically first ones -- so this rescans once per world start.
  */
 static bool AP_ActivateGrfById(uint32_t grfid_hex, const std::string &filename,
-                               const char *label)
+                               const char *label,
+                               const std::vector<uint32_t> *params = nullptr)
 {
+	/* Apply the seed's GRF parameters on top of the set's own defaults. */
+	auto apply_params = [&](GRFConfig &cfg) {
+		if (params == nullptr || params->empty()) return;
+		if (cfg.param.size() < params->size()) cfg.param.resize(params->size());
+		for (size_t i = 0; i < params->size(); i++) cfg.param[i] = (*params)[i];
+	};
+
 	/* The id travels here the way it is written in the file; the engine holds
 	 * it byte-swapped. */
 	const GRFConfig *found = FindGRFConfig(std::byteswap(grfid_hex), FGCM_NEWEST_VALID);
 	if (found != nullptr) {
 		auto c = std::make_unique<GRFConfig>(*found);
 		c->SetSuitablePalette();
+		if (c->param.empty()) c->SetParameterDefaults();
+		apply_params(*c);
 		AppendToGRFConfigList(_grfconfig_newgame, std::move(c));
 		AP_OK(fmt::format("{} activated for new game (found as {}).", label, found->filename));
 		return true;
@@ -4481,6 +4668,196 @@ static bool AP_ActivateGrfById(uint32_t grfid_hex, const std::string &filename,
 	AP_WARN(fmt::format("{} is in the seed but nothing installed carries GRF id {:08x} "
 	                    "-- install it from Check Online Content.", label, grfid_hex));
 	return false;
+}
+
+/**
+ * Write every setting the seed decides into _settings_newgame.
+ *
+ * ⚠⚠ THIS RUNS MORE THAN ONCE, AND IT HAS TO.
+ *
+ * World generation is deferred: StartNewGameWithoutGUI only sets
+ * _switch_mode = SM_NEWGAME, and the world is built a turn of the main loop
+ * later. In that gap the asynchronous NewGRF scan finishes and its callback
+ * does this:
+ *
+ *   AfterNewGRFScan::OnNewGRFsScanned()   (openttd.cpp)
+ *     -> LoadFromConfig()                 (settings.cpp)
+ *          _settings_newgame = whatever openttd.cfg says, byte for byte
+ *
+ * Everything written here is gone at that point, and the world is generated
+ * from the player's config instead of from the seed -- max_train_length back
+ * to 7, station_spread back to 12, and so on. Worse, those values are then
+ * baked into the seed's savegame, so every later session loads them too.
+ *
+ * This is the same race that used to wipe the NewGRF list; that half was
+ * cured by having the launcher write openttd.cfg up front, but settings never
+ * got the same rescue. The cure here is a chokepoint instead:
+ * AP_ReapplyGameSettings runs from MakeNewgameSettingsLive, which every path
+ * to a new world goes through, so the seed's values are restored after the
+ * last thing that could have overwritten them.
+ */
+static void AP_ApplyGameSettings(const APSlotData &sd)
+{
+	/* ── World generation ─────────────────────────────────────────── */
+	_settings_newgame.game_creation.starting_year =
+	    TimerGameCalendar::Year(sd.start_year);
+	if (sd.map_x >= 6 && sd.map_x <= 12)
+		_settings_newgame.game_creation.map_x = sd.map_x;
+	if (sd.map_y >= 6 && sd.map_y <= 12)
+		_settings_newgame.game_creation.map_y = sd.map_y;
+	if (sd.landscape <= 3)
+		_settings_newgame.game_creation.landscape = (LandscapeType)sd.landscape;
+	if (sd.land_generator <= 1)
+		_settings_newgame.game_creation.land_generator = sd.land_generator;
+	if (sd.terrain_type <= 4)
+		_settings_newgame.difficulty.terrain_type = sd.terrain_type;
+	if (sd.sea_level <= 3)
+		_settings_newgame.difficulty.quantity_sea_lakes = sd.sea_level;
+	if (sd.rivers <= 3)
+		_settings_newgame.game_creation.amount_of_rivers = sd.rivers;
+	if (sd.smoothness <= 3)
+		_settings_newgame.game_creation.tgen_smoothness = sd.smoothness;
+	if (sd.variety <= 5)
+		_settings_newgame.game_creation.variety = sd.variety;
+	if (sd.number_towns <= 4)
+		_settings_newgame.difficulty.number_towns = sd.number_towns;
+	/* town_name indexes a name generator; an out-of-range value from a corrupt
+	 * slot_data would be read straight by the engine. */
+	if (sd.town_name < 21)
+		_settings_newgame.game_creation.town_name = sd.town_name;
+
+	/* ── Accounting ───────────────────────────────────────────────── */
+	_settings_newgame.difficulty.infinite_money        = sd.infinite_money;
+	_settings_newgame.economy.inflation                = sd.inflation;
+	_settings_newgame.difficulty.max_loan              = sd.max_loan;
+	_settings_newgame.economy.infrastructure_maintenance = sd.infrastructure_maintenance;
+	if (sd.vehicle_costs <= 2)
+		_settings_newgame.difficulty.vehicle_costs     = sd.vehicle_costs;
+	if (sd.construction_cost <= 2)
+		_settings_newgame.difficulty.construction_cost = sd.construction_cost;
+
+	/* ── Vehicle Limitations ─────────────────────────────────────── */
+	_settings_newgame.vehicle.max_trains               = sd.max_trains;
+	_settings_newgame.vehicle.max_roadveh              = sd.max_roadveh;
+	_settings_newgame.vehicle.max_aircraft             = sd.max_aircraft;
+	_settings_newgame.vehicle.max_ships                = sd.max_ships;
+	/* max_train_length and station_spread: settings_type.h uses vanilla uint8_t.
+	 * AP slot_data may send up to uint16_t — clamp to 255. */
+	_settings_newgame.vehicle.max_train_length = (uint8_t)std::clamp<uint16_t>(sd.max_train_length, 1, 255);
+	_settings_newgame.station.station_spread   = (uint8_t)std::clamp<uint16_t>(sd.station_spread, 4, 255);
+	_settings_newgame.construction.road_stop_on_town_road       = sd.road_stop_on_town_road;
+	_settings_newgame.construction.road_stop_on_competitor_road = sd.road_stop_on_competitor_road;
+	_settings_newgame.construction.crossing_with_competitor     = sd.crossing_with_competitor;
+
+	/* ── Disasters / Accidents ───────────────────────────────────── */
+	_settings_newgame.difficulty.disasters             = sd.disasters;
+	_settings_newgame.vehicle.plane_crashes            = (sd.plane_crashes <= 2) ? sd.plane_crashes : 2;
+	if (sd.vehicle_breakdowns <= 2)
+		_settings_newgame.difficulty.vehicle_breakdowns = sd.vehicle_breakdowns;
+
+	/* ── AP: always disable vehicle/airport expiry so engine names resolve
+	 * correctly for AP item matching. Set in _settings_newgame so it's
+	 * part of the initial game state (prevents desync in multiplayer). */
+	_settings_newgame.vehicle.never_expire_vehicles   = true;
+	_settings_newgame.station.never_expire_airports   = true;
+
+	/* ── Economy / Environment ───────────────────────────────────── */
+	if (sd.economy_type <= 2)
+		_settings_newgame.economy.type                 = (EconomyType)sd.economy_type;
+	_settings_newgame.economy.bribe                    = sd.bribe;
+	_settings_newgame.economy.exclusive_rights         = sd.exclusive_rights;
+	_settings_newgame.economy.fund_buildings           = sd.fund_buildings;
+	_settings_newgame.economy.fund_roads               = sd.fund_roads;
+	_settings_newgame.economy.give_money               = sd.give_money;
+	if (sd.town_growth_rate <= 4)
+		_settings_newgame.economy.town_growth_rate     = sd.town_growth_rate;
+	if (sd.found_town <= 3)
+		_settings_newgame.economy.found_town           = (TownFounding)sd.found_town;
+	_settings_newgame.economy.town_cargo_scale         = sd.town_cargo_scale;
+	_settings_newgame.economy.industry_cargo_scale     = sd.industry_cargo_scale;
+	if (sd.industry_density <= 5)
+		_settings_newgame.difficulty.industry_density  = sd.industry_density;
+	_settings_newgame.economy.allow_town_roads         = sd.allow_town_roads;
+
+	/* ── Vehicles / Routing ──────────────────────────────────────── */
+	if (sd.road_side <= 1)
+		_settings_newgame.vehicle.road_side            = sd.road_side;
+}
+
+/**
+ * Restore the seed's settings after anything that may have reloaded the config.
+ * Called from MakeNewgameSettingsLive -- the one place every route to a new
+ * world passes through, right before _settings_newgame is copied into
+ * _settings_game. No-op outside a launcher-driven world start.
+ */
+void AP_ReapplyGameSettings()
+{
+	if (!_ap_settings_owned) return;
+	AP_ApplyGameSettings(_ap_pending_sd);
+}
+
+/**
+ * Put the seed's settings into an ALREADY GENERATED world.
+ *
+ * A world built before the reapply chokepoint existed carries the player's
+ * config values in its savegame, and loading it never touches
+ * _settings_newgame at all. Writing straight to _settings_game repairs those
+ * saves in place, so a running seed does not have to be thrown away.
+ *
+ * ⚠ Only settings that are safe to change mid-game. Everything the terrain was
+ * built from -- map size, landscape, sea level, rivers, smoothness, variety,
+ * town count, starting year -- is baked into the world and is deliberately
+ * absent here. So is road_side, which would send every vehicle down the wrong
+ * side of roads that already exist.
+ */
+static void AP_ApplyRuntimeSettings(const APSlotData &sd)
+{
+	_settings_game.vehicle.max_trains  = sd.max_trains;
+	_settings_game.vehicle.max_roadveh = sd.max_roadveh;
+	_settings_game.vehicle.max_aircraft = sd.max_aircraft;
+	_settings_game.vehicle.max_ships   = sd.max_ships;
+	_settings_game.vehicle.max_train_length = (uint8_t)std::clamp<uint16_t>(sd.max_train_length, 1, 255);
+	_settings_game.station.station_spread    = (uint8_t)std::clamp<uint16_t>(sd.station_spread, 4, 255);
+
+	_settings_game.construction.road_stop_on_town_road       = sd.road_stop_on_town_road;
+	_settings_game.construction.road_stop_on_competitor_road = sd.road_stop_on_competitor_road;
+	_settings_game.construction.crossing_with_competitor     = sd.crossing_with_competitor;
+
+	_settings_game.difficulty.infinite_money = sd.infinite_money;
+	_settings_game.difficulty.max_loan       = sd.max_loan;
+	_settings_game.difficulty.disasters      = sd.disasters;
+	if (sd.vehicle_costs <= 2)      _settings_game.difficulty.vehicle_costs = sd.vehicle_costs;
+	if (sd.construction_cost <= 2)  _settings_game.difficulty.construction_cost = sd.construction_cost;
+	if (sd.vehicle_breakdowns <= 2) _settings_game.difficulty.vehicle_breakdowns = sd.vehicle_breakdowns;
+
+	_settings_game.economy.inflation                 = sd.inflation;
+	_settings_game.economy.infrastructure_maintenance = sd.infrastructure_maintenance;
+	_settings_game.economy.bribe                     = sd.bribe;
+	_settings_game.economy.exclusive_rights          = sd.exclusive_rights;
+	_settings_game.economy.fund_buildings            = sd.fund_buildings;
+	_settings_game.economy.fund_roads                = sd.fund_roads;
+	_settings_game.economy.give_money                = sd.give_money;
+	_settings_game.economy.allow_town_roads          = sd.allow_town_roads;
+	_settings_game.economy.town_cargo_scale          = sd.town_cargo_scale;
+	_settings_game.economy.industry_cargo_scale      = sd.industry_cargo_scale;
+	if (sd.town_growth_rate <= 4) _settings_game.economy.town_growth_rate = sd.town_growth_rate;
+	if (sd.found_town <= 3)       _settings_game.economy.found_town = (TownFounding)sd.found_town;
+
+	_settings_game.vehicle.plane_crashes          = (sd.plane_crashes <= 2) ? sd.plane_crashes : 2;
+	_settings_game.vehicle.never_expire_vehicles  = true;
+	_settings_game.station.never_expire_airports  = true;
+
+	/* station_spread has a post-change callback in the settings table; nothing
+	 * calls it on this path, so the build/select windows would keep showing the
+	 * old reach until they were reopened. */
+	InvalidateWindowData(WC_SELECT_STATION, 0);
+	InvalidateWindowData(WC_BUILD_STATION, 0);
+
+	AP_LOG(fmt::format("Runtime settings applied from seed: train_len={} station_spread={} "
+	                   "max_trains={} max_roadveh={} max_aircraft={} max_ships={}",
+	                   _settings_game.vehicle.max_train_length, _settings_game.station.station_spread,
+	                   _settings_game.vehicle.max_trains, _settings_game.vehicle.max_roadveh,
+	                   _settings_game.vehicle.max_aircraft, _settings_game.vehicle.max_ships));
 }
 
 void AP_ConsumeWorldStart()
@@ -4517,78 +4894,13 @@ void AP_ConsumeWorldStart()
 		}
 	}
 
-	/* ── World generation ─────────────────────────────────────────── */
-	_settings_newgame.game_creation.starting_year =
-	    TimerGameCalendar::Year(sd.start_year);
-	if (sd.map_x >= 6 && sd.map_x <= 12)
-		_settings_newgame.game_creation.map_x = sd.map_x;
-	if (sd.map_y >= 6 && sd.map_y <= 12)
-		_settings_newgame.game_creation.map_y = sd.map_y;
-	if (sd.landscape <= 3)
-		_settings_newgame.game_creation.landscape = (LandscapeType)sd.landscape;
-	if (sd.land_generator <= 1)
-		_settings_newgame.game_creation.land_generator = sd.land_generator;
-	if (sd.terrain_type <= 4)
-		_settings_newgame.difficulty.terrain_type = sd.terrain_type;
-	if (sd.sea_level <= 3)
-		_settings_newgame.difficulty.quantity_sea_lakes = sd.sea_level;
-	if (sd.rivers <= 3)
-		_settings_newgame.game_creation.amount_of_rivers = sd.rivers;
-	if (sd.smoothness <= 3)
-		_settings_newgame.game_creation.tgen_smoothness = sd.smoothness;
-	if (sd.variety <= 5)
-		_settings_newgame.game_creation.variety = sd.variety;
-	if (sd.number_towns <= 4)
-		_settings_newgame.difficulty.number_towns = sd.number_towns;
-	_settings_newgame.game_creation.town_name = sd.town_name;
+	/* The seed owns these. They are written again from
+	 * MakeNewgameSettingsLive, because the NewGRF scan's config reload lands
+	 * between here and the deferred world generation -- see AP_ApplyGameSettings. */
+	AP_ApplyGameSettings(sd);
+	_ap_settings_owned = true;
 
 	_ap_world_seed_to_use = (sd.world_seed != 0) ? sd.world_seed : GENERATE_NEW_SEED;
-
-	/* ── Accounting ───────────────────────────────────────────────── */
-	_settings_newgame.difficulty.infinite_money        = sd.infinite_money;
-	_settings_newgame.economy.inflation                = sd.inflation;
-	_settings_newgame.difficulty.max_loan              = sd.max_loan;
-	_settings_newgame.economy.infrastructure_maintenance = sd.infrastructure_maintenance;
-	_settings_newgame.difficulty.vehicle_costs         = sd.vehicle_costs;
-	_settings_newgame.difficulty.construction_cost     = sd.construction_cost;
-
-	/* ── Vehicle Limitations ─────────────────────────────────────── */
-	_settings_newgame.vehicle.max_trains               = sd.max_trains;
-	_settings_newgame.vehicle.max_roadveh              = sd.max_roadveh;
-	_settings_newgame.vehicle.max_aircraft             = sd.max_aircraft;
-	_settings_newgame.vehicle.max_ships                = sd.max_ships;
-	/* max_train_length and station_spread: settings_type.h uses vanilla uint8_t.
-	 * AP slot_data may send up to uint16_t — clamp to 255. */
-	_settings_newgame.vehicle.max_train_length = (uint8_t)std::min((uint16_t)255, sd.max_train_length);
-	_settings_newgame.station.station_spread   = (uint8_t)std::min((uint16_t)255, sd.station_spread);
-	_settings_newgame.construction.road_stop_on_town_road       = sd.road_stop_on_town_road;
-	_settings_newgame.construction.road_stop_on_competitor_road = sd.road_stop_on_competitor_road;
-	_settings_newgame.construction.crossing_with_competitor     = sd.crossing_with_competitor;
-
-	/* ── Disasters / Accidents ───────────────────────────────────── */
-	_settings_newgame.difficulty.disasters             = sd.disasters;
-	_settings_newgame.vehicle.plane_crashes            = sd.plane_crashes;
-	_settings_newgame.difficulty.vehicle_breakdowns    = sd.vehicle_breakdowns;
-
-	/* ── AP: always disable vehicle/airport expiry so engine names resolve
-	 * correctly for AP item matching. Set in _settings_newgame so it's
-	 * part of the initial game state (prevents desync in multiplayer). */
-	_settings_newgame.vehicle.never_expire_vehicles   = true;
-	_settings_newgame.station.never_expire_airports   = true;
-
-	/* ── Economy / Environment ───────────────────────────────────── */
-	_settings_newgame.economy.type                     = (EconomyType)sd.economy_type;
-	_settings_newgame.economy.bribe                    = sd.bribe;
-	_settings_newgame.economy.exclusive_rights         = sd.exclusive_rights;
-	_settings_newgame.economy.fund_buildings           = sd.fund_buildings;
-	_settings_newgame.economy.fund_roads               = sd.fund_roads;
-	_settings_newgame.economy.give_money               = sd.give_money;
-	_settings_newgame.economy.town_growth_rate         = sd.town_growth_rate;
-	_settings_newgame.economy.found_town               = (TownFounding)sd.found_town;
-	_settings_newgame.economy.town_cargo_scale         = sd.town_cargo_scale;
-	_settings_newgame.economy.industry_cargo_scale     = sd.industry_cargo_scale;
-	_settings_newgame.difficulty.industry_density      = sd.industry_density;
-	_settings_newgame.economy.allow_town_roads         = sd.allow_town_roads;
 
 	/* ── Force English for engine-name matching ─────────────────── */
 	/* Must run here (GM_MENU) — safe from concurrent GetString()
@@ -4602,8 +4914,8 @@ void AP_ConsumeWorldStart()
 	/* The user's openttd.cfg may already contain some of our GRFs (from a
 	 * previous AP game or manual setup).  AppendToGRFConfigList removes
 	 * duplicates by keeping the *first* occurrence, which would be the old
-	 * entry WITHOUT the params we need (e.g. military-items.grf param[0]=1).
-	 * Clearing the list ensures our versions (with correct params) win. */
+	 * entry without the parameters the seed chose (FIRS reads its economy from
+	 * one). Clearing the list ensures our versions win. */
 	_grfconfig_newgame.clear();
 
 	/* ⚠⚠ WHAT THIS LIST IS NOT: THE LAST WORD.
@@ -4692,7 +5004,16 @@ void AP_ConsumeWorldStart()
 	if (sd.enable_aircraftpack) AP_ActivateGrfById(0x4c480101, "Aircraft2025.grf", "Aircraftpack 2025");
 
 	/* ── NewGRF: FIRS Industries ───────────────────────────────────── */
-	if (sd.enable_firs) AP_ActivateGrfById(0xf1250009, "firs.grf", "FIRS Industries");
+	/* ⚠ firs_economy was parsed out of slot_data and then never used, so FIRS
+	 * always ran its default economy. The apworld meanwhile builds cargo
+	 * missions from the CHOSEN economy's cargo list, so a Steeltown seed asked
+	 * for cargo the loaded game did not have. FIRS reads the economy from its
+	 * first GRF parameter, and the option's values are that parameter. */
+	if (sd.enable_firs) {
+		std::vector<uint32_t> firs_params{ (uint32_t)std::min<int>(sd.firs_economy, 4) };
+		AP_ActivateGrfById(0xf1250009, "firs.grf", "FIRS Industries", &firs_params);
+		AP_LOG(fmt::format("FIRS economy parameter set to {}.", firs_params[0]));
+	}
 
 	/* Count how many GRFs were added to _grfconfig_newgame */
 	{
@@ -5020,6 +5341,20 @@ int AP_GetTotalMissionsCompleted()
 }
 
 /**
+ * What the shop counts as a completed mission.
+ *
+ * The Mission Check task reward is documented as counting toward shop unlocks,
+ * but nothing ever added it: the shop gate read the per-difficulty counters
+ * alone, so a player spent the reward and got nothing for it. It is deliberately
+ * kept out of AP_GetTotalMissionsCompleted -- the win condition asks for real
+ * missions, and local tasks must not shorten the seed's goal.
+ */
+int AP_GetShopMissionCredit()
+{
+	return AP_GetTotalMissionsCompleted() + _ap_task_checks_completed;
+}
+
+/**
  * Shop tier locking: first SHOP_FREE_SLOTS items are always unlocked.
  * After that every SHOP_TIER_SIZE more items require SHOP_TIER_SIZE more
  * completed missions.
@@ -5040,7 +5375,7 @@ bool AP_IsShopSlotUnlocked(int slot_index)
 	if (slot_index < SHOP_FREE_SLOTS) return true;
 	int tier             = (slot_index - SHOP_FREE_SLOTS) / SHOP_TIER_SIZE + 1;
 	int missions_needed  = tier * SHOP_TIER_SIZE;
-	return AP_GetTotalMissionsCompleted() >= missions_needed;
+	return AP_GetShopMissionCredit() >= missions_needed;
 }
 
 int AP_GetShopSlotRequiredMissions(int slot_index)
@@ -5718,6 +6053,11 @@ void AP_SetStarsStr(const std::string &s)
 		star.collected = (fields[3] == "1");
 		if (star.id >= 0 && star.id < (int)_ap_pending_sd.star_locations.size()) {
 			star.location_name = _ap_pending_sd.star_locations[star.id];
+		} else {
+			/* Ruins carry a fallback name for exactly this case; stars did not,
+			 * so collecting one sent an empty location string and the check was
+			 * silently lost. */
+			star.location_name = fmt::format("Star_{:04d}", star.id + 1);
 		}
 		_ap_stars.push_back(star);
 	}
@@ -6278,6 +6618,30 @@ void AP_SetCompletedMissionsStr(const std::string &s)
     _ap_staging_completed_valid    = !s.empty();
 }
 
+/**
+ * Recount the per-difficulty totals from the mission list.
+ *
+ * These counters gate tier unlocks, shop slots and the win condition, so any
+ * code that marks a mission complete outside the normal play loop has to call
+ * this. The savegame path used to be the only one that did; server-synced
+ * completions left the counters at zero, which silently locked the higher
+ * tiers for a player whose save was older than the server's state.
+ */
+static void AP_RebuildTierCounters()
+{
+    _ap_easy_completed    = 0;
+    _ap_medium_completed  = 0;
+    _ap_hard_completed    = 0;
+    _ap_extreme_completed = 0;
+    for (const APMission &m : _ap_pending_sd.missions) {
+        if (!m.completed) continue;
+        if      (m.location.rfind("Mission_Easy_",    0) == 0) _ap_easy_completed++;
+        else if (m.location.rfind("Mission_Medium_",  0) == 0) _ap_medium_completed++;
+        else if (m.location.rfind("Mission_Hard_",    0) == 0) _ap_hard_completed++;
+        else if (m.location.rfind("Mission_Extreme_", 0) == 0) _ap_extreme_completed++;
+    }
+}
+
 static void AP_ApplyStagedCompletedMissions()
 {
     if (!_ap_staging_completed_valid) return;
@@ -6295,18 +6659,7 @@ static void AP_ApplyStagedCompletedMissions()
         if (done.count(m.location)) m.completed = true;
     }
 
-    /* Rebuild per-difficulty counters from the now-updated mission structs. */
-    _ap_easy_completed    = 0;
-    _ap_medium_completed  = 0;
-    _ap_hard_completed    = 0;
-    _ap_extreme_completed = 0;
-    for (const APMission &m : _ap_pending_sd.missions) {
-        if (!m.completed) continue;
-        if      (m.location.rfind("Mission_Easy_",    0) == 0) _ap_easy_completed++;
-        else if (m.location.rfind("Mission_Medium_",  0) == 0) _ap_medium_completed++;
-        else if (m.location.rfind("Mission_Hard_",    0) == 0) _ap_hard_completed++;
-        else if (m.location.rfind("Mission_Extreme_", 0) == 0) _ap_extreme_completed++;
-    }
+    AP_RebuildTierCounters();
 
     Debug(misc, 1, "[AP] Restored {} completed missions from savegame", done.size());
     _ap_staging_completed_missions.clear();
@@ -6546,7 +6899,10 @@ static int64_t AP_RuinCargoAmount()
 		{ 35000,  90000 }, // 8: nutcase
 		{ 50000, 150000 }, // 9: madness
 	};
-	int idx = std::clamp(diff, 0, 9);
+	/* ⚠ 10 is "Custom -- use the sliders", not a harder tier than madness.
+	 * Clamping it to 9 gave a casual custom seed ruin requirements of 50,000 to
+	 * 150,000 units per cargo type. Fall back to the middle of the table. */
+	int idx = (diff >= 0 && diff <= 9) ? diff : 2;
 	int64_t lo = ranges[idx].lo;
 	int64_t hi = ranges[idx].hi;
 	return lo + (int64_t)(InteractiveRandom() % (uint32_t)(hi - lo + 1));
@@ -7199,6 +7555,11 @@ static void AP_ApplyServerCheckedLocations()
 		}
 	}
 
+	/* Tier unlocks, shop slots and the win condition all read the per-difficulty
+	 * counters, not the mission flags -- without this the synced missions would
+	 * count for nothing and the higher tiers could stay locked for good. */
+	if (missions_synced > 0) AP_RebuildTierCounters();
+
 	/* ── Sync stars ───────────────────────────────────────────── */
 	int stars_synced = 0;
 	for (APStar &star : _ap_stars) {
@@ -7237,7 +7598,7 @@ static void AP_ApplyServerCheckedLocations()
 	}
 	if (missions_synced > 0 || shop_synced > 0 || stars_synced > 0) {
 		SetWindowClassesDirty(WC_ARCHIPELAGO);
-		_ap_status_dirty.store(true);
+		_ap_status_dirty.fetch_add(1, std::memory_order_relaxed);
 	}
 }
 
@@ -7263,7 +7624,7 @@ static void CheckMissions()
 
 	if (completed_this_pass > 0) {
 		SetWindowClassesDirty(WC_ARCHIPELAGO);
-		_ap_status_dirty.store(true);
+		_ap_status_dirty.fetch_add(1, std::memory_order_relaxed);
 	}
 }
 
@@ -7319,7 +7680,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			    _game_mode == GM_NORMAL &&
 			    _local_company < MAX_COMPANIES) {
 				AP_RefreshNamedEntityNames();
-				_ap_status_dirty.store(true);
+				_ap_status_dirty.fetch_add(1, std::memory_order_relaxed);
 			}
 		} else {
 			/* Bridge mode: deferred named-entity refresh uses Company 0 */
@@ -7327,7 +7688,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			    _game_mode == GM_NORMAL &&
 			    Company::GetIfValid(CompanyID(0)) != nullptr) {
 				AP_RefreshNamedEntityNames();
-				_ap_status_dirty.store(true);
+				_ap_status_dirty.fetch_add(1, std::memory_order_relaxed);
 			}
 		}
 
@@ -7410,6 +7771,17 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			_settings_game.vehicle.never_expire_vehicles = true;
 			_settings_game.station.never_expire_airports = true;
 
+			/* Put the seed's settings into the running game. A world generated
+			 * before the reapply chokepoint existed carries the player's config
+			 * values in its savegame, and loading it never goes near
+			 * _settings_newgame -- so without this a running seed keeps the
+			 * wrong train length and station spread for good. */
+			AP_ApplyRuntimeSettings(_ap_pending_sd);
+
+			/* The generated world now matches the seed; later new games in this
+			 * process belong to the player again. */
+			_ap_settings_owned = false;
+
 			/* Force percentage-based service intervals (default 30%).
 			 * This ensures vehicles go to depot when reliability drops
 			 * below 30%, which is critical for traps like Breakdown Wave
@@ -7447,6 +7819,13 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				/* Apply shop sent locations staged by saveload (must run after AP_InitSessionStats) */
 				AP_ApplyStagedShopSent();
 
+				/* Towns keep the names they were given; renaming them again on
+				 * every load or reconnect is wasted work and churns the news. */
+				if (_ap_staging_towns_renamed >= 0) {
+					_ap_towns_renamed = (_ap_staging_towns_renamed != 0);
+					_ap_staging_towns_renamed = -1;
+				}
+
 				/* Apply completed missions staged by saveload (must run after AP_OnSlotData
 				 * has overwritten _ap_pending_sd with the fresh mission list from the server) */
 				AP_ApplyStagedCompletedMissions();
@@ -7481,7 +7860,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				AP_RefreshRuinNames();
 				/* Generate initial tasks (safe to call: only adds if room) */
 				AP_GenerateTasks();
-				_ap_status_dirty.store(true); /* refresh GUI to show resolved [Town]/[Industry] names */
+				_ap_status_dirty.fetch_add(1, std::memory_order_relaxed); /* refresh GUI to show resolved [Town]/[Industry] names */
 
 				/* Rename towns using multiworld player names or custom list */
 				AP_RenameTowns();
@@ -7801,6 +8180,11 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Open the status overlay (skip on dedicated server — no GUI) */
 			if (!_network_dedicated) ShowArchipelagoStatusWindow();
 
+			/* Ask the launcher who owns each shop slot. Nothing ever sent this,
+			 * so HINT: never came back and every shop entry showed the fallback
+			 * "Shop Slot #N" instead of the player and game holding the item. */
+			if (_ap_client != nullptr) _ap_client->SendScoutsForShop();
+
 			AP_OK(fmt::format("AP session started. {} engines in map. Mission evaluation active.",
 			      _ap_engine_map.size()));
 		}
@@ -7813,9 +8197,17 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		/* Tick down cooldowns every 250 ms */
 		if (_ap_death_cooldown_ticks > 0) _ap_death_cooldown_ticks--;
 
+		/* Play timer. Driven here rather than from the status window, which the
+		 * player can close -- and did, freezing the clock permanently. */
+		if (_game_mode == GM_NORMAL && _pause_mode.None() && !AP_GetGoalSent()) {
+			AP_AddPlayTimerMs(250);
+		}
+
 		/* Timed effects only count down and apply while actually playing.
-		 * Paused game or being in a menu must not drain effect duration. */
-		if (_game_mode == GM_NORMAL) {
+		 * Paused game or being in a menu must not drain effect duration.
+		 * ⚠ GM_NORMAL alone is true while paused as well, so this used to let a
+		 * player sit out Breakdown Wave and every other trap on the pause key. */
+		if (_game_mode == GM_NORMAL && _pause_mode.None()) {
 			/* Bridge mode uses Company 0 (host company) on dedicated server */
 			CompanyID tick_cid = _ap_bridge_mode ? CompanyID(0) : _local_company;
 
@@ -8008,7 +8400,10 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			 * above: his fallback cargo on Tropical and Toyland is an ordinary
 			 * one, so his monitor collides with missions, tasks and ruins, and
 			 * a separate drain left him reading zero forever. */
-			if (_ap_colby_enabled && !_ap_colby_done) AP_ColbyTick(cargo);
+			/* ⚠ Not gated on !_ap_colby_done: both decisions in popup A set done,
+			 * and the pending-popup reopen at the top of AP_ColbyTick still has
+			 * to run for popup B. The step logic has its own done check. */
+			if (_ap_colby_enabled) AP_ColbyTick(cargo);
 
 			/* Drive Demigod (God of Wackens) system */
 			AP_DemigodTick();
@@ -8227,6 +8622,14 @@ void AP_OnVehicleCreated(Vehicle *v)
 		if (_ap_name_pool.empty()) RebuildNamePool();
 		int idx = _ap_name_pool.back();
 		_ap_name_pool.pop_back();
+		/* The pool is restored from the savegame as plain integers, so a
+		 * corrupt or older save can hold an index past the end of the table. */
+		constexpr int kNameCount = (int)(sizeof(kCommunityNames) / sizeof(kCommunityNames[0]));
+		if (idx < 0 || idx >= kNameCount) {
+			RebuildNamePool();
+			idx = _ap_name_pool.back();
+			_ap_name_pool.pop_back();
+		}
 		chosen = kCommunityNames[idx];
 
 		/* ~60% chance: append a suffix (round-robin to spread them evenly) */

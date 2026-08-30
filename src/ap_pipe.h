@@ -18,6 +18,7 @@
 #define AP_PIPE_H
 
 #include <string>
+#include <atomic>
 
 /**
  * One end of the launcher pipe. Blocking, single-threaded: the caller owns it
@@ -34,9 +35,14 @@ public:
 	/**
 	 * Open \\.\pipe\<name>. Waits up to \a timeout_ms for the launcher to
 	 * create it, because the game may start before the server is listening.
+	 *
+	 * @param abort optional stop flag, polled during the wait. Disconnect()
+	 *        joins this thread from the main thread, so without it a shutdown
+	 *        during the retry loop froze the game for the whole timeout.
 	 * @return true on success; Error() explains a false.
 	 */
-	bool Open(const std::string &name, int timeout_ms = 10000);
+	bool Open(const std::string &name, int timeout_ms = 10000,
+			const std::atomic<bool> *abort = nullptr);
 
 	void Close();
 	bool IsOpen() const { return this->handle != nullptr; }

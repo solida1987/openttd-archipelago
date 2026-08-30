@@ -354,6 +354,12 @@ static void LoadIntroGame(bool load_newgrfs = true)
 
 void MakeNewgameSettingsLive()
 {
+	/* Archipelago: the seed's settings go in again here, because this is the
+	 * last thing every route to a new world passes through. World generation is
+	 * deferred, and the NewGRF scan's LoadFromConfig lands in that gap and
+	 * replaces _settings_newgame with whatever openttd.cfg says. */
+	AP_ReapplyGameSettings();
+
 	for (CompanyID c = CompanyID::Begin(); c < MAX_COMPANIES; ++c) {
 		_settings_game.script_config.ai[c].reset();
 	}
@@ -849,6 +855,11 @@ void HandleExitGameRequest()
 		_survey.Transmit(NetworkSurveyHandler::Reason::EXIT, true);
 		_exit_game = true;
 	} else {
+		/* The seed's save is not the player's autosave preference: continuing a
+		 * seed depends on it, and with autosave_on_exit off this path never
+		 * wrote it, so quitting lost the session. Asking still happens. */
+		extern bool AP_SeedExitSave();
+		AP_SeedExitSave();
 		AskExitGame();
 	}
 }

@@ -169,8 +169,10 @@ static std::tuple<CommandCost, TileIndex> TerraformTileHeight(TerraformerState *
  */
 std::tuple<CommandCost, Money, TileIndex> CmdTerraformLand(DoCommandFlags flags, TileIndex tile, Slope slope, bool dir_up)
 {
-	/* AP terraform lock: block raising/lowering while locked */
-	if (AP_IsActive()) {
+	/* AP terraform lock: block raising/lowering while locked.
+	 * Only for the player -- the engine levels ground for new industries and
+	 * town houses through this command. */
+	if (AP_LocksApplyToCurrentCompany()) {
 		if (dir_up && AP_IsTerraformRaiseLocked()) return { CommandCost(STR_ERROR_ARCHIPELAGO_TERRAFORM_RAISE_LOCKED), 0, INVALID_TILE };
 		if (!dir_up && AP_IsTerraformLowerLocked()) return { CommandCost(STR_ERROR_ARCHIPELAGO_TERRAFORM_LOWER_LOCKED), 0, INVALID_TILE };
 	}
@@ -326,8 +328,9 @@ std::tuple<CommandCost, Money, TileIndex> CmdLevelLand(DoCommandFlags flags, Til
 	if (start_tile >= Map::Size()) return { CMD_ERROR, 0, INVALID_TILE };
 
 	/* AP terraform lock: check only the direction(s) this mode actually uses.
-	 * LM_RAISE only raises, LM_LOWER only lowers, LM_LEVEL can do both. */
-	if (AP_IsActive()) {
+	 * LM_RAISE only raises, LM_LOWER only lowers, LM_LEVEL can do both.
+	 * Only for the player -- the engine uses this too. */
+	if (AP_LocksApplyToCurrentCompany()) {
 		if (lm != LM_LOWER && AP_IsTerraformRaiseLocked()) return { CommandCost(STR_ERROR_ARCHIPELAGO_TERRAFORM_RAISE_LOCKED), 0, INVALID_TILE };
 		if (lm != LM_RAISE && AP_IsTerraformLowerLocked()) return { CommandCost(STR_ERROR_ARCHIPELAGO_TERRAFORM_LOWER_LOCKED), 0, INVALID_TILE };
 	}

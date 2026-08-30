@@ -110,6 +110,10 @@ void ArchipelagoClient::Connect(const std::string &h, uint16_t p,
 	stop_requested.store(false);
 	state.store(APState::CONNECTING);
 
+	/* The worker reports the GRF list as its first act, so the snapshot has to
+	 * exist before it starts -- this is the main thread, the worker is not. */
+	AP_PublishGrfSnapshot();
+
 	worker_thread = std::thread(&ArchipelagoClient::WorkerThread, this);
 }
 
@@ -173,6 +177,10 @@ void ArchipelagoClient::SendDeath(const std::string &cause)
 
 void ArchipelagoClient::Tick()
 {
+	/* Refresh the GRF snapshot the pipe worker reads. This is the main thread,
+	 * which is the only one allowed near the GRF lists. */
+	AP_PublishGrfSnapshot();
+
 	std::lock_guard<std::mutex> lg(inbound_mutex);
 	if (!inbound_queue.empty()) {
 		AP_LOG(fmt::format("[Tick] Processing {} queued events", inbound_queue.size()));

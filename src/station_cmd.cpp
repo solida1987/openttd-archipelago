@@ -2636,7 +2636,7 @@ CommandCost CmdBuildAirport(DoCommandFlags flags, TileIndex tile, uint8_t airpor
 	if (airport_type >= NUM_AIRPORTS) return CMD_ERROR;
 
 	/* AP airport lock: block building locked airport types (AT_SMALL always free) */
-	if (AP_IsActive() && AP_IsAirportLocked(airport_type)) {
+	if (AP_LocksApplyToCurrentCompany() && AP_IsAirportLocked(airport_type)) {
 		return CommandCost(STR_ERROR_ARCHIPELAGO_AIRPORT_LOCKED);
 	}
 

@@ -3685,8 +3685,10 @@ TownActions GetMaskOfTownActions(CompanyID cid, const Town *t)
 		 * if they are valid add them */
 		for (TownAction cur = {}; cur != TownAction::End; ++cur) {
 
-			/* Archipelago: skip locked town actions */
-			if (AP_IsActive() && AP_IsTownActionLocked((uint8_t)to_underlying(cur))) continue;
+			/* Archipelago: skip locked town actions. Only for the player --
+			 * this mask is also built for AI companies. */
+			if (AP_LocksApplyToCompanyIndex((int)cid.base()) &&
+			    AP_IsTownActionLocked((uint8_t)to_underlying(cur))) continue;
 
 			/* Is the company prohibited from bribing ? */
 			if (cur == TownAction::Bribe) {

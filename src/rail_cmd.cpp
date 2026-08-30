@@ -429,7 +429,7 @@ CommandCost CmdBuildSingleRail(DoCommandFlags flags, TileIndex tile, RailType ra
 	if (!ValParamRailType(railtype) || !ValParamTrackOrientation(track)) return CMD_ERROR;
 
 	/* AP track direction lock: block building locked directions (single tile) */
-	if (AP_IsActive() && AP_IsTrackDirLocked((uint8_t)railtype, (uint8_t)track)) {
+	if (AP_LocksApplyToCurrentCompany() && AP_IsTrackDirLocked((uint8_t)railtype, (uint8_t)track)) {
 		return CommandCost(STR_ERROR_ARCHIPELAGO_RAIL_DIR_LOCKED);
 	}
 
@@ -888,7 +888,7 @@ static CommandCost CmdRailTrackHelper(DoCommandFlags flags, TileIndex tile, Tile
 	 * The check is per-rail-type: Normal/Electric/Monorail/Maglev each have
 	 * independent bitmasks, so unlocking Normal Track NE-SW doesn't unlock
 	 * Monorail Track NE-SW. */
-	if (!remove && AP_IsActive() && AP_IsTrackDirLocked((uint8_t)railtype, (uint8_t)track)) {
+	if (!remove && AP_LocksApplyToCurrentCompany() && AP_IsTrackDirLocked((uint8_t)railtype, (uint8_t)track)) {
 		return CommandCost(STR_ERROR_ARCHIPELAGO_RAIL_DIR_LOCKED);
 	}
 
@@ -1067,7 +1067,7 @@ CommandCost CmdBuildSingleSignal(DoCommandFlags flags, TileIndex tile, Track tra
 	if (cycle_start > cycle_stop || cycle_stop > SIGTYPE_LAST) return CMD_ERROR;
 
 	/* AP signal lock: block placing locked signal types */
-	if (AP_IsActive() && AP_IsSignalLocked((uint8_t)sigtype)) {
+	if (AP_LocksApplyToCurrentCompany() && AP_IsSignalLocked((uint8_t)sigtype)) {
 		return CommandCost(STR_ERROR_ARCHIPELAGO_SIGNAL_LOCKED);
 	}
 

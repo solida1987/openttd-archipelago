@@ -36,7 +36,9 @@ extern std::string _ap_last_slot;
 extern std::string _ap_last_pass;
 extern bool        _ap_last_ssl;
 
-extern std::atomic<bool> _ap_status_dirty;
+/** Bumped whenever AP state changes. Consumers compare against their own last
+ *  seen value -- a shared flag would be stolen by the first window to tick. */
+extern std::atomic<uint32_t> _ap_status_dirty;
 
 /* Accessor functions from manager */
 const APSlotData &AP_GetSlotData();
