@@ -103,6 +103,21 @@ FIRS_CARGO_BY_ECONOMY = {
     ],
 }
 
+
+def get_cargo_list(landscape: int, firs_enabled: bool, firs_economy: int) -> List[str]:
+    """The cargoes that actually exist on the map this seed describes.
+
+    FIRS replaces the whole industry set, so when it is on its economy list
+    wins over the landscape list. Anything that names a cargo -- mission text,
+    the Colby event -- has to draw from this list, or it names something the
+    game cannot report on. Goods, for one, is absent from Toyland and from the
+    Arctic Basic and Steeltown economies.
+    """
+    if firs_enabled:
+        return FIRS_CARGO_BY_ECONOMY.get(
+            firs_economy, CARGO_BY_LANDSCAPE.get(landscape, CARGO_TYPES))
+    return CARGO_BY_LANDSCAPE.get(landscape, CARGO_TYPES)
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  MISSION TEMPLATES
 #  Each entry: (description_template, amount_min, amount_max, unit)
@@ -117,7 +132,8 @@ FIRS_CARGO_BY_ECONOMY = {
 # ─────────────────────────────────────────────────────────────────────────────
 #  PREDEFINED MISSION POOLS
 #
-#  Each difficulty has exactly 100 pre-written missions.  The generator
+#  Each difficulty has its own pool of pre-written missions (77-98 of them,
+#  depending on the tier).  The generator
 #  shuffles the pool and picks the first N entries — so no two missions of
 #  the same session ever duplicate each other, and neighbouring amounts are
 #  always well-spaced (because they were written that way up-front).
@@ -131,7 +147,7 @@ FIRS_CARGO_BY_ECONOMY = {
 #  Named-destination missions ([Town] / [Industry near Town]) keep their
 #  placeholder text; C++ resolves the actual name at session start.
 #
-#  EASY: 100 missions ordered by rough difficulty within each type group.
+#  EASY: missions ordered by rough difficulty within each type group.
 #        Types included: vehicles, trains, road vehicles, stations,
 #        passengers, passengers_to_town, mail_to_town, towns, profit,
 #        monthly profit, transport cargo, shop purchase.
@@ -672,9 +688,6 @@ def _build_location_table(mission_count: int = 100, shop_item_count: int = 100,
     table["Goal_Victory"] = OpenTTDLocationData(VICTORY_ID, "goal", LocationProgressType.PRIORITY)
 
     return table
-
-
-LOCATION_TABLE: Dict[str, OpenTTDLocationData] = _build_location_table(demigod_count=10, star_count=1000)
 
 
 def get_location_table(mission_count: int, shop_item_count: int,

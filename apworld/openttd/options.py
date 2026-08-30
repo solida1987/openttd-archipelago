@@ -244,8 +244,8 @@ class UtilityCount(Range):
 class ShopPriceTier(Choice):
     """
     How expensive shop purchases are. Seven tiers from cheapest to most expensive.
-    If Shop Price Min or Shop Price Max are set to non-zero values below,
-    those sliders override this setting and this option is ignored.
+    Prices are drawn at random inside the chosen tier and then sorted, so the
+    shop opens with its cheapest slots and works up to its most expensive.
 
     Tier 1: £10,000 – £500,000
     Tier 2: £50,000 – £1,000,000
@@ -859,10 +859,11 @@ class MaxShips(Range):
 
 
 class MaxTrainLength(Range):
-    """Maximum length for trains in tiles. Extended beyond vanilla limit of 64."""
+    """Maximum length for trains in tiles. Raised above the vanilla limit of 64.
+    255 is the engine's ceiling — a higher number is silently clamped to it."""
     display_name = "Max Train Length (tiles)"
     range_start = 1
-        # ⚠ 255 is the ENGINE's ceiling, not a preference: both settings live in a
+    # ⚠ 255 is the ENGINE's ceiling, not a preference: both settings live in a
     # uint8_t and the game's own table declares max = 255 (already raised from
     # vanilla's 64). Offering 1000 got silently clamped on arrival -- a player
     # who asked for a 1000-tile train got 255 and no warning anywhere.
@@ -873,11 +874,11 @@ class MaxTrainLength(Range):
 class StationSpread(Range):
     """
     How many tiles apart station parts may be and still join.
-    Set to 1024 for virtually unlimited spread.
+    255 is the engine's ceiling — set it there for effectively unlimited spread.
     """
     display_name = "Station Spread (tiles)"
     range_start = 4
-        # ⚠ 255 is the ENGINE's ceiling, not a preference: both settings live in a
+    # ⚠ 255 is the ENGINE's ceiling, not a preference: both settings live in a
     # uint8_t and the game's own table declares max = 255 (already raised from
     # vanilla's 64). Offering 1000 got silently clamped on arrival -- a player
     # who asked for a 1000-tile train got 255 and no warning anywhere.
@@ -1330,6 +1331,7 @@ OPTION_GROUPS = [
         WrathLimitHouses,
         WrathLimitRoads,
         WrathLimitTerrain,
+        WrathLimitTrees,
     ]),
     OptionGroup("Multiplayer", [
         MultiplayerMode,

@@ -165,7 +165,13 @@ def _build_effective_rules(world: "OpenTTDWorld"):
         "have aircraft":     lambda state, player: has_aircraft(state, player),
         "have ships":        lambda state, player: has_ships(state, player),
         "have road vehicles":lambda state, player: has_road_vehicles(state, player),
-        "cities":            lambda state, player: has_trains(state, player) or has_road_vehicles(state, player),
+        # ⚠ "Connect {amount} cities with rail" is counted in-game as towns the
+        # player has a station with a Train facility in (archipelago_manager:
+        # the "connect"/"cities" branch). A road vehicle can never move that
+        # number, so accepting one made the rule lax in a way the game does
+        # not honour. Trains exist in the item pool on every landscape, so
+        # requiring one costs the fill nothing.
+        "cities":            lambda state, player: has_trains(state, player),
     }
 
     # ── Mission rule builder ────────────────────────────────────────────
@@ -176,7 +182,11 @@ def _build_effective_rules(world: "OpenTTDWorld"):
         if mtype in eff_TYPE_RULES:
             return eff_TYPE_RULES[mtype]
 
-        if mtype in ("transport cargo", "deliver tons to station", "deliver goods in year",
+        # ⚠ The keys are the type_key values locations.py actually emits.
+        # "deliver tons to station" and "deliver goods in year" never matched
+        # anything, so the cargo refinement below simply did not run for those
+        # two mission families.
+        if mtype in ("transport cargo", "deliver to station", "deliver goods",
                      "cargo_from_industry", "cargo_to_industry"):
             cargo = mission.get("cargo", "").lower()
             if any(k in cargo for k in _TRAIN_CARGO_KEYWORDS):
@@ -221,7 +231,7 @@ def _mission_vehicle_type(mission: dict) -> str:
     if mtype == "have ships" or unit == "ships":
         return "ship"
     if mtype == "cities":
-        return "train_or_road"
+        return "train"   # counted as towns with a rail station, never road
     return "any"
 
 
@@ -307,6 +317,32 @@ def set_rules(world: "OpenTTDWorld") -> None:
     # Tier unlock threshold from options
     tier_count = world.options.mission_tier_unlock_count.value  # 0 = no gate
 
+    # ⚠⚠ Every vehicle gate below is a product of two option values and can run
+    # far past the supply: tier_count 20 x extreme multiplier 10 asks for 200
+    # vehicles, and Victory takes the larger of that and its own option. A seed
+    # only ever hands out obtainable_vehicle_count() of them — about 99 on
+    # Temperate with the default wagon setting, 52 on Toyland — so those gates
+    # were simply unsatisfiable and the locations behind them unreachable.
+    #
+    # ⚠⚠ obtainable_vehicle_count() counts only the ESSENTIAL vehicles, because
+    # those are the only ones classified progression -- has_transport_vehicles
+    # asks state.has(), and the fill sweep never collects a `useful` item. A cap
+    # taken from the whole pool measures a supply the logic cannot see, which is
+    # how "temperate with every GRF" died with 61 items and nowhere to put them.
+    #
+    # ⚠ A third of that, not all of it. pre_fill parks a fixed share of the
+    # progression items behind these very gates (medium, hard and extreme 5%
+    # each, demigods 10%), so a gate near the supply is waiting on vehicles
+    # locked behind itself. Measured with tools/pool_balance_proof.py on
+    # Toyland, wagons off, tier_unlock_count 20, multipliers 5 and 10:
+    #     cap = obtainable      -> FillError, 29 items with nowhere to go
+    #     cap = obtainable // 2 -> FillError
+    #     cap = obtainable // 3 -> generates
+    # A third still sits above every default (hard 10, extreme 15, victory 15),
+    # so ordinary seeds are untouched.
+    obtainable = world.obtainable_vehicle_count()
+    vehicle_req_cap = max(1, obtainable // 3) if obtainable else 1
+
     # Build mission dict lookup
     missions_by_loc: Dict[str, dict] = {}
     for m in getattr(world, "_generated_missions", []):
@@ -328,7 +364,7 @@ def set_rules(world: "OpenTTDWorld") -> None:
     # fill algorithm places the last few progression items, the sweep
     # state only contains pre-collected starting vehicles — if those
     # don't match the type-specific rules of remaining locations, the
-    # fill would fail.  With 44 Easy missions always reachable, the
+    # fill would fail.  With the whole Easy tier always reachable, the
     # algorithm always has somewhere to place items.
     # ------------------------------------------------------------------
     for loc in easy_locs:
@@ -342,7 +378,8 @@ def set_rules(world: "OpenTTDWorld") -> None:
     # Medium: type-appropriate vehicle + tier_count vehicles + infra
     # Actual in-game tier gate enforced by C++ AP_IsTierUnlocked().
     # ------------------------------------------------------------------
-    medium_vehicle_req = max(1, tier_count) if tier_count > 0 else 1
+    medium_vehicle_req = min(max(1, tier_count) if tier_count > 0 else 1,
+                             vehicle_req_cap)
     for loc in medium_locs:
         mission = missions_by_loc.get(loc.name, {})
         rule    = eff_rule_for_mission(mission)
@@ -361,7 +398,8 @@ def set_rules(world: "OpenTTDWorld") -> None:
     # ------------------------------------------------------------------
     # Hard: type vehicle + more vehicles + bridge/tunnel infra
     # ------------------------------------------------------------------
-    hard_vehicle_req = max(1, tier_count * hard_multiplier) if tier_count > 0 else 3
+    hard_vehicle_req = min(max(1, tier_count * hard_multiplier) if tier_count > 0 else 3,
+                           vehicle_req_cap)
     for loc in hard_locs:
         mission = missions_by_loc.get(loc.name, {})
         rule    = eff_rule_for_mission(mission)
@@ -380,7 +418,8 @@ def set_rules(world: "OpenTTDWorld") -> None:
     # ------------------------------------------------------------------
     # Extreme: most vehicles + full infrastructure (+ terraform)
     # ------------------------------------------------------------------
-    extreme_vehicle_req = max(1, tier_count * extreme_multiplier) if tier_count > 0 else 6
+    extreme_vehicle_req = min(max(1, tier_count * extreme_multiplier) if tier_count > 0 else 6,
+                              vehicle_req_cap)
     for loc in extreme_locs:
         mission = missions_by_loc.get(loc.name, {})
         rule    = eff_rule_for_mission(mission)
@@ -444,7 +483,7 @@ def set_rules(world: "OpenTTDWorld") -> None:
 
     # Vehicle requirement: at least Extreme tier, never less than the option value
     victory_min = world.options.victory_vehicle_requirement.value
-    victory_vehicle_req = max(victory_min, extreme_vehicle_req)
+    victory_vehicle_req = min(max(victory_min, extreme_vehicle_req), vehicle_req_cap)
 
     # Build infrastructure requirement for victory (same as extreme tier)
     victory_infra_checks = []

@@ -499,7 +499,9 @@ IH_NON_STANDARD_ENGINES: frozenset = IH_ELRL_ENGINES | IH_METRO_ENGINES | IH_NAR
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Vanilla trains that are safe starters: Normal Rail steam + diesel only.
-# Excludes Electric (railtype 1), Monorail (2), Maglev (3), and Toyland.
+# Excludes Electric (railtype 1), Monorail (2) and Maglev (3).
+# The Toyland Choo-Choos ARE included: they run on Normal Rail, and on a
+# Toyland map they are the only engines a player can start with.
 VANILLA_SAFE_STARTER_TRAINS: frozenset = frozenset({
     v for v, rt in TRAIN_TO_RAILTYPE.items()
     if rt == 0 and "(Electric)" not in v

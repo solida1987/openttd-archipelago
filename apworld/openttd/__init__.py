@@ -1,6 +1,6 @@
 """
 OpenTTD Archipelago World
-Version: 2.1.0
+Version: 2.5.0
 Supports: OpenTTD 15.2
 
 A full Archipelago integration for OpenTTD.
@@ -34,12 +34,13 @@ from .items import (
     ROAD_DIRECTION_ITEMS, TRAM_DIRECTION_ITEMS,
     SIGNAL_ITEMS, BRIDGE_ITEMS, TUNNEL_ITEMS,
     AIRPORT_ITEMS, TREE_ITEMS, TERRAFORM_ITEMS, TOWN_ACTION_ITEMS,
+    ESSENTIAL_VEHICLES,
     OpenTTDItemData
 )
 from .locations import (
     get_location_table, DIFFICULTY_DISTRIBUTION, MAX_MISSIONS_PER_DIFFICULTY,
     MISSION_TEMPLATES, PREDEFINED_MISSION_POOLS, CARGO_TYPES, CARGO_BY_LANDSCAPE,
-    FIRS_CARGO_BY_ECONOMY, RUIN_ID_BASE, STAR_ID_BASE
+    FIRS_CARGO_BY_ECONOMY, RUIN_ID_BASE, STAR_ID_BASE, get_cargo_list
 )
 from .options import OpenTTDOptions, OPTION_GROUPS
 from .rules import set_rules
@@ -89,6 +90,26 @@ _UNIVERSAL_VEHICLES: frozenset = frozenset({
     "Guru Galaxy",  # Helicopter available on all climates
 })
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  REGISTRY SIZES — how many names of each kind the class-level
+#  location_name_to_id carries. A seed may never ask for more than this of any
+#  kind, or the location it builds has no id in the data package.
+#
+#  ⚠⚠ The shop used to stop at 600 while the runtime shop is
+#  `base_items - mission_count`, which reaches 858 at the far end of the
+#  ranges (tropic + every GRF + utility_count 300 + trap_count 50 +
+#  speed_boost_count 100 + every unlock toggle + enable_stars off, which hands
+#  the whole remainder to the shop instead of halving it with the stars).
+#  Shop_Purchase_0601 and up then existed in the multiworld and nowhere in the
+#  data package.
+#
+#  1000 is safe on both counts: it is above the 858 ceiling, and it still fits
+#  the 2000-slot shop id block (SHOP_ID_BASE 6_108_000, Victory at 6_110_000),
+#  so it only ADDS names -- every existing Shop_Purchase_NNNN keeps the id it
+#  has always had and old seeds and trackers still resolve.
+# ─────────────────────────────────────────────────────────────────────────────
+SHOP_REGISTRY_SIZE = 1000
+
 
 class OpenTTDWeb(WebWorld):
     theme = "ocean"
@@ -134,8 +155,11 @@ class OpenTTDWorld(World):
     # breaking change.
     location_name_to_id: Dict[str, int] = {
         name: data.code
-        for name, data in get_location_table(mission_count=600, shop_item_count=600, ruin_count=500, demigod_count=10, star_count=1000).items()
+        for name, data in get_location_table(mission_count=600, shop_item_count=SHOP_REGISTRY_SIZE, ruin_count=500, demigod_count=10, star_count=1000).items()
     }
+
+    # Highest year the engine can represent (timer_game_common.h MAX_YEAR).
+    _MAX_GAME_YEAR = 5_000_000
 
     # Slot data stored during generation
     _slot_data: Dict[str, Any] = {}
@@ -150,6 +174,113 @@ class OpenTTDWorld(World):
     def _get_location_table(self):
         mc, shop, ruin, dg, star = self._compute_pool_size()
         return get_location_table(mc, shop, ruin, dg, star)
+
+    def _eligible_vehicle_names(self) -> List[str]:
+        """Every vehicle this seed's landscape and GRFs allow, as a list.
+
+        ⚠⚠ ONE definition, used by both _compute_pool_size and create_items.
+        They used to compute it twice -- a count on one side, a list on the
+        other -- and the two disagreed: the count subtracted the climate's
+        wagons through _climate_exclude and then subtracted every non-Toyland
+        wagon a second time. Measured on Temperate with enable_wagon_unlocks
+        off (the DEFAULT): 93 counted against 99 actually built. The five or
+        six climate-valid vehicles that difference trimmed away were still
+        listed in locked_vehicles, so the game locked them for good with no
+        item anywhere that could unlock them.
+        """
+        landscape = self.options.landscape.value
+        is_toyland = (landscape == 3)
+
+        if is_toyland:
+            eligible = [v for v in ALL_VEHICLES if v in _TOYLAND_ONLY_VEHICLES
+                        or v in _UNIVERSAL_VEHICLES]
+        else:
+            if landscape == 0:    # Temperate
+                climate_exclude = (NON_TEMPERATE_ROAD_VEHICLES
+                                   | ARCTIC_TROPIC_ONLY_TRAINS | NON_TEMPERATE_WAGONS)
+            elif landscape == 1:  # Arctic
+                climate_exclude = (NON_ARCTIC_ROAD_VEHICLES
+                                   | TEMPERATE_ONLY_TRAINS | NON_ARCTIC_WAGONS)
+            else:                 # Tropic
+                climate_exclude = (NON_TROPIC_ROAD_VEHICLES
+                                   | TEMPERATE_ONLY_TRAINS | NON_TROPIC_WAGONS)
+            full_exclude = _TOYLAND_ONLY_VEHICLES | climate_exclude
+            eligible = [v for v in ALL_VEHICLES if v not in full_exclude]
+
+        # NewGRF sets. None of them exist on Toyland, which has no GRF variants.
+        if bool(self.options.enable_iron_horse.value) and not is_toyland:
+            eligible = eligible + IRON_HORSE_ENGINES
+            # IH replaces the vanilla normal-rail engines in-game; Monorail and
+            # Maglev are untouched and stay in the pool.
+            eligible = [v for v in eligible if v not in VANILLA_RAIL_ENGINES]
+        if bool(self.options.enable_military_items.value) and not is_toyland:
+            eligible = eligible + MILITARY_ITEMS_AIRCRAFT
+        if bool(self.options.enable_shark_ships.value) and not is_toyland:
+            eligible = eligible + SHARK_SHIPS
+            eligible = [v for v in eligible if v not in ALL_SHIPS]
+        if bool(self.options.enable_hover_vehicles.value) and not is_toyland:
+            eligible = eligible + HOVER_VEHICLES
+        if bool(self.options.enable_heqs.value) and not is_toyland:
+            eligible = eligible + HEQS_ROAD_VEHICLES + HEQS_TRAINS
+        if bool(self.options.enable_vactrain.value) and not is_toyland:
+            eligible = eligible + VACTRAIN_ENGINES
+        if bool(self.options.enable_aircraftpack.value) and not is_toyland:
+            eligible = eligible + AIRCRAFTPACK_AIRCRAFT
+
+        # Wagons disabled: they are free in-game, so no items for them.
+        if not bool(self.options.enable_wagon_unlocks.value):
+            eligible = [v for v in eligible if v not in ALL_WAGONS]
+
+        return eligible
+
+    def obtainable_vehicle_count(self) -> int:
+        """How many distinct vehicles this seed can ever hand the player.
+
+        ⚠⚠ ONLY THE ONES THE LOGIC CAN SEE.
+
+        has_transport_vehicles asks state.has() for each vehicle, and the fill
+        sweep only ever collects PROGRESSION items — every vehicle outside
+        ESSENTIAL_VEHICLES is classified `useful` and is invisible to it. So
+        the ceiling for a gate is the count of essential vehicles this seed can
+        hand out, not the count of vehicles.
+
+        Counting the whole pool is what made "temperate + every GRF" fail: the
+        pool is large enough that a third of it ran past every essential
+        vehicle in the seed, and the fill ran out of places to put the
+        progression items that were left.
+
+        Starting vehicles are precollected, so they count. Before create_items
+        has run there is no pool yet; the eligible list is its upper bound.
+        """
+        pool = getattr(self, "_vehicle_pool", None)
+        if pool is None:
+            names = set(self._eligible_vehicle_names())
+        else:
+            names = set(pool) | set(getattr(self, "_starting_vehicles", ()))
+        return len(names & ESSENTIAL_VEHICLES)
+
+    def _active_cargo_list(self) -> List[str]:
+        """The cargoes that exist on this seed's map (landscape or FIRS economy)."""
+        landscape = self.options.landscape.value
+        firs_enabled = bool(self.options.enable_firs.value) and landscape != 3
+        return get_cargo_list(landscape, firs_enabled,
+                              self.options.firs_economy.value)
+
+    def _colby_cargo_name(self) -> str:
+        """The cargo Colby's deliveries fall back to, lower-case for the client.
+
+        ⚠ "goods" was hardcoded for every landscape but Toyland. Toyland has no
+        Goods, and neither do the FIRS Arctic Basic and Steeltown economies —
+        AP_FindCargoType would return INVALID_CARGO and the event could not be
+        measured. The order below keeps the old answer wherever the old answer
+        was right, and finds a real one where it was not.
+        """
+        cargo_list = self._active_cargo_list()
+        available = {c.lower() for c in cargo_list}
+        for preferred in ("goods", "sweets", "food", "metal", "steel", "mail"):
+            if preferred in available:
+                return preferred
+        return cargo_list[0].lower() if cargo_list else "goods"
 
     def _compute_pool_size(self) -> tuple:
         """Dynamically compute (mission_count, shop_item_count, ruin_count, demigod_count, star_count).
@@ -167,54 +298,11 @@ class OpenTTDWorld(World):
         landscape = self.options.landscape.value
         is_toyland = (landscape == 3)
         ih_enabled = bool(self.options.enable_iron_horse.value) and not is_toyland
-
-        # Count available vehicles for this landscape (same logic as create_items).
-        # When Iron Horse is enabled, vanilla normal-rail engines are replaced by
-        # IH engines in-game, so they are excluded from the pool to avoid giving
-        # the player useless locked items. Monorail and Maglev are unaffected.
-        if is_toyland:
-            eligible_count = sum(1 for v in ALL_VEHICLES if v in _TOYLAND_ONLY_VEHICLES
-                                 or v in _UNIVERSAL_VEHICLES)
-        else:
-            eligible_count = sum(1 for v in ALL_VEHICLES if v not in _TOYLAND_ONLY_VEHICLES)
-            # Apply climate-specific train/RV exclusions so the count matches create_items
-            if landscape == 0:   _climate_exclude = ARCTIC_TROPIC_ONLY_TRAINS | NON_TEMPERATE_ROAD_VEHICLES | NON_TEMPERATE_WAGONS
-            elif landscape == 1: _climate_exclude = TEMPERATE_ONLY_TRAINS | NON_ARCTIC_ROAD_VEHICLES | NON_ARCTIC_WAGONS
-            else:                _climate_exclude = TEMPERATE_ONLY_TRAINS | NON_TROPIC_ROAD_VEHICLES | NON_TROPIC_WAGONS
-            eligible_count -= sum(1 for v in _climate_exclude if v not in _TOYLAND_ONLY_VEHICLES)
-        if ih_enabled:
-            eligible_count += len(IRON_HORSE_ENGINES)
-            # Only subtract vanilla rail engines that are actually in the pool for this climate
-            if landscape == 0:
-                eligible_count -= sum(1 for v in VANILLA_RAIL_ENGINES if v not in ARCTIC_TROPIC_ONLY_TRAINS)
-            else:
-                eligible_count -= sum(1 for v in VANILLA_RAIL_ENGINES if v not in TEMPERATE_ONLY_TRAINS)
-
-        mil_enabled = bool(self.options.enable_military_items.value) and not is_toyland
-        if mil_enabled:
-            eligible_count += len(MILITARY_ITEMS_AIRCRAFT)
-
-        shark_enabled = bool(self.options.enable_shark_ships.value) and not is_toyland
-        if shark_enabled:
-            eligible_count += len(SHARK_SHIPS)
-            # Only subtract vanilla ships that are actually in the pool (exclude Toyland ships)
-            eligible_count -= sum(1 for v in ALL_SHIPS if v not in _TOYLAND_ONLY_VEHICLES)
-
-        hv_enabled = bool(self.options.enable_hover_vehicles.value) and not is_toyland
-        if hv_enabled:
-            eligible_count += len(HOVER_VEHICLES)
-
-        heqs_enabled = bool(self.options.enable_heqs.value) and not is_toyland
-        if heqs_enabled:
-            eligible_count += len(HEQS_ROAD_VEHICLES) + len(HEQS_TRAINS)
-
         vac_enabled = bool(self.options.enable_vactrain.value) and not is_toyland
-        if vac_enabled:
-            eligible_count += len(VACTRAIN_ENGINES)
 
-        ap25_enabled = bool(self.options.enable_aircraftpack.value) and not is_toyland
-        if ap25_enabled:
-            eligible_count += len(AIRCRAFTPACK_AIRCRAFT)
+        # The vehicles create_items will actually build items for — the same
+        # list, not a second count of it.
+        eligible_count = len(self._eligible_vehicle_names())
 
         trap_count   = self.options.trap_count.value
         utility_count = self.options.utility_count.value
@@ -254,14 +342,8 @@ class OpenTTDWorld(World):
         if bool(self.options.enable_town_action_unlocks.value):
             infra_count += len(TOWN_ACTION_ITEMS)  # 8
 
-        # If wagon unlocks disabled, remove wagons from pool count
-        if not bool(self.options.enable_wagon_unlocks.value):
-            if is_toyland:
-                wagon_count = sum(1 for v in ALL_WAGONS if v in _TOYLAND_ONLY_VEHICLES
-                                  or v in _UNIVERSAL_VEHICLES)
-            else:
-                wagon_count = sum(1 for v in ALL_WAGONS if v not in _TOYLAND_ONLY_VEHICLES)
-            eligible_count -= wagon_count
+        # Wagons are already out of _eligible_vehicle_names when their unlock
+        # toggle is off — do NOT subtract them a second time here.
 
         speed_boost_count = self.options.speed_boost_count.value
 
@@ -308,6 +390,13 @@ class OpenTTDWorld(World):
             star_count = 0
             shop_item_count = remainder
 
+        # ⚠⚠ Never ask for a shop slot the class-level registry has no name
+        # for. The registry is sized above the measured ceiling, so this
+        # clamp should never bite; it is here so that widening an option
+        # range later cannot quietly produce a location with no id. Items
+        # beyond the clamp are trimmed by create_items' existing pad/trim.
+        shop_item_count = min(shop_item_count, SHOP_REGISTRY_SIZE)
+
         # Total locations = mission_count + shop_item_count + ruin_count + demigod_count + star_count
         # This equals base_items + ruin_count + demigod_count = total_items. Balanced.
 
@@ -325,6 +414,28 @@ class OpenTTDWorld(World):
                          "enable_tree_unlocks", "enable_town_action_unlocks"):
                 getattr(self.options, attr).value = 1
 
+        # ── Multiplayer mode → switch off what the game switches off ──────
+        # ⚠⚠ MultiplayerMode promises Ruins, Colby and the Demigod system are
+        # disabled, because they edit the map directly and desync. The game
+        # duly refuses to run them — but the pool computation and the location
+        # table never consulted the flag, so a multiplayer seed still carried
+        # Ruin_ and Demigod_ locations that nothing in the session could ever
+        # check. The multiworld hangs on them.
+        #
+        # Forcing the option values here, not at every reader, means
+        # _compute_pool_size, the location table and slot_data all see the
+        # same answer. Same shape as the sphere master toggle above.
+        # ⚠ The list must match archipelago_manager.cpp's own multiplayer block
+        # exactly. The game turns off FIVE things there, and stars were the one
+        # missing here -- a multiplayer seed would still have carried up to a
+        # thousand Star_ locations that the session refuses to place.
+        if self.options.multiplayer_mode.value:
+            self.options.ruin_pool_size.value = 0
+            self.options.enable_stars.value = 0
+            self.options.enable_demigods.value = 0
+            self.options.colby_event.value = 0
+            self.options.enable_wrath.value = 0
+
         try:
             player_count = len(self.multiworld.player_ids)
         except Exception:
@@ -338,7 +449,7 @@ class OpenTTDWorld(World):
         """Generate mission content by drawing from predefined pools.
 
         Each difficulty has a pre-written pool (PREDEFINED_MISSION_POOLS) of
-        100 missions with well-spaced amounts.  The generator shuffles the pool
+        77-98 missions with well-spaced amounts.  The generator shuffles the pool
         and picks the first N entries, so:
           - No two missions in the same session share the same type+amount.
           - Amounts within the same type are always well-spaced (designed up-front).
@@ -353,18 +464,37 @@ class OpenTTDWorld(World):
         missions: List = []
 
         # Climate-appropriate cargo list — use FIRS cargo if FIRS is enabled
-        landscape = self.options.landscape.value
-        firs_enabled = bool(self.options.enable_firs.value) and landscape != 3  # no FIRS on Toyland
-        if firs_enabled:
-            firs_economy = self.options.firs_economy.value
-            cargo_list = FIRS_CARGO_BY_ECONOMY.get(firs_economy, CARGO_BY_LANDSCAPE.get(landscape, CARGO_TYPES))
-        else:
-            cargo_list = CARGO_BY_LANDSCAPE.get(landscape, CARGO_TYPES)
+        cargo_list = self._active_cargo_list()
 
-        # Estimate max serviceable towns from map dimensions.
+        # ⚠⚠ "Deliver {amount} tons of goods in one year" names Goods in its
+        # text and the game measures it against the Goods cargo. Toyland has
+        # no Goods (CARGO_BY_LANDSCAPE[3]), and neither do the FIRS Arctic
+        # Basic and Steeltown economies — AP_FindCargoType("goods") returns
+        # INVALID_CARGO there and the mission can never report progress. Drop
+        # those entries instead of handing out a mission nobody can finish.
+        has_goods = any(c.lower() == "goods" for c in cargo_list)
+
+        # ⚠⚠ Realistic town ceiling, from BOTH the map size and the town
+        # density option. The old formula was min(120, (1 << (bx+by-8)) * 10),
+        # which is 120 for EVERY allowed map size — the two smallest terms are
+        # already 10240 — and it was applied only to "towns", never to
+        # "cities". A 512x512 map at "very low" density holds about 20 towns,
+        # so it happily asked for "Service 100 different towns".
+        #
+        # The engine's own numbers (town_cmd.cpp GetDefaultTownsForMapSize):
+        #   num_initial_towns[density] = {5, 11, 23, 46} at 256x256, then
+        #   Map::ScaleBySize doubles it for every doubling of the map area.
+        # GenerateTowns then scales that by the land proportion and gives up
+        # on towns it cannot place, so the real count is always lower — hence
+        # the 0.6 margin.
+        _INITIAL_TOWNS_AT_256 = (5, 11, 23, 46)   # very low, low, normal, high
         bits_x = self.options.map_size_x.map_bits
         bits_y = self.options.map_size_y.map_bits
-        max_towns = min(120, max(4, (1 << (bits_x + bits_y - 8)) * 10))
+        _density = min(max(0, self.options.number_towns.value),
+                       len(_INITIAL_TOWNS_AT_256) - 1)
+        _scaled_towns = (_INITIAL_TOWNS_AT_256[_density]
+                         * (1 << max(0, bits_x + bits_y - 16)))
+        max_towns = max(4, int(_scaled_towns * 0.6))
 
         # Compute per-tier counts with remainder distribution (same as _build_location_table)
         _tier_counts: dict = {}
@@ -382,7 +512,9 @@ class OpenTTDWorld(World):
 
         for difficulty, fraction in DIFFICULTY_DISTRIBUTION.items():
             count = _tier_counts[difficulty]
-            pool = list(PREDEFINED_MISSION_POOLS[difficulty])
+            base_pool = [e for e in PREDEFINED_MISSION_POOLS[difficulty]
+                         if has_goods or e[3] != "deliver goods"]
+            pool = list(base_pool)
 
             # Shuffle once to randomise order — gives every session a different
             # subset when count < len(pool), and a different sequence otherwise.
@@ -392,7 +524,7 @@ class OpenTTDWorld(World):
             # shuffled pool repeatedly (avoiding direct re-use of the same
             # adjacent entry by re-shuffling on each wrap).
             while len(pool) < count:
-                extra = list(PREDEFINED_MISSION_POOLS[difficulty])
+                extra = list(base_pool)
                 rng.shuffle(extra)
                 pool.extend(extra)
 
@@ -404,9 +536,11 @@ class OpenTTDWorld(World):
                 if unit == "purchase" and any(m["unit"] == "purchase" for m in generated):
                     continue
 
-                # Cap town-count missions to realistic map size
-                if unit == "towns" and amount > max_towns:
-                    amount = max(2, int(max_towns * 0.7))
+                # Cap town-count missions to what the map can hold. "cities"
+                # counts towns too — the game's check is "towns I have a rail
+                # station in", not cities in the larger-towns sense.
+                if unit in ("towns", "cities") and amount > max_towns:
+                    amount = max(2, max_towns)
 
                 # Fill {cargo} placeholder — rotate through available cargos so
                 # successive cargo missions use different cargo types where possible.
@@ -869,81 +1003,35 @@ class OpenTTDWorld(World):
         reserved += len(infra_items)
 
         # ── Vehicles fill remaining slots ─────────────────────────────────
-        # Uses the module-level _TOYLAND_ONLY_VEHICLES constant (same set as
-        # _compute_pool_size) so the vehicle count is always consistent.
+        # ⭐ The eligible list comes from _eligible_vehicle_names(), the same
+        # call _compute_pool_size counts, so the pool and the location count
+        # can never drift apart again.
         vehicle_slots = total_locations - reserved
-        if is_toyland:
-            eligible_vehicles = [v for v in ALL_VEHICLES if v in _TOYLAND_ONLY_VEHICLES
-                                 or v in _UNIVERSAL_VEHICLES]
-        else:
-            # Build climate exclude set for this landscape
-            _climate_rv_exclude: frozenset
-            if landscape == 0:    # Temperate
-                _climate_rv_exclude = NON_TEMPERATE_ROAD_VEHICLES
-                _climate_train_exclude = ARCTIC_TROPIC_ONLY_TRAINS
-                _climate_wagon_exclude = NON_TEMPERATE_WAGONS
-            elif landscape == 1:  # Arctic
-                _climate_rv_exclude = NON_ARCTIC_ROAD_VEHICLES
-                _climate_train_exclude = TEMPERATE_ONLY_TRAINS
-                _climate_wagon_exclude = NON_ARCTIC_WAGONS
-            else:                 # Tropic (landscape == 2)
-                _climate_rv_exclude = NON_TROPIC_ROAD_VEHICLES
-                _climate_train_exclude = TEMPERATE_ONLY_TRAINS
-                _climate_wagon_exclude = NON_TROPIC_WAGONS
+        eligible_vehicles = self._eligible_vehicle_names()
 
-            _full_exclude = _TOYLAND_ONLY_VEHICLES | _climate_rv_exclude | _climate_train_exclude | _climate_wagon_exclude
-            eligible_vehicles = [v for v in ALL_VEHICLES if v not in _full_exclude]
-
-        # ── Iron Horse: add engines to pool if enabled ────────────────────
-        # Iron Horse vehicles don't exist on Toyland maps (no Toyland GRF
-        # variants). If Iron Horse is enabled but landscape is Toyland,
-        # the GRF is still loaded but no IH items enter the pool.
+        # NewGRF flags for the client. The vehicles themselves are already in
+        # the list above; these tell the game which sets to load.
+        # None of them apply on Toyland, which has no GRF variants.
         ih_enabled = bool(self.options.enable_iron_horse.value) and not is_toyland
         self._slot_data["enable_iron_horse"] = 1 if ih_enabled else 0
-        if ih_enabled:
-            eligible_vehicles = eligible_vehicles + IRON_HORSE_ENGINES
-            # When IH is active, vanilla normal-rail engines (steam/diesel/electric)
-            # are replaced in-game by IH engines, so they are removed from the pool.
-            # Monorail and Maglev are NOT replaced by IH and remain in the pool.
-            eligible_vehicles = [v for v in eligible_vehicles if v not in VANILLA_RAIL_ENGINES]
 
-        # ── Military Items: add aircraft to pool if enabled ──────────────────
         mil_enabled = bool(self.options.enable_military_items.value) and not is_toyland
         self._slot_data["enable_military_items"] = 1 if mil_enabled else 0
-        if mil_enabled:
-            eligible_vehicles = eligible_vehicles + MILITARY_ITEMS_AIRCRAFT
 
-        # ── SHARK: add ships to pool if enabled ──────────────────────────────
         shark_enabled = bool(self.options.enable_shark_ships.value) and not is_toyland
         self._slot_data["enable_shark_ships"] = 1 if shark_enabled else 0
-        if shark_enabled:
-            eligible_vehicles = eligible_vehicles + SHARK_SHIPS
-            # SHARK replaces vanilla ships in-game — remove vanilla ships from pool
-            eligible_vehicles = [v for v in eligible_vehicles if v not in ALL_SHIPS]
 
-        # ── Hover Vehicles: add road vehicles to pool if enabled ─────────────
         hv_enabled = bool(self.options.enable_hover_vehicles.value) and not is_toyland
         self._slot_data["enable_hover_vehicles"] = 1 if hv_enabled else 0
-        if hv_enabled:
-            eligible_vehicles = eligible_vehicles + HOVER_VEHICLES
 
-        # ── HEQS: add heavy equipment to pool if enabled ───────────────────
         heqs_enabled = bool(self.options.enable_heqs.value) and not is_toyland
         self._slot_data["enable_heqs"] = 1 if heqs_enabled else 0
-        if heqs_enabled:
-            eligible_vehicles = eligible_vehicles + HEQS_ROAD_VEHICLES + HEQS_TRAINS
 
-        # ── Vactrain: add vacuum-tube trains to pool if enabled ────────────
         vac_enabled = bool(self.options.enable_vactrain.value) and not is_toyland
         self._slot_data["enable_vactrain"] = 1 if vac_enabled else 0
-        if vac_enabled:
-            eligible_vehicles = eligible_vehicles + VACTRAIN_ENGINES
 
-        # ── Aircraftpack 2025: add aircraft to pool if enabled ─────────────
         ap25_enabled = bool(self.options.enable_aircraftpack.value) and not is_toyland
         self._slot_data["enable_aircraftpack"] = 1 if ap25_enabled else 0
-        if ap25_enabled:
-            eligible_vehicles = eligible_vehicles + AIRCRAFTPACK_AIRCRAFT
 
         # ── FIRS Industries: flag only — no vehicles, just tells C++ to load GRF
         firs_enabled = bool(self.options.enable_firs.value) and not is_toyland
@@ -969,10 +1057,8 @@ class OpenTTDWorld(World):
             if self._slot_data.get(key)
         ]
 
-        # ── Wagon Unlock Toggle ────────────────────────────────────────────
-        if not self.options.enable_wagon_unlocks.value:
-            # Wagons disabled: remove all wagons from eligible pool; they're freely available
-            eligible_vehicles = [v for v in eligible_vehicles if v not in ALL_WAGONS]
+        # Wagons are already out of the eligible list when their unlock toggle
+        # is off — _eligible_vehicle_names() drops them there.
 
         # Starting vehicles are REMOVED from the random pool — the player already
         # has them, so they must not appear as items to unlock again.
@@ -1171,38 +1257,88 @@ class OpenTTDWorld(World):
         star_locs = [loc for loc in self.multiworld.get_region("star", self.player).locations if not loc.item]
         self.random.shuffle(star_locs)
 
-        # Place progression items into each pool; overflow to next pool
+        # ⚠⚠ AN INFRASTRUCTURE ITEM MUST NEVER SIT BEHIND THE TIER IT OPENS.
+        #
+        # place_locked_item bypasses the logic completely, so nothing catches a
+        # circular placement. The Extreme rule requires terraform; put the
+        # terraform unlock in an Extreme mission and every Extreme mission is
+        # unreachable, and with accessibility: full the generator dies --
+        # listing a dozen Extreme locations and some ordinary vehicles it could
+        # not place, which points nowhere near the cause.
+        #
+        # MEASURED: wagons-off-arctic at seed 1 failed exactly this way. The
+        # same case generated with enable_terraform_unlocks off, and generated
+        # again unchanged at seed 7. A lottery, not a property of arctic --
+        # every configuration with tier infrastructure could draw it.
+        #
+        # Easy missions, the shop, ruins, stars and demigods gate on vehicles
+        # or cargo and never on infrastructure, so they are safe homes.
+        _TIER_GATING_INFRA = (frozenset(ALL_TRACK_DIRECTION_ITEMS)
+                              | frozenset(ROAD_DIRECTION_ITEMS)
+                              | frozenset(TRAM_DIRECTION_ITEMS)
+                              | frozenset(AIRPORT_ITEMS)
+                              | frozenset(BRIDGE_ITEMS)
+                              | frozenset(TUNNEL_ITEMS)
+                              | frozenset(TERRAFORM_ITEMS))
+
+        gating_q = [i for i in prog_items if i.name in _TIER_GATING_INFRA]
+        other_q  = [i for i in prog_items if i.name not in _TIER_GATING_INFRA]
+
+        # (target, locations, safe for tier-gating infrastructure)
         pools = [
-            (easy_target,    easy_locs),
-            (medium_target,  medium_locs),
-            (hard_target,    hard_locs),
-            (extreme_target, extreme_locs),
-            (shop_target,    shop_locs),
-            (star_target,    star_locs),
-            (ruin_target,    ruin_locs),
-            (demigod_target, demigod_locs),
+            (easy_target,    easy_locs,    True),
+            (medium_target,  medium_locs,  False),
+            (hard_target,    hard_locs,    False),
+            (extreme_target, extreme_locs, False),
+            (shop_target,    shop_locs,    True),
+            (star_target,    star_locs,    True),
+            (ruin_target,    ruin_locs,    True),
+            (demigod_target, demigod_locs, True),
         ]
 
-        idx = 0  # index into prog_items
-        for target, locs in pools:
+        # Pass 1 — the gating infrastructure, into infra-free pools only.
+        gi = 0
+        for _target, locs, safe in pools:
+            if not safe:
+                continue
+            for loc in locs:
+                if gi >= len(gating_q):
+                    break
+                if loc.item:
+                    continue
+                loc.place_locked_item(gating_q[gi])
+                gi += 1
+            if gi >= len(gating_q):
+                break
+
+        # Pass 2 — everything else, by the percentage targets.
+        idx = 0
+        for target, locs, _safe in pools:
             placed = 0
             for loc in locs:
-                if placed >= target or idx >= total_prog:
+                if placed >= target or idx >= len(other_q):
                     break
-                loc.place_locked_item(prog_items[idx])
+                if loc.item:
+                    continue
+                loc.place_locked_item(other_q[idx])
                 idx += 1
                 placed += 1
 
         # Any remaining progression items (overflow) → place in any unfilled location
-        if idx < total_prog:
+        if idx < len(other_q):
             all_remaining = []
-            for _, pool_locs in pools:
+            for _t, pool_locs, _s in pools:
                 all_remaining.extend(loc for loc in pool_locs if not loc.item)
             for loc in all_remaining:
-                if idx >= total_prog:
+                if idx >= len(other_q):
                     break
-                loc.place_locked_item(prog_items[idx])
+                loc.place_locked_item(other_q[idx])
                 idx += 1
+
+        # Gating items with no safe home left go back to AP's own fill, which
+        # places them with the logic in hand. Never into an unsafe pool here.
+        for leftover in gating_q[gi:]:
+            self.multiworld.itempool.append(leftover)
 
         # ⚠ Same rule as the trap/utility half above: an item that finds no
         # location goes BACK in the pool, never on the floor. This branch
@@ -1211,7 +1347,7 @@ class OpenTTDWorld(World):
         # up was also "unreachable" until utility_count grew, and it cost a
         # whole afternoon to trace from the error AP reports, which names shop
         # slots that had nothing to do with the cause.
-        for leftover in prog_items[idx:]:
+        for leftover in other_q[idx:]:
             self.multiworld.itempool.append(leftover)
 
     def fill_slot_data(self) -> Dict[str, Any]:
@@ -1246,6 +1382,13 @@ class OpenTTDWorld(World):
         (win_cv, win_pop, win_veh, win_cargo, win_profit, win_missions) = preset
 
         computed_mc, computed_shop, _computed_ruin, computed_dg, _computed_star = self._compute_pool_size()
+
+        # ⚠⚠ The win target cannot ask for more missions than the seed has.
+        # The presets want 20-80 and a custom target may ask for 500, but the
+        # mission count follows the item pool: Toyland with trap_count 0,
+        # utility_count 5 and no ruins produces 46 missions, so "complete 70"
+        # is a goal nobody can reach and the seed can never be finished.
+        win_missions = min(win_missions, computed_mc)
 
         # Build item_id_to_name so the C++ client can resolve item IDs to names
         item_id_to_name = {str(data.code): name for name, data in ITEM_TABLE.items()}
@@ -1293,6 +1436,11 @@ class OpenTTDWorld(World):
             "item_id_to_name": item_id_to_name,
             "locked_vehicles": locked_vehicles_list,
             "shop_prices": self._generate_shop_prices(),
+            # Shop labels. A slot may legitimately be missing here — AP's free
+            # fill can put a utility item on one, and the guard below keeps
+            # those (and traps) out. The client handles a missing key: it falls
+            # back to the LocationScouts hint and then to "Slot #N"
+            # (AP_GetShopLocationLabel), so no slot is ever left blank.
             "shop_item_names": {
                 loc: self.multiworld.get_location(loc, self.player).item.name
                 for loc in self._get_location_table()
@@ -1366,13 +1514,15 @@ class OpenTTDWorld(World):
             "community_vehicle_names": bool(self.options.community_vehicle_names.value),
             # ── Events ───────────────────────────────────────────────
             "colby_event":        bool(self.options.colby_event.value),
-            "colby_start_year":   self.options.start_year.value + 2,
+            # ⚠ MAX_YEAR is 5,000,000 (timer_game_common.h) and StartYear may
+            # be set to exactly that, so +2 has to be clamped.
+            "colby_start_year":   min(self.options.start_year.value + 2,
+                                      self._MAX_GAME_YEAR),
             "colby_town_seed":    (self.multiworld.seed ^ self.player) & 0xFFFFFFFF,
-            # Colby cargo: uses CT_GOODS internally so wagons can always be refitted.
-            # Players see "Colby's Packages" in mission text — never "goods".
-            # Toyland: Colby event is disabled entirely (uses sweets as fallback).
-            "colby_cargo":        {3: "sweets"}.get(
-                                      self.options.landscape.value, "goods"),
+            # Colby cargo: the engine prefers its own CLBY cargo slot and only
+            # falls back to this name, so it has to name a cargo the active
+            # landscape and FIRS economy really have.
+            "colby_cargo":        self._colby_cargo_name(),
             # ── Demigods (God of Wackens) ────────────────────────────
             "demigod_enabled":            bool(self.options.enable_demigods.value),
             "demigod_count":              computed_dg,
