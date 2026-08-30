@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- OpenTTD as a game plugin for the Multiworld Launcher.                 -->
+  <!--                                                                       -->
+  <!-- Built separately on purpose. The launcher ships as Diablo II only; a   -->
+  <!-- second game reaches it as a .londonplugin the user installs, never as  -->
+  <!-- code compiled into the launcher. See Multiworld-Launcher/PLUGIN_API.md.-->
+  <!--                                                                       -->
+  <!-- ASCII only, like the launcher's own project file. Section rules drawn   -->
+  <!-- with box characters were re-encoded so many times there that four      -->
+  <!-- comments grew to 105 KB.                                              -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>OpenTTD</AssemblyName>
+    <RootNamespace>LauncherV2.Plugins.OpenTTD</RootNamespace>
+
+    <!-- Writes OpenTTD.deps.json, which the launcher's AssemblyDependency-   -->
+    <!-- Resolver reads to find this plugin's own dependencies.               -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Company>Solida Games</Company>
+    <Product>OpenTTD plugin for Multiworld Launcher</Product>
+    <Copyright>Copyright (c) 2026 Solida Games</Copyright>
+    <Description>Archipelago plugin for OpenTTD</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Private=false: the launcher already has these types loaded, and a    -->
+    <!-- second copy in the plugin folder would make IGamePlugin from the     -->
+    <!-- plugin a different type from IGamePlugin in the host - the plugin    -->
+    <!-- would then fail to cast, with a message that says the type does not  -->
+    <!-- implement an interface it visibly implements.                        -->
+    <ProjectReference Include="..\Multiworld-Launcher\LauncherV2.csproj" Private="false" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="plugin.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Tools\ holds the proofs, which are their own programs. Left in the   -->
+    <!-- default glob they are compiled INTO the plugin, and their Main and   -->
+    <!-- assembly attributes collide with this project's own.                 -->
+    <Compile Remove="Tools\**" />
+    <None Remove="Tools\**" />
+  </ItemGroup>
+
+</Project>

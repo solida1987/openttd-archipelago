@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The NewGRF verdict, proved against real .tar sets from OpenTTD's own
+       content service. Compiled from the plugin's own source. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>newgrfproof</AssemblyName>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\NewGrfScanner.cs" />
+    <Compile Include="..\..\NewGrfRequirements.cs" />
+  </ItemGroup>
+</Project>
