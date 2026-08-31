@@ -1353,17 +1353,39 @@ class OpenTTDWorld(World):
     def fill_slot_data(self) -> Dict[str, Any]:
         """Data sent to the game client via the bridge."""
         # Win difficulty presets: (company_value, town_population, vehicle_count, cargo_tons, monthly_profit, missions)
+        # ⚠⚠ RECALIBRATED against a real session, not invented (30 Aug 2026).
+        #
+        # A 5.5-hour Hard game on a 30-town map measured: company value and
+        # vehicles done long ago, missions done, population 202k against a
+        # 700k target, cargo 6.84M against 75M, profit 1.47M a quarter against
+        # a "monthly" 25M. Three of the six columns could never finish:
+        #
+        #  * POPULATION: 30 towns pushed hard top out near 22k each; a normal
+        #    session lands nearer a third of the towns grown. 700k asked for
+        #    more people than the map holds. The column now runs 50k-800k and
+        #    the ENGINE additionally clamps the target to towns x 10k, so a
+        #    small map is never held to a big map's number.
+        #  * CARGO: measured throughput was ~1.2M tonnes an hour; 75M was a
+        #    sixty-hour column while everything else finished in ten. Scaled
+        #    to hours, not weeks.
+        #  * PROFIT: the target is YEARLY now (the engine sums the last four
+        #    quarters; the old code read one quarter and called it monthly).
+        #    The wire key stays win_target_monthly_profit so older engines
+        #    still parse the slot; they will read the yearly number as a
+        #    per-period one and be slightly harder.
+        #
+        # (company_value, population, vehicles, cargo_tonnes, yearly_profit, missions)
         WIN_PRESETS = {
-            0:  (1_500_000,    150_000,    40,   15_000_000,   1_000_000,   20),   # Casual
-            1:  (5_000_000,    200_000,    80,   30_000_000,   3_000_000,   40),   # Easy
-            2:  (10_000_000,   300_000,   120,   45_000_000,  10_000_000,   50),   # Normal
-            3:  (20_000_000,   500_000,   160,   60_000_000,  20_000_000,   60),   # Medium
-            4:  (30_000_000,   700_000,   200,   75_000_000,  25_000_000,   70),   # Hard
-            5:  (40_000_000,   900_000,   240,   90_000_000,  30_000_000,   80),   # Very Hard
-            6:  (50_000_000, 1_100_000,   280,  105_000_000,  35_000_000,   80),   # Extreme
-            7:  (60_000_000, 1_300_000,   320,  120_000_000,  40_000_000,   80),   # Insane
-            8:  (70_000_000, 1_500_000,   360,  135_000_000,  45_000_000,   80),   # Nutcase
-            9:  (80_000_000, 1_700_000,   400,  150_000_000,  50_000_000,   80),   # Madness
+            0:  (1_500_000,     50_000,    40,   1_500_000,   1_000_000,   20),   # Casual
+            1:  (5_000_000,    100_000,    80,   3_000_000,   3_000_000,   40),   # Easy
+            2:  (10_000_000,   150_000,   120,   6_000_000,  10_000_000,   50),   # Normal
+            3:  (20_000_000,   200_000,   160,   9_000_000,  15_000_000,   60),   # Medium
+            4:  (30_000_000,   300_000,   200,  12_000_000,  20_000_000,   70),   # Hard
+            5:  (40_000_000,   400_000,   240,  15_000_000,  25_000_000,   80),   # Very Hard
+            6:  (50_000_000,   500_000,   280,  20_000_000,  30_000_000,   80),   # Extreme
+            7:  (60_000_000,   600_000,   320,  25_000_000,  35_000_000,   80),   # Insane
+            8:  (70_000_000,   700_000,   360,  30_000_000,  40_000_000,   80),   # Nutcase
+            9:  (80_000_000,   800_000,   400,  35_000_000,  50_000_000,   80),   # Madness
             10: None,  # Custom — use sliders
         }
 

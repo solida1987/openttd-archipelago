@@ -3,7 +3,7 @@
   "gameId": "openttd_archipelago",
   "displayName": "OpenTTD",
   "subtitle": "Randomizer Mod",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "author": "Solida Games",
   "authorContact": "https://github.com/solida1987/openttd-archipelago",
   "assembly": "OpenTTD.dll",

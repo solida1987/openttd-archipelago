@@ -701,9 +701,17 @@ static bool EvaluateMission(APMission &m)
 	}
 
 	/* ── "buy any item from the shop" ─────────────────────────────────
-	 * Triggered when player buys anything from the AP shop. */
-	else if (m.type == "buy any item from the shop" || m.type == "buy a vehicle from the shop" || m.type == "buy") {
-		current = _ap_shop_purchased ? 1 : 0;
+	 * ⚠ "purchase" is the type the apworld actually sends (locations.py's
+	 * type_key). The three older strings matched nothing current, so the
+	 * mission sat at 0 through any number of shop purchases -- the buy
+	 * button set _ap_shop_purchased and no reader ever fired.
+	 *
+	 * The sent-locations set is the stronger witness: it survives save/load
+	 * and is synced back from the server, so a purchase made before this fix
+	 * still completes the mission on the next session. */
+	else if (m.type == "purchase" || m.type == "buy any item from the shop" ||
+	         m.type == "buy a vehicle from the shop" || m.type == "buy") {
+		current = (_ap_shop_purchased || !_ap_sent_shop_locations.empty()) ? 1 : 0;
 	}
 
 	/* ── named-destination missions ────────────────────────────────────
@@ -4479,23 +4487,50 @@ APWinProgress AP_GetWinProgress()
 		total_cargo += AP_GetTotalCargo((CargoType)i);
 	p.cargo_delivered = (int64_t)total_cargo;
 
-	/* Use last COMPLETED period (old_economy[0]) — consistent with mission checks.
-	 * cur_economy is the in-progress period and fluctuates mid-month. */
-	int64_t net = (int64_t)(c->old_economy[0].income + c->old_economy[0].expenses);
-	p.monthly_profit  = net > 0 ? net : 0;
+	/* Profit over the last YEAR, not the last period.
+	 *
+	 * This line used to read old_economy[0] alone and call it "monthly" --
+	 * but old_economy entries are QUARTERS, so the label lied and the target
+	 * swung with a single season. A rolling year is what a player can steer:
+	 * the last four completed quarters, as many of them as exist yet.
+	 * Expenses are stored negative, so income + expenses IS the net. */
+	int64_t net = 0;
+	int quarters = std::min<int>(4, c->num_valid_stat_ent);
+	for (int q = 0; q < quarters; q++) {
+		net += (int64_t)(c->old_economy[q].income + c->old_economy[q].expenses);
+	}
+	p.yearly_profit = net > 0 ? net : 0;
 
 	p.missions = (int64_t)AP_GetTotalMissionsCompleted();
 	return p;
+}
+
+/**
+ * The population target this seed can actually be held to.
+ *
+ * The slot's number is chosen with no idea of the map: a 700k target on a
+ * 30-town map asks for more people than the towns can plausibly hold, and the
+ * goal is unreachable however well the network runs. Ten thousand per town is
+ * a town grown far beyond its start (they begin at a few hundred), so the cap
+ * is the map's town count times that -- measured against a real session where
+ * thirty towns pushed hard gave roughly that ceiling.
+ */
+int64_t AP_EffectiveWinPopTarget()
+{
+	int64_t target = AP_GetSlotData().win_target_town_population;
+	int64_t towns  = (int64_t)Town::GetNumItems();
+	if (towns <= 0) return target;
+	return std::min(target, towns * 10'000);
 }
 
 static bool CheckWinCondition(const APSlotData &sd)
 {
 	APWinProgress p = AP_GetWinProgress();
 	return p.company_value   >= sd.win_target_company_value
-	    && p.town_population >= sd.win_target_town_population
+	    && p.town_population >= AP_EffectiveWinPopTarget()
 	    && p.vehicle_count   >= sd.win_target_vehicle_count
 	    && p.cargo_delivered >= sd.win_target_cargo_delivered
-	    && p.monthly_profit  >= sd.win_target_monthly_profit
+	    && p.yearly_profit   >= sd.win_target_monthly_profit /* the wire key stays; the value is a yearly figure now */
 	    && p.missions        >= sd.win_target_missions;
 }
 

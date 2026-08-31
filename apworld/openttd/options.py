@@ -73,7 +73,9 @@ class WinCustomCompanyValue(Range):
 
 
 class WinCustomTownPopulation(Range):
-    """[Custom only] Target total world population across all towns."""
+    """[Custom only] Target total world population across all towns.
+    The game clamps this to 10,000 per town on the actual map, so a target
+    larger than the map can hold is reduced rather than left unreachable."""
     display_name = "Custom: Target Town Population"
     range_start = 1_000
     range_end   = 5_000_000
@@ -97,11 +99,13 @@ class WinCustomCargoDelivered(Range):
 
 
 class WinCustomMonthlyProfit(Range):
-    """[Custom only] Monthly net profit target in pounds."""
-    display_name = "Custom: Target Monthly Profit (GBP)"
+    """[Custom only] YEARLY net profit target in pounds — the net over the last
+    four completed quarters. The YAML key keeps its historical monthly name so
+    existing settings files stay valid; the number it sets is a yearly figure."""
+    display_name = "Custom: Target Yearly Profit (GBP)"
     range_start = 1_000
     range_end   = 100_000_000
-    default     = 100_000
+    default     = 1_000_000
 
 
 class WinCustomMissionsCompleted(Range):

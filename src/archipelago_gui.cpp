@@ -341,7 +341,7 @@ enum APStatusWidgets : WidgetID {
 	WAPST_WIN_POP,   ///< Town Population progress line
 	WAPST_WIN_VEH,   ///< Vehicle Count progress line
 	WAPST_WIN_CARGO, ///< Cargo Delivered progress line
-	WAPST_WIN_PROF,  ///< Monthly Profit progress line
+	WAPST_WIN_PROF,  ///< Yearly Profit progress line
 	WAPST_WIN_MISS,  ///< Missions Completed progress line
 	WAPST_TIMER,     ///< Real-time play timer
 	WAPST_BTN_RECONNECT,
@@ -452,13 +452,16 @@ struct ArchipelagoStatusWindow : public Window {
 			case WAPST_WIN_CV:
 				cur = prog.company_value;   tgt = sd.win_target_company_value;   label = "Company Val"; break;
 			case WAPST_WIN_POP:
-				cur = prog.town_population; tgt = sd.win_target_town_population; label = "World Pop  "; break;
+				/* The effective target, not the slot's raw number -- the win
+				 * check clamps it to the map's town count, and the window must
+				 * show the goal the game actually holds the player to. */
+				cur = prog.town_population; tgt = AP_EffectiveWinPopTarget(); label = "World Pop  "; break;
 			case WAPST_WIN_VEH:
 				cur = prog.vehicle_count;   tgt = sd.win_target_vehicle_count;   label = "Vehicles   "; break;
 			case WAPST_WIN_CARGO:
 				cur = prog.cargo_delivered; tgt = sd.win_target_cargo_delivered; label = "Cargo (t)  "; break;
 			case WAPST_WIN_PROF:
-				cur = prog.monthly_profit;  tgt = sd.win_target_monthly_profit;  label = "Mo. Profit "; break;
+				cur = prog.yearly_profit;   tgt = sd.win_target_monthly_profit;  label = "Yr. Profit "; break;
 			case WAPST_WIN_MISS:
 				cur = prog.missions;        tgt = sd.win_target_missions;        label = "Missions   "; break;
 			default: return;

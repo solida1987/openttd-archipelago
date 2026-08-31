@@ -1,5 +1,40 @@
 # Changelog — OpenTTD Archipelago
 
+## [v2.2.1] — 2026-08-30
+
+### Fixed
+
+- **"Buy any item from the shop" never completed.** The apworld sends that
+  mission with type `purchase`; the engine matched three older strings and
+  none of them was that, so any number of shop purchases left the mission at
+  zero. The check now also counts the shop locations already sent to the
+  server, so a purchase made before this fix completes the mission on the
+  next session — no repeat purchase needed.
+
+### Changed — win targets recalibrated against a real session
+
+A 5.5-hour Hard game supplied the measurements: company value, vehicles and
+missions were long done while population stood at 29%, cargo at 9% and profit
+at 5%. Three columns could never finish at the pace of the other three.
+
+- **The profit target is yearly now.** The old check read one entry of
+  `old_economy` and called it monthly — those entries are quarters, so the
+  label was wrong twice over. The engine now sums the last four completed
+  quarters and the status window says *Yr. Profit*. The slot_data key keeps
+  its old name so nothing breaks on the wire; the preset numbers are yearly
+  figures (apworld 2.6.0).
+- **The population target respects the map.** The engine clamps it to
+  10,000 x the map's town count — 30 towns pushed hard top out near 22k each
+  and a normal session grows nearer a third of them, so a 700k target on that
+  map asked for more people than the towns could hold. This applies to
+  running seeds too: the status window shows the clamped goal.
+- **Preset table rescaled** (apworld 2.6.0): population now runs 50k-800k
+  across the difficulties, cargo 1.5M-35M (measured throughput was about
+  1.2M tonnes an hour; the old Hard column was sixty hours of hauling),
+  profit 1M-50M yearly. Company value, vehicles and missions are unchanged.
+- The custom profit slider now says *Yearly* and defaults to 1M; its YAML key
+  is unchanged, so existing settings files stay valid.
+
 ## [v2.2.0] — 2026-08-30
 
 ### Fixed

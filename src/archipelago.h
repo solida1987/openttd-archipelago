@@ -132,7 +132,7 @@ struct APWinProgress {
 	int64_t town_population  = 0;
 	int64_t vehicle_count    = 0;
 	int64_t cargo_delivered  = 0;
-	int64_t monthly_profit   = 0;
+	int64_t yearly_profit    = 0;  ///< net over the last four completed quarters
 	int64_t missions         = 0;
 };
 
@@ -150,7 +150,7 @@ struct APSlotData {
 	int64_t                 win_target_town_population = 100'000;
 	int64_t                 win_target_vehicle_count   = 30;
 	int64_t                 win_target_cargo_delivered = 120'000;
-	int64_t                 win_target_monthly_profit  = 100'000;
+	int64_t                 win_target_monthly_profit  = 100'000; ///< YEARLY profit target; the wire key keeps its old name
 	int64_t                 win_target_missions        = 35;
 	bool                    enable_traps         = true;
 	int                     start_year           = 1950;
@@ -534,6 +534,8 @@ int64_t AP_GetItemsReceivedCount();
 int     AP_GetCheckedLocationCount();
 int     AP_GetTotalLocationCount();
 APWinProgress AP_GetWinProgress();
+/** The slot's population target clamped to the map's town count. */
+int64_t AP_EffectiveWinPopTarget();
 
 /** Shop slot locking: returns true if the given 0-based sorted slot is unlocked. */
 bool AP_IsShopSlotUnlocked(int slot_index);
