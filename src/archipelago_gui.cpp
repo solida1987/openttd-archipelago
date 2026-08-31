@@ -1394,9 +1394,14 @@ struct ArchipelagoShopWindow : public Window {
 			if (label.empty()) label = fmt::format("Item #{} (loading...)", i);
 			raw.push_back({loc, label, AP_GetShopPrice(loc), purchased});
 		}
-		/* Sort ascending by price — cheapest first. */
+		/* Sort ascending by price — cheapest first. The location name breaks
+		 * ties, so equal-priced items cannot swap places between two rebuilds
+		 * (std::sort is not stable, and a swap between selecting and buying
+		 * would buy the neighbour). */
 		std::sort(raw.begin(), raw.end(),
-		    [](const RawEntry &a, const RawEntry &b) { return a.price < b.price; });
+		    [](const RawEntry &a, const RawEntry &b) {
+			return a.price != b.price ? a.price < b.price : a.loc < b.loc;
+		    });
 
 		/* Assign lock state based on sorted position (uses original index,
 		 * NOT filtered index — so purchasing items never changes other items'
@@ -1407,6 +1412,16 @@ struct ArchipelagoShopWindow : public Window {
 			shop_items.push_back({raw[idx].loc, raw[idx].label, raw[idx].price,
 			    locked, needed, raw[idx].purchased, idx + 1});
 		}
+
+		/* Bought items sink to the bottom AFTER numbering, so the list opens
+		 * on what can still be bought -- a green wall of past purchases at
+		 * the top meant scrolling past it every single visit. Display order
+		 * only: tiers and display numbers stay glued to the price order. */
+		std::stable_partition(shop_items.begin(), shop_items.end(),
+		    [](const ShopEntry &e) { return !e.purchased; });
+
+		/* The selection is an index into the list that was just reshuffled. */
+		selected = -1;
 
 		if (this->scrollbar) this->scrollbar->SetCount((int)shop_items.size());
 		max_line_px = 0;

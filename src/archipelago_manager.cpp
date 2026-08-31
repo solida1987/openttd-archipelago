@@ -1186,7 +1186,7 @@ static int _ap_ff_speed = 100;
 int _ap_news_filter = 2;
 
 /* Local Task System state */
-static constexpr int AP_TASK_MAX_ACTIVE = 5;
+static constexpr int AP_TASK_MAX_ACTIVE = 10;
 static std::vector<APTask> _ap_tasks;
 static int _ap_task_next_id          = 1;    ///< Auto-increment ID for new tasks
 static int _ap_task_checks_completed = 0;    ///< Mission-check rewards collected; adds to shop counter
@@ -5390,34 +5390,46 @@ int AP_GetShopMissionCredit()
 }
 
 /**
- * Shop tier locking: first SHOP_FREE_SLOTS items are always unlocked.
- * After that every SHOP_TIER_SIZE more items require SHOP_TIER_SIZE more
- * completed missions.
+ * Shop tier locking: first SHOP_FREE_SLOTS items are always unlocked, and
+ * every SHOP_TIER_SIZE further items open as a batch.
  *
- * Rule:
- *   slot_index 0..4  → always unlocked (first 5 items free)
- *   slot_index 5..9  → unlocked after 5  total missions completed
- *   slot_index 10..14→ unlocked after 10 total missions completed
- *   etc.
+ * ⚠ The price of a batch is the TIER NUMBER, not tier x batch size. The old
+ * rule (five slots per five missions, forever) priced the far end of a
+ * 400-slot shop at about 400 completed missions -- more than most seeds even
+ * contain. Measured against a real session sitting on 115 credits with most
+ * of the shop still shut.
+ *
+ * Rule (batches of ten, cost climbs one per tier, capped):
+ *   slot_index  0..9   → always unlocked (first 10 items free)
+ *   slot_index 10..19  → 1 credit
+ *   slot_index 20..29  → 2 credits
+ *   slot_index 30..39  → 3 credits
+ *   ... capped at 100, so even a thousand-slot shop stays inside one seed.
+ *
+ * Credits are AP_GetShopMissionCredit(): missions plus Mission Check rewards.
  *
  * @param slot_index  0-based position in the price-sorted shop list.
  */
-static constexpr int SHOP_FREE_SLOTS  = 5;
-static constexpr int SHOP_TIER_SIZE   = 5;
+static constexpr int SHOP_FREE_SLOTS  = 10;
+static constexpr int SHOP_TIER_SIZE   = 10;
+static constexpr int SHOP_TIER_COST_CAP = 100;
+
+static int ShopMissionsNeeded(int slot_index)
+{
+	int tier = (slot_index - SHOP_FREE_SLOTS) / SHOP_TIER_SIZE + 1;
+	return std::min(tier, SHOP_TIER_COST_CAP);
+}
 
 bool AP_IsShopSlotUnlocked(int slot_index)
 {
 	if (slot_index < SHOP_FREE_SLOTS) return true;
-	int tier             = (slot_index - SHOP_FREE_SLOTS) / SHOP_TIER_SIZE + 1;
-	int missions_needed  = tier * SHOP_TIER_SIZE;
-	return AP_GetShopMissionCredit() >= missions_needed;
+	return AP_GetShopMissionCredit() >= ShopMissionsNeeded(slot_index);
 }
 
 int AP_GetShopSlotRequiredMissions(int slot_index)
 {
 	if (slot_index < SHOP_FREE_SLOTS) return 0;
-	int tier = (slot_index - SHOP_FREE_SLOTS) / SHOP_TIER_SIZE + 1;
-	return tier * SHOP_TIER_SIZE;
+	return ShopMissionsNeeded(slot_index);
 }
 
 /** Returns the unlock threshold for a difficulty tier (0 = no gate). */
@@ -6229,21 +6241,51 @@ static bool AP_TryMakeTask(APTask &out)
 	for (const APTask &t : _ap_tasks)
 		if (!t.completed && !t.expired) used_ids.insert(t.entity_id);
 
-	/* Collect valid producing industries */
-	std::vector<const Industry *> prod_inds;
+	/* Difficulty FIRST -- the candidate filters below depend on the amount. */
+	int dr = (int)InteractiveRandomRange(100);
+	std::string diff;
+	int64_t amount, reward_cash;
+	int deadline_years;
+	if (dr < 50)       { diff = "easy";   amount = 500;  reward_cash = 25000;  deadline_years = 1; }
+	else if (dr < 80)  { diff = "medium"; amount = 2000; reward_cash = 150000; deadline_years = 2; }
+	else               { diff = "hard";   amount = 8000; reward_cash = 500000; deadline_years = 3; }
+
+	/* ⚠⚠ ONLY INDUSTRIES THAT CAN ACTUALLY SUPPLY THE TASK.
+	 *
+	 * "Any produced slot with a valid cargo type" handed out tasks the map
+	 * could not honour: a Factory produces nothing until somebody supplies it,
+	 * and a temperate Bank trickles out a few crates of valuables a month --
+	 * yet both were offered as "pick up 8,000 t" targets, which then sat at 0%
+	 * however hard the player worked them. That was most of "tasks that do not
+	 * react".
+	 *
+	 * So: the slot must have PRODUCED last month, and the amount must fit in
+	 * half of what the industry puts out over the whole deadline. The chosen
+	 * slot's cargo is remembered, so the task counts the cargo it names. */
+	struct ProdCand { const Industry *ind; CargoType ct; };
+	std::vector<ProdCand> prod_inds;
 	for (const Industry *ind : Industry::Iterate()) {
 		if (ind->location.tile == INVALID_TILE) continue;
 		if (used_ids.count((int32_t)ind->index.base())) continue;
-		for (const auto &slot : ind->produced)
-			if (IsValidCargoType(slot.cargo)) { prod_inds.push_back(ind); break; }
+		for (const auto &slot : ind->produced) {
+			if (!IsValidCargoType(slot.cargo)) continue;
+			int64_t monthly = (int64_t)slot.history[LAST_MONTH].production;
+			if (monthly <= 0) continue;
+			if (monthly * 12 * deadline_years / 2 < amount) continue;
+			prod_inds.push_back({ ind, slot.cargo });
+			break;
+		}
 	}
 
-	/* Collect towns with >= 200 population */
+	/* Towns big enough that the passenger amount is realistic: a town's
+	 * traffic scales with its population, so an 8,000-passenger task in a
+	 * 300-soul village was another task that could never move. */
 	std::vector<const Town *> towns;
 	CargoType pass_ct = AP_FindCargoType("passengers");
 	if (IsValidCargoType(pass_ct)) {
+		uint32_t min_pop = std::max<uint32_t>(200, (uint32_t)(amount / 8));
 		for (const Town *t : Town::Iterate()) {
-			if ((uint32_t)t->cache.population < 200) continue;
+			if ((uint32_t)t->cache.population < min_pop) continue;
 			if (used_ids.count((int32_t)t->index.base())) continue;
 			towns.push_back(t);
 		}
@@ -6260,15 +6302,6 @@ static bool AP_TryMakeTask(APTask &out)
 	else
 		use_cargo = can_cargo;
 
-	/* Pick difficulty */
-	int dr = (int)InteractiveRandomRange(100);
-	std::string diff;
-	int64_t amount, reward_cash;
-	int deadline_years;
-	if (dr < 50)       { diff = "easy";   amount = 500;  reward_cash = 25000;  deadline_years = 1; }
-	else if (dr < 80)  { diff = "medium"; amount = 2000; reward_cash = 150000; deadline_years = 2; }
-	else               { diff = "hard";   amount = 8000; reward_cash = 500000; deadline_years = 3; }
-
 	/* 30% chance of Mission Check reward */
 	APTaskRewardType rtype = (InteractiveRandomRange(100) < 30)
 	    ? APTaskRewardType::MISSION_CHECK
@@ -6282,15 +6315,10 @@ static bool AP_TryMakeTask(APTask &out)
 			size_t j = InteractiveRandomRange((uint32_t)i);
 			if (j < i) std::swap(prod_inds[i - 1], prod_inds[j]);
 		}
-		const Industry *src = nullptr;
-		CargoType ct = INVALID_CARGO;
-		for (const Industry *ind : prod_inds) {
-			for (const auto &slot : ind->produced) {
-				if (IsValidCargoType(slot.cargo)) { ct = slot.cargo; break; }
-			}
-			if (ct != INVALID_CARGO) { src = ind; break; }
-		}
-		if (!src) return false;
+		/* The candidate remembers which slot passed the production filter --
+		 * the task must count the cargo its own text names. */
+		const Industry *src = prod_inds[0].ind;
+		CargoType ct        = prod_inds[0].ct;
 
 		std::string cargo_n = "cargo";
 		const CargoSpec *cs = CargoSpec::Get(ct);
@@ -6426,10 +6454,12 @@ static void AP_UpdateTasks()
 			continue; /* skip progress this tick — start counting next month */
 		}
 
-		/* Check expiry */
+		/* Check expiry. Expired tasks are erased right below this loop -- an
+		 * [EXPIRED] row used to sit in the list for a year while its slot
+		 * counted as occupied, so the list never refilled. The news line is
+		 * the record of what was missed; the slot goes to a fresh task. */
 		if (cur_year > t.deadline_year) {
 			t.expired = true;
-			t.removal_year = cur_year + 1; /* remove ~1 in-game year after expiry */
 			AP_TRACE(fmt::format("TaskExpired: id={} desc='{}' deadline={}", t.id, t.description.substr(0, 60), t.deadline_year));
 			AP_ShowNews(fmt::format("[Task] Expired: {}", t.description.substr(0, 50)));
 			continue;
@@ -6452,6 +6482,13 @@ static void AP_UpdateTasks()
 			AP_CompleteTask(t);
 		}
 	}
+
+	/* Expired tasks vanish now, not a year later. Completed ones keep their
+	 * short victory lap via removal_year at the top of this function. */
+	_ap_tasks.erase(
+		std::remove_if(_ap_tasks.begin(), _ap_tasks.end(),
+			[](const APTask &t) { return t.expired; }),
+		_ap_tasks.end());
 
 	/* Replenish active tasks */
 	AP_GenerateTasks();
@@ -7440,15 +7477,17 @@ static void AP_UpdateNamedMissions(CargoDrainCache &cargo)
 			IndustryID iid = (IndustryID)t.entity_id;
 			Industry *ind = Industry::GetIfValid(iid);
 			if (!ind) continue;
-			for (const auto &slot : ind->produced) {
-				if (!IsValidCargoType(slot.cargo)) continue;
-				CargoMonitorID mon = EncodeCargoIndustryMonitor(cid, slot.cargo, iid);
-				int32_t picked_up = cargo.PickedUp(mon);
-				if (picked_up > 0) {
-					t.current_value += picked_up;
-					any_task_updated = true;
-					AP_OK(fmt::format("[Task] cargo_from_industry id={} cargo={}: +{} -> {}/{}", t.entity_id, (int)slot.cargo, AP_Num(picked_up), AP_Num(t.current_value), AP_Num(t.amount)));
-				}
+			/* Only the cargo the task names. Summing every produced slot let a
+			 * grain task tick on livestock from the same farm -- reacting to
+			 * the wrong work is as confusing as not reacting at all.
+			 * Note the vanilla rule: pickup is credited on FINAL DELIVERY of
+			 * the cargo, so loading alone moves nothing until it arrives. */
+			CargoMonitorID mon = EncodeCargoIndustryMonitor(cid, (CargoType)t.cargo, iid);
+			int32_t picked_up = cargo.PickedUp(mon);
+			if (picked_up > 0) {
+				t.current_value += picked_up;
+				any_task_updated = true;
+				AP_OK(fmt::format("[Task] cargo_from_industry id={} cargo={}: +{} -> {}/{}", t.entity_id, (int)t.cargo, AP_Num(picked_up), AP_Num(t.current_value), AP_Num(t.amount)));
 			}
 		}
 	}

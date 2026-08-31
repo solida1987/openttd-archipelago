@@ -1,5 +1,46 @@
 # Changelog — OpenTTD Archipelago
 
+## [v2.2.2] — 2026-08-30
+
+### Changed — bought items sink to the bottom of the shop
+
+- The list opens on what can still be bought; the green wall of past
+  purchases sits below it instead of being scrolled past on every visit.
+  Display numbers and unlock tiers stay glued to the price order, and
+  equal-priced items can no longer swap places between two rebuilds.
+
+### Changed — the shop opens for effort, not for a career
+
+- Slots unlock in batches of **ten**, the first ten are free, and a batch
+  costs its tier number in mission credits (1, 2, 3, ... capped at 100)
+  instead of five credits per five slots forever. The far end of a 400-slot
+  shop cost about 400 completed missions before — more than most seeds
+  contain; now the same shop opens fully at 39. Mission Check task rewards
+  count toward the credit, as they already did.
+
+### Changed — the task board actually turns over
+
+- **Ten active tasks instead of five.**
+- **Expired tasks vanish and are replaced.** An [EXPIRED] row used to sit in
+  the list for a year while its slot counted as occupied, so the board never
+  refilled. The expiry news line remains the record of what was missed.
+
+### Fixed — tasks that could not react
+
+- **Tasks are only offered on industries that can supply them.** "Any produced
+  slot" handed out targets the map could not honour: a Factory produces
+  nothing until it is supplied, and a temperate Bank trickles out a few crates
+  of valuables — yet both were offered as 8,000-tonne pickup targets that sat
+  at 0% forever. An industry now qualifies only if the cargo actually flowed
+  last month and the amount fits in half its output over the deadline.
+- **Passenger tasks pick towns big enough to carry them** — an 8,000-passenger
+  task no longer lands on a 300-soul village.
+- **A task counts the cargo its text names.** The reader summed every slot the
+  industry produces, so a grain task ticked on livestock from the same farm.
+- Reminder of the engine's own rule: pickup is credited when the cargo is
+  finally *delivered*, so a loaded train moves the counter on arrival, not on
+  loading.
+
 ## [v2.2.1] — 2026-08-30
 
 ### Fixed
