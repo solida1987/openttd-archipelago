@@ -3,7 +3,7 @@
   "gameId": "openttd_archipelago",
   "displayName": "OpenTTD",
   "subtitle": "Randomizer Mod",
-  "version": "1.5.1",
+  "version": "1.5.3",
   "author": "Solida Games",
   "authorContact": "https://github.com/solida1987/openttd-archipelago",
   "assembly": "OpenTTD.dll",
@@ -19,7 +19,7 @@
     "requiresOriginalGame": false
   },
   "rulesAcknowledged": true,
-  "minLauncher": "3.21.2",
+  "minLauncher": "3.22.5",
   "update": {
     "versionUrl": "https://raw.githubusercontent.com/solida1987/openttd-archipelago/main/plugin_version.txt",
     "packageUrl": "https://github.com/solida1987/openttd-archipelago/releases/latest/download/openttd_archipelago.londonplugin"

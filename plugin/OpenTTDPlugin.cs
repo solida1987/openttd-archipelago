@@ -513,9 +513,37 @@ public sealed class OpenTTDPlugin : IGamePlugin
 
     public void OnApServicesAttached(IApServices? services)
     {
-        if (_ap != null) _ap.LocationsScouted -= OnLocationsScouted;
+        if (_ap != null)
+        {
+            _ap.LocationsScouted -= OnLocationsScouted;
+            _ap.ServerMessage    -= OnServerMessage;
+        }
         _ap = services;
-        if (_ap != null) _ap.LocationsScouted += OnLocationsScouted;
+        if (_ap != null)
+        {
+            _ap.LocationsScouted += OnLocationsScouted;
+            _ap.ServerMessage    += OnServerMessage;
+        }
+    }
+
+    // PrintJSON types the news ticker must NOT carry. The stream is the whole
+    // room's -- in a large async, ItemSend alone is a line every few seconds,
+    // and the game shows each PRINT as a news item. What passes: chat, the
+    // reply to the player's own `ap` command, and the room milestones
+    // (goal / release / collect / joins).
+    private static readonly HashSet<string> MutedMessageTypes = new()
+    { "ItemSend", "ItemCheat", "Hint", "Countdown", "Tutorial", "TagsChanged" };
+
+    private void OnServerMessage(string text, string type)
+    {
+        if (MutedMessageTypes.Contains(type)) return;
+        var pipe = _pipe;
+        if (pipe == null) return;
+        _ = Task.Run(async () =>
+        {
+            try { await pipe.SendPrintAsync(text).ConfigureAwait(false); }
+            catch { /* game closed mid-send; the message has nowhere to go */ }
+        });
     }
 
     private void WireEvents(OpenTTDPipeServer pipe)
@@ -524,6 +552,21 @@ public sealed class OpenTTDPlugin : IGamePlugin
         pipe.DeathReported += cause => _ap?.ReportDeath(cause);
         pipe.GoalReported  += () => { Log("goal reached"); GoalCompleted?.Invoke(); };
         pipe.LogReported   += text => Log("game: " + text);
+
+        // The game's `ap <text>` console command. The pipe has always parsed
+        // SAY: and raised this -- nothing was listening, so every !release,
+        // !collect and !hint the player typed died here without a word.
+        pipe.SayReported += text =>
+        {
+            Log("say: " + text);
+            var ap = _ap;
+            if (ap == null) { Log("say dropped: no AP session"); return; }
+            _ = Task.Run(async () =>
+            {
+                try { await ap.SendSayAsync(text).ConfigureAwait(false); }
+                catch (Exception e) { Log("say failed: " + e.Message); }
+            });
+        };
 
         // ⚠ async void, like the standalone pair: an exception escaping here
         // reaches nobody, so it is caught and written to the session log.
