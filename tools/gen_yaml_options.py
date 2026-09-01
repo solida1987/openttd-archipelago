@@ -48,7 +48,7 @@ class _Base:
         return {
             "display": getattr(cls, "display_name", "") or cls.__name__,
             "default": getattr(cls, "default", 0),
-            "help": summary[:400],
+            "help": summary,  # full text; the dialog wraps, it never trims
         }
 
 

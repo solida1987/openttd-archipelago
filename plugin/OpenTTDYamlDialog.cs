@@ -196,7 +196,8 @@ internal sealed class OpenTTDYamlDialog : Window
         Text = t, Foreground = Ink, VerticalAlignment = VerticalAlignment.Center,
     };
 
-    private static string Shorten(string s) => s.Length <= 150 ? s : s[..149].TrimEnd() + "…";
+    // Full text always — see D2YamlDialog for the reasoning.
+    private static string Shorten(string s) => s;
 
     ///
     /// Emit the file. Written by hand rather than through a YAML library: the
