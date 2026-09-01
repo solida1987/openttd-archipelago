@@ -3493,6 +3493,16 @@ bool AP_IsWrathEnabled() { return _ap_wrath_enabled; }
 static APSlotData  _ap_pending_sd;
 bool               _ap_pending_world_start         = false;
 static bool        _ap_goal_sent                   = false;
+/* Whether the goal has gone down the pipe on THIS connection.
+ *
+ * ⚠ Deliberately NOT saved. _ap_goal_sent means "this seed has been won" --
+ * it freezes the play timer and gates the fanfare, and the savegame restores
+ * it. It does NOT mean the server knows. When the launcher was not listening,
+ * the goal was announced in-game and lost, and the flag from the save then
+ * stopped the game ever trying again: the seed stayed unfinished in the room
+ * with every remaining location unreleased. A won seed re-announces itself
+ * once per link, and the server ignores a goal it already has. */
+static bool        _ap_goal_sent_this_link         = false;
 static bool        _ap_session_started             = false; ///< True once we've done first-tick setup in GM_NORMAL
 static int         _ap_breakdown_wave_ticks        = 0;     ///< >0 while breakdown wave is active (~60 seconds)
 static int         _ap_fuel_shortage_ticks         = 0;     ///< >0 while fuel shortage slowdown is active
@@ -3638,6 +3648,7 @@ static void AP_OnSlotData(const APSlotData &sd)
 	_ap_pending_sd      = sd;
 	_ap_session_started = false; /* reset so first-tick setup runs again */
 	_ap_goal_sent       = false;
+	_ap_goal_sent_this_link = false; /* a won seed re-announces itself to the new link */
 	_ap_engine_map_built = false; /* rebuild map for new session */
 	_ap_star_types_resolved = false; /* re-resolve star ObjectTypes on reconnect */
 	_ap_ih_wagons_built  = false; /* rebuild IH wagon queue for new session */
@@ -8487,21 +8498,33 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		}
 
 		if (_ap_realtime_ticks >= 40 &&
-		    _ap_session_started && !_ap_goal_sent &&
+		    _ap_session_started && !_ap_goal_sent_this_link &&
 		    _game_mode == GM_NORMAL) {
 
 			_ap_realtime_ticks = 0;
 			if (CheckWinCondition(_ap_pending_sd)) {
-				_ap_goal_sent = true;
+				/* Guarded per link, not per seed: a goal the launcher never
+				 * carried away is a goal the server never got, and the game
+				 * cannot tell the two apart. Sending it again is free. */
+				_ap_goal_sent_this_link = true;
 				if (_ap_client != nullptr) {
 					_ap_client->SendGoal();
 				}
 				/* Bridge mode: victory is detected by the bridge via win_progress */
 				Debug(misc, 0, "[AP] Win condition reached! Goal sent.");
 				AP_TRACE("WIN_CONDITION_REACHED: Goal sent to AP server!");
-				AP_OK("*** WIN CONDITION REACHED! Goal sent to server! ***");
-				AP_ShowNews("[AP] WIN CONDITION REACHED! Goal sent to server!");
-				ShowAPVictoryScreen();
+
+				/* The fanfare belongs to the moment it is won, once. A seed
+				 * loaded from a save has been won already and only needs the
+				 * packet. */
+				if (!_ap_goal_sent) {
+					_ap_goal_sent = true;
+					AP_OK("*** WIN CONDITION REACHED! Goal sent to server! ***");
+					AP_ShowNews("[AP] WIN CONDITION REACHED! Goal sent to server!");
+					ShowAPVictoryScreen();
+				} else {
+					AP_OK("Goal re-sent to the server for this session.");
+				}
 			}
 		}
 	}

@@ -1,5 +1,16 @@
 # Changelog — OpenTTD Archipelago
 
+## [v2.2.3] — 2026-09-01
+
+### Fixed — a won seed announces its goal to every session, not just the first
+
+- The goal is now re-sent whenever the game connects while the win
+  condition holds. It used to be sent exactly once and then remembered in
+  the savegame as done, so a goal the launcher was not listening for was
+  lost for good: the seed stayed unfinished in the room and every location
+  the player never reached stayed unreleased. The victory screen and the
+  final play time still happen once, at the moment the seed is won.
+
 ## [v2.2.2] — 2026-08-30
 
 ### Changed — bought items sink to the bottom of the shop
